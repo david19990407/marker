@@ -1,7 +1,10 @@
 import { Card } from "@/components/ui/card";
 import { UpdatePasswordForm } from "@/components/auth/update-password-form";
+import { getBranding } from "@/lib/school/branding";
 
-export default function UpdatePasswordPage() {
+export default async function UpdatePasswordPage() {
+  const branding = await getBranding();
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(124,58,237,0.12),_transparent_40%),#fafafa] px-4">
       <Card className="w-full max-w-md p-8">
@@ -9,7 +12,8 @@ export default function UpdatePasswordPage() {
           Set a new password
         </h1>
         <p className="mb-6 text-sm text-slate-500">
-          Choose a strong password for your Homework Passport account.
+          Choose a strong password for your {branding.platformDisplayName}{" "}
+          account.
         </p>
         <UpdatePasswordForm />
       </Card>

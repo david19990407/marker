@@ -1,8 +1,7 @@
 import { z } from "zod";
-import { YEAR_GROUPS } from "@/lib/types";
 
 const yearGroupField = z
-  .union([z.enum(YEAR_GROUPS), z.literal(""), z.null()])
+  .union([z.string().trim().max(40), z.literal(""), z.null()])
   .optional()
   .transform((v) => (v ? v : null));
 
@@ -15,6 +14,10 @@ export const teacherClassSchema = z.object({
   name: z.string().trim().min(1, "Class name is required").max(120),
   subject: z.string().trim().min(1).max(80).default("English"),
   year_group: yearGroupField,
+  colour_hex: z
+    .union([z.string().trim().regex(/^#[0-9A-Fa-f]{6}$/), z.literal(""), z.null()])
+    .optional()
+    .transform((v) => (v ? v : null)),
 });
 
 /** Used when creating new assignments (multi-class deployment via RPC). */

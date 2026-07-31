@@ -5,13 +5,24 @@ import { Badge } from "@/components/ui/badge";
 import { CreateClassForm } from "@/components/admin/create-class-form";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
+import {
+  getActiveColours,
+  getActiveSubjects,
+  getActiveYearGroups,
+} from "@/lib/school/settings";
 
 export default async function AdminClassesPage() {
   await requireProfile(["admin"]);
   const supabase = await createClient();
 
-  const [{ data: classes }, { data: teachers }, { data: members }] =
-    await Promise.all([
+  const [
+    { data: classes },
+    { data: teachers },
+    { data: members },
+    subjects,
+    yearGroups,
+    colours,
+  ] = await Promise.all([
       supabase
         .from("classes")
         .select("*, teacher:profiles!classes_teacher_id_fkey(display_name)")
@@ -23,6 +34,9 @@ export default async function AdminClassesPage() {
         .eq("is_active", true)
         .order("display_name"),
       supabase.from("class_members").select("class_id"),
+      getActiveSubjects(),
+      getActiveYearGroups(),
+      getActiveColours(),
     ]);
 
   const memberCounts = new Map<string, number>();
@@ -40,7 +54,12 @@ export default async function AdminClassesPage() {
       <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
         <Card>
           <CardTitle className="mb-4">Create class</CardTitle>
-          <CreateClassForm teachers={teachers ?? []} />
+          <CreateClassForm
+            teachers={teachers ?? []}
+            subjects={subjects}
+            yearGroups={yearGroups}
+            colours={colours}
+          />
         </Card>
 
         <Card>

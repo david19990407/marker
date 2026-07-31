@@ -133,18 +133,28 @@ export interface SchoolSettings {
 export interface SchoolSubject {
   id: string;
   name: string;
+  code: string | null;
   icon_key: string;
+  icon_type?: "built_in" | "upload";
+  icon_value?: string;
+  colour?: string;
   sort_order: number;
   is_active: boolean;
+  archived_at?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface SchoolYearGroup {
   id: string;
   label: string;
+  name?: string;
+  code?: string | null;
   sort_order: number;
   is_active: boolean;
+  archived_at?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface SchoolClassColour {

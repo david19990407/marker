@@ -7,15 +7,22 @@ import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
 import type { UserRole } from "@/lib/types";
+import { getActiveYearGroups } from "@/lib/school/settings";
 
 export default async function AdminUsersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; role?: string; status?: string }>;
+  searchParams: Promise<{
+    q?: string;
+    role?: string;
+    status?: string;
+    year_group?: string;
+  }>;
 }) {
   await requireProfile(["admin"]);
   const params = await searchParams;
   const supabase = await createClient();
+  const yearGroups = await getActiveYearGroups();
 
   let query = supabase
     .from("profiles")
@@ -27,6 +34,7 @@ export default async function AdminUsersPage({
   }
   if (params.status === "active") query = query.eq("is_active", true);
   if (params.status === "inactive") query = query.eq("is_active", false);
+  if (params.year_group) query = query.eq("year_group", params.year_group);
   if (params.q) {
     const q = `%${params.q}%`;
     query = query.or(
@@ -56,7 +64,7 @@ export default async function AdminUsersPage({
       <Card>
         <form
           method="get"
-          className="grid gap-3 md:grid-cols-[1.4fr_1fr_1fr_auto]"
+          className="grid gap-3 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto]"
         >
           <Input
             name="q"
@@ -72,6 +80,18 @@ export default async function AdminUsersPage({
             <option value="admin">Admin</option>
             <option value="teacher">Teacher</option>
             <option value="student">Student</option>
+          </select>
+          <select
+            name="year_group"
+            defaultValue={params.year_group ?? ""}
+            className="h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm"
+          >
+            <option value="">All year groups</option>
+            {yearGroups.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
           </select>
           <select
             name="status"

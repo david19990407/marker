@@ -5,15 +5,19 @@ import { Button } from "@/components/ui/button";
 import { CreateUserForm } from "@/components/admin/create-user-form";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
+import { getActiveYearGroups } from "@/lib/school/settings";
 
 export default async function NewUserPage() {
   await requireProfile(["admin"]);
   const supabase = await createClient();
-  const { data: classes } = await supabase
-    .from("classes")
-    .select("id, name")
-    .eq("archived", false)
-    .order("name");
+  const [{ data: classes }, yearGroups] = await Promise.all([
+    supabase
+      .from("classes")
+      .select("id, name")
+      .eq("archived", false)
+      .order("name"),
+    getActiveYearGroups(),
+  ]);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -27,7 +31,7 @@ export default async function NewUserPage() {
         }
       />
       <Card>
-        <CreateUserForm classes={classes ?? []} />
+        <CreateUserForm classes={classes ?? []} yearGroups={yearGroups} />
       </Card>
     </div>
   );

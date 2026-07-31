@@ -6,17 +6,23 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { getCurrentProfile } from "@/lib/auth/get-profile";
 import { logoutAction } from "@/lib/actions/auth";
+import { getBranding } from "@/lib/school/branding";
 
 export default async function SettingsPage() {
   const profile = await getCurrentProfile();
   if (!profile) redirect("/login");
+  const branding = await getBranding();
 
   return (
-    <AppShell profile={profile}>
+    <AppShell
+      profile={profile}
+      platformDisplayName={branding.platformDisplayName}
+      schoolName={branding.schoolName}
+    >
       <div className="mx-auto max-w-2xl space-y-6">
         <PageHeader
           title="Settings"
-          description="Your Homework Passport profile details."
+          description={`Your ${branding.platformDisplayName} profile details.`}
         />
         <Card className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -37,6 +43,12 @@ export default async function SettingsPage() {
             <span className="mb-1.5 block text-slate-500">Role</span>
             <Input value={profile.role} readOnly className="capitalize" />
           </label>
+          {branding.schoolName ? (
+            <label className="block text-sm">
+              <span className="mb-1.5 block text-slate-500">School</span>
+              <Input value={branding.schoolName} readOnly />
+            </label>
+          ) : null}
           <form action={logoutAction}>
             <Button type="submit" variant="outline">
               Sign out

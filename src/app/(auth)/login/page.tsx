@@ -1,5 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { LoginForm } from "@/components/auth/login-form";
+import { getBranding, schoolSubtitle } from "@/lib/school/branding";
 
 export default async function LoginPage({
   searchParams,
@@ -7,17 +8,31 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string; next?: string }>;
 }) {
   const params = await searchParams;
+  const branding = await getBranding();
+  const subtitle = schoolSubtitle(
+    branding.platformDisplayName,
+    branding.schoolName,
+  );
+  const initials = branding.platformDisplayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("") || "HP";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(124,58,237,0.12),_transparent_40%),#fafafa] px-4">
       <Card className="w-full max-w-md p-8">
         <div className="mb-8 text-center">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white shadow-lg shadow-brand-500/30">
-            HP
+            {initials}
           </div>
           <h1 className="font-[family-name:var(--font-outfit)] text-2xl font-semibold text-slate-900">
-            Sign in to Homework Passport
+            Sign in to {branding.platformDisplayName}
           </h1>
+          {subtitle ? (
+            <p className="mt-2 text-sm font-medium text-slate-600">{subtitle}</p>
+          ) : null}
           <p className="mt-2 text-sm text-slate-500">
             Use the email and password provided by your school administrator.
           </p>

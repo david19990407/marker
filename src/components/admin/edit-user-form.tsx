@@ -10,7 +10,6 @@ import {
 } from "@/lib/actions/admin";
 import type { ActionResult } from "@/lib/actions/auth";
 import type { Profile } from "@/lib/types";
-import { YEAR_GROUPS } from "@/lib/types";
 
 const initial: ActionResult = {};
 
@@ -18,11 +17,13 @@ export function EditUserForm({
   user,
   classes,
   memberClassIds,
+  yearGroups,
   canEditRole = true,
 }: {
   user: Profile;
   classes: { id: string; name: string }[];
   memberClassIds: string[];
+  yearGroups: string[];
   /** False when editing your own account — self-role changes are blocked. */
   canEditRole?: boolean;
 }) {
@@ -88,7 +89,10 @@ export function EditUserForm({
               className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm"
             >
               <option value="">—</option>
-              {YEAR_GROUPS.map((y) => (
+              {(user.year_group && !yearGroups.includes(user.year_group)
+                ? [user.year_group, ...yearGroups]
+                : yearGroups
+              ).map((y) => (
                 <option key={y} value={y}>
                   {y}
                 </option>
