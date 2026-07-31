@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/server";
 import { loadTemplateStructure } from "@/lib/homework/structure";
 import type { Assignment } from "@/lib/types";
 
-export default async function HomeworkBuilderPage({
+export default async function AssignmentPreviewPage({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -25,7 +25,6 @@ export default async function HomeworkBuilderPage({
 
   if (!assignment) notFound();
 
-  // Access check: owner or co-teacher
   if (assignment.teacher_id !== profile.id) {
     const { data: ct } = await supabase
       .from("class_teachers")
@@ -38,7 +37,10 @@ export default async function HomeworkBuilderPage({
 
   if (!assignment.template_id) notFound();
 
-  const initialSections = await loadTemplateStructure(supabase, assignment.template_id);
+  const initialSections = await loadTemplateStructure(
+    supabase,
+    assignment.template_id,
+  );
 
   const className = Array.isArray(assignment.classes)
     ? assignment.classes[0]?.name
@@ -47,15 +49,12 @@ export default async function HomeworkBuilderPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title={`Builder: ${assignment.title}`}
-        description={className ?? "Assignment"}
+        title={`Preview: ${assignment.title}`}
+        description={`${className ?? "Assignment"} · student view`}
         action={
-          <div className="flex flex-wrap gap-2">
-            <Link href={`/teacher/assignments/${id}/preview`}>
-              <Button variant="secondary">Preview</Button>
-            </Link>
-            <Link href={`/teacher/assignments/${id}/edit`}>
-              <Button variant="outline">Publish / schedule</Button>
+          <div className="flex gap-2">
+            <Link href={`/teacher/assignments/${id}/builder`}>
+              <Button variant="secondary">Edit builder</Button>
             </Link>
             <Link href={`/teacher/assignments/${id}`}>
               <Button variant="outline">Back</Button>
@@ -67,6 +66,7 @@ export default async function HomeworkBuilderPage({
       <HomeworkBuilder
         assignment={assignment as Assignment & { template_id: string }}
         initialSections={initialSections}
+        previewOnly
       />
     </div>
   );

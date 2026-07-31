@@ -93,6 +93,54 @@ export function TableEditor({ block, onChange }: Props) {
     onChange({ ...block, tableConfig: { ...cfg, col_labels: nextLabels }, cells: nextCells });
   }
 
+  function duplicateRow(rowIdx: number) {
+    const nextRows = cfg.rows + 1;
+    const nextCells = cells.map((c) =>
+      c.row_index > rowIdx ? { ...c, row_index: c.row_index + 1 } : c,
+    );
+    for (let c = 0; c < cfg.cols; c++) {
+      const source = cells.find((cell) => cell.row_index === rowIdx && cell.col_index === c);
+      nextCells.push({
+        row_index: rowIdx + 1,
+        col_index: c,
+        cell_type: source?.cell_type ?? "student_text",
+        label: source?.label ?? null,
+        marks: source?.marks ?? null,
+        read_only: source?.read_only ?? false,
+      });
+    }
+    onChange({
+      ...block,
+      tableConfig: { ...cfg, rows: nextRows },
+      cells: nextCells,
+    });
+  }
+
+  function duplicateCol(colIdx: number) {
+    const nextCols = cfg.cols + 1;
+    const nextLabels = [...(cfg.col_labels ?? [])];
+    nextLabels.splice(colIdx + 1, 0, `${nextLabels[colIdx] ?? "Column"} (copy)`);
+    const nextCells = cells.map((c) =>
+      c.col_index > colIdx ? { ...c, col_index: c.col_index + 1 } : c,
+    );
+    for (let r = 0; r < cfg.rows; r++) {
+      const source = cells.find((cell) => cell.row_index === r && cell.col_index === colIdx);
+      nextCells.push({
+        row_index: r,
+        col_index: colIdx + 1,
+        cell_type: source?.cell_type ?? "student_text",
+        label: source?.label ?? null,
+        marks: source?.marks ?? null,
+        read_only: source?.read_only ?? false,
+      });
+    }
+    onChange({
+      ...block,
+      tableConfig: { ...cfg, cols: nextCols, col_labels: nextLabels },
+      cells: nextCells,
+    });
+  }
+
   const startRow = cfg.header_row ? 1 : 0;
 
   return (
@@ -161,6 +209,14 @@ export function TableEditor({ block, onChange }: Props) {
               >
                 →
               </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => duplicateCol(ci)}
+                aria-label={`Duplicate column ${ci + 1}`}
+              >
+                Dup
+              </Button>
             </div>
           ))}
         </div>
@@ -206,6 +262,14 @@ export function TableEditor({ block, onChange }: Props) {
                         aria-label={`Move row ${ri + 1} down`}
                       >
                         ↓
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => duplicateRow(ri)}
+                        aria-label={`Duplicate row ${ri + 1}`}
+                      >
+                        Dup
                       </Button>
                     </div>
                   </td>

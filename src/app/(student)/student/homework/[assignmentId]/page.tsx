@@ -5,13 +5,15 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmissionPanel } from "@/components/student/submission-panel";
-import { StructuredHomework } from "@/components/student/structured-homework";
+import {
+  StructuredHomework,
+  type ResponseWithCells,
+} from "@/components/student/structured-homework";
 import { DownloadButton } from "@/components/shared/download-button";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import { loadTemplateStructure } from "@/lib/homework/structure";
 import { RESPONSE_BLOCK_TYPES } from "@/lib/types";
-import type { StudentResponse } from "@/lib/types";
 
 export default async function StudentAssignmentPage({
   params,
@@ -25,12 +27,20 @@ export default async function StudentAssignmentPage({
   const { data: assignment } = await supabase
     .from("assignments")
     .select(
-      "id, title, instructions, due_at, maximum_mark, status, allow_text_submission, allow_file_submission, class_id, template_id, classes(name)",
+      "id, title, instructions, due_at, release_at, maximum_mark, status, allow_text_submission, allow_file_submission, class_id, template_id, classes(name)",
     )
     .eq("id", assignmentId)
     .eq("status", "published")
     .maybeSingle();
   if (!assignment) notFound();
+
+  const { currentTimeMs } = await import("@/lib/utils/time");
+  if (
+    assignment.release_at &&
+    new Date(assignment.release_at).getTime() > currentTimeMs()
+  ) {
+    notFound();
+  }
 
   const { data: membership } = await supabase
     .from("class_members")
@@ -65,14 +75,13 @@ export default async function StudentAssignmentPage({
 
   // Load structured content if template exists
   let structuredSections = null;
-  const existingResponses: Record<string, StudentResponse> = {};
+  const existingResponses: Record<string, ResponseWithCells> = {};
   let hasStructuredBlocks = false;
 
   if (assignment.template_id) {
     try {
       const sections = await loadTemplateStructure(supabase, assignment.template_id);
 
-      // Check if there are any non-trivial blocks
       const allBlocks = sections.flatMap((s) => [
         ...s.blocks,
         ...s.subsections.flatMap((sub) => sub.blocks),
@@ -84,7 +93,6 @@ export default async function StudentAssignmentPage({
         (RESPONSE_BLOCK_TYPES as readonly string[]).includes(b.block_type),
       );
 
-      // Show structured view when there are multiple blocks or response blocks
       hasStructuredBlocks =
         hasResponseBlocks ||
         nonEmpty.length > 1 ||
@@ -93,17 +101,19 @@ export default async function StudentAssignmentPage({
       if (hasStructuredBlocks) {
         structuredSections = sections;
 
-        // Load existing student responses
         if (submission) {
           const { data: responses } = await supabase
             .from("student_responses")
-            .select("*")
+            .select(
+              "*, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
+            )
             .eq("submission_id", submission.id);
 
-          if (responses) {
-            for (const r of responses) {
-              existingResponses[r.question_id] = r as StudentResponse;
-            }
+          for (const r of responses ?? []) {
+            existingResponses[r.question_id] = {
+              ...(r as ResponseWithCells),
+              cells: Array.isArray(r.response_cells) ? r.response_cells : [],
+            };
           }
         }
       }
@@ -121,7 +131,6 @@ export default async function StudentAssignmentPage({
     : relatedClass?.name;
   const editable =
     !submission || ["draft", "returned"].includes(submission.status);
-  const { currentTimeMs } = await import("@/lib/utils/time");
   const late =
     assignment.due_at &&
     new Date(assignment.due_at).getTime() < currentTimeMs();

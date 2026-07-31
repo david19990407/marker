@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import type { BuilderSection, StudentResponse } from "@/lib/types";
-import { structureToPayload } from "@/lib/homework/structure";
+import { cloneSection, structureToPayload } from "@/lib/homework/structure";
+import { structuredResponsesSchema } from "@/lib/validations/homework";
 import type { ActionResult } from "@/lib/actions/auth";
 
 async function assertTeacher() {
@@ -16,7 +17,7 @@ async function assertTeacher() {
 export async function saveHomeworkStructureAction(
   templateId: string,
   sections: BuilderSection[],
-): Promise<ActionResult> {
+): Promise<ActionResult & { sections?: BuilderSection[] }> {
   await assertTeacher();
   const supabase = await createClient();
 
@@ -24,13 +25,17 @@ export async function saveHomeworkStructureAction(
 
   const { error } = await supabase.rpc("save_assignment_structure", {
     p_template_id: templateId,
-    p_structure: JSON.stringify(payload),
+    p_structure: payload,
   });
 
   if (error) return { error: error.message };
 
+  // Reload so client receives persisted question_ids
+  const { loadTemplateStructure } = await import("@/lib/homework/structure");
+  const reloaded = await loadTemplateStructure(supabase, templateId);
+
   revalidatePath(`/teacher/assignments`);
-  return { success: "Structure saved" };
+  return { success: "Structure saved", sections: reloaded };
 }
 
 // ── Copy section from another template ───────────────────────────────────────
@@ -43,7 +48,6 @@ export async function copySectionFromTemplateAction(
   await assertTeacher();
   const supabase = await createClient();
 
-  // Verify access to both templates
   const [{ data: sourceTemplate }, { data: targetTemplate }] =
     await Promise.all([
       supabase
@@ -67,18 +71,7 @@ export async function copySectionFromTemplateAction(
 
   if (!found) return { error: "Section not found in source template" };
 
-  // Strip DB ids so the section is treated as new content
-  const { newId } = await import("@/lib/homework/structure");
-  function stripIds(s: BuilderSection): BuilderSection {
-    return {
-      ...s,
-      _id: newId(),
-      blocks: s.blocks.map((b) => ({ ...b, _id: newId() })),
-      subsections: s.subsections.map(stripIds),
-    };
-  }
-
-  return { success: "Section copied", section: stripIds(found) };
+  return { success: "Section copied", section: cloneSection(found) };
 }
 
 // ── Teacher templates list (for copy-from modal) ──────────────────────────────
@@ -124,7 +117,6 @@ export interface StructuredResponseInput {
   numeric_value?: number | null;
   boolean_value?: boolean | null;
   json_value?: unknown;
-  /** For table blocks: per-cell values */
   cells?: Array<{
     row_index: number;
     col_index: number;
@@ -134,21 +126,21 @@ export interface StructuredResponseInput {
   }>;
 }
 
-export async function saveStudentStructuredResponsesAction(
-  assignmentId: string,
-  responses: StructuredResponseInput[],
-): Promise<ActionResult> {
+async function assertStudentCanAccessAssignment(assignmentId: string) {
   const profile = await requireProfile(["student"]);
   const supabase = await createClient();
 
-  // Resolve or create the submission (must be in draft/returned state)
   const { data: assignment } = await supabase
     .from("assignments")
-    .select("id, class_id, status")
+    .select("id, class_id, status, release_at")
     .eq("id", assignmentId)
     .eq("status", "published")
     .maybeSingle();
-  if (!assignment) return { error: "Assignment not found" };
+  if (!assignment) return { error: "Assignment not found" as const };
+
+  if (assignment.release_at && new Date(assignment.release_at).getTime() > Date.now()) {
+    return { error: "This homework is not available yet" as const };
+  }
 
   const { data: membership } = await supabase
     .from("class_members")
@@ -156,7 +148,20 @@ export async function saveStudentStructuredResponsesAction(
     .eq("class_id", assignment.class_id)
     .eq("student_id", profile.id)
     .maybeSingle();
-  if (!membership) return { error: "You are not in this class" };
+  if (!membership) return { error: "You are not in this class" as const };
+
+  return { profile, supabase, assignment };
+}
+
+export async function saveStudentStructuredResponsesAction(
+  assignmentId: string,
+  responses: StructuredResponseInput[],
+): Promise<ActionResult> {
+  const access = await assertStudentCanAccessAssignment(assignmentId);
+  if ("error" in access && access.error) return { error: access.error };
+  const { profile, supabase } = access as Awaited<
+    ReturnType<typeof assertStudentCanAccessAssignment>
+  > & { profile: { id: string }; supabase: Awaited<ReturnType<typeof createClient>> };
 
   let { data: submission } = await supabase
     .from("submissions")
@@ -171,7 +176,9 @@ export async function saveStudentStructuredResponsesAction(
       .insert({ assignment_id: assignmentId, student_id: profile.id, status: "draft" })
       .select("id, status")
       .single();
-    if (createError || !created) return { error: createError?.message ?? "Could not create submission" };
+    if (createError || !created) {
+      return { error: createError?.message ?? "Could not create submission" };
+    }
     submission = created;
   }
 
@@ -179,10 +186,18 @@ export async function saveStudentStructuredResponsesAction(
     return { error: "Submission is locked" };
   }
 
+  const parsed = structuredResponsesSchema.safeParse(responses);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid responses" };
+  }
+
   const errors: string[] = [];
 
-  for (const resp of responses) {
-    const upsertRow: Omit<StudentResponse, "id" | "file_name" | "storage_path" | "created_at" | "updated_at"> = {
+  for (const resp of parsed.data) {
+    const upsertRow: Omit<
+      StudentResponse,
+      "id" | "file_name" | "storage_path" | "created_at" | "updated_at"
+    > = {
       submission_id: submission.id,
       question_id: resp.question_id,
       text_value: resp.text_value ?? null,
@@ -223,7 +238,56 @@ export async function saveStudentStructuredResponsesAction(
   if (errors.length > 0) return { error: errors[0] };
 
   revalidatePath(`/student/homework/${assignmentId}`);
+  revalidatePath(`/student/homework/${assignmentId}/review`);
   return { success: "Responses saved" };
+}
+
+export async function submitStructuredHomeworkAction(
+  assignmentId: string,
+  responses: StructuredResponseInput[],
+): Promise<ActionResult> {
+  const saveResult = await saveStudentStructuredResponsesAction(assignmentId, responses);
+  if (saveResult.error) return saveResult;
+
+  const profile = await requireProfile(["student"]);
+  const supabase = await createClient();
+
+  const { data: assignment } = await supabase
+    .from("assignments")
+    .select("id, due_at")
+    .eq("id", assignmentId)
+    .maybeSingle();
+  if (!assignment) return { error: "Assignment not found" };
+
+  const { data: submission } = await supabase
+    .from("submissions")
+    .select("id, status")
+    .eq("assignment_id", assignmentId)
+    .eq("student_id", profile.id)
+    .maybeSingle();
+
+  if (!submission || !["draft", "returned"].includes(submission.status)) {
+    return { error: "Submission is locked" };
+  }
+
+  const late =
+    assignment.due_at != null &&
+    new Date(assignment.due_at).getTime() < Date.now();
+
+  const { error } = await supabase
+    .from("submissions")
+    .update({
+      status: late ? "late" : "submitted",
+      submitted_at: new Date().toISOString(),
+    })
+    .eq("id", submission.id)
+    .eq("student_id", profile.id);
+
+  if (error) return { error: error.message };
+
+  revalidatePath(`/student/homework/${assignmentId}`);
+  revalidatePath(`/student/homework/${assignmentId}/review`);
+  return { success: "Homework submitted" };
 }
 
 // ── Load student's existing responses ────────────────────────────────────────
@@ -239,7 +303,7 @@ export async function loadStudentResponsesAction(
           col_index: number;
           text_value: string | null;
           numeric_value: number | null;
-          boolean_value: boolean | null;
+          boolean_value: string | boolean | null;
         }>;
       }
     >;
@@ -255,16 +319,15 @@ export async function loadStudentResponsesAction(
     .maybeSingle();
 
   if (!submission) return { error: "Submission not found" };
-  if (
-    profile.role === "student" &&
-    submission.student_id !== profile.id
-  ) {
+  if (profile.role === "student" && submission.student_id !== profile.id) {
     return { error: "Not authorised" };
   }
 
   const { data, error } = await supabase
     .from("student_responses")
-    .select("*, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)")
+    .select(
+      "*, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
+    )
     .eq("submission_id", submissionId);
 
   if (error) return { error: error.message };

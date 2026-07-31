@@ -65,8 +65,11 @@ export default async function TeacherAssignmentDetailPage({
             <Link href={`/teacher/assignments/${id}/builder`}>
               <Button>Homework builder</Button>
             </Link>
+            <Link href={`/teacher/assignments/${id}/preview`}>
+              <Button variant="secondary">Preview as student</Button>
+            </Link>
             <Link href={`/teacher/assignments/${id}/edit`}>
-              <Button variant="secondary">Edit</Button>
+              <Button variant="secondary">Edit / publish</Button>
             </Link>
             <Link href={`/teacher/assignments/${id}/export`}>
               <Button variant="outline">Export CSV</Button>

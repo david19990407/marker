@@ -189,7 +189,8 @@ export type AssignmentBlockType =
   | "table"
   | "vocabulary_table"
   | "mark_scheme"
-  | "page_break";
+  | "page_break"
+  | "divider";
 
 /** Block types that generate a student_responses row */
 export const RESPONSE_BLOCK_TYPES: AssignmentBlockType[] = [
@@ -224,6 +225,7 @@ export const BLOCK_TYPE_LABELS: Record<AssignmentBlockType, string> = {
   vocabulary_table: "Vocabulary table",
   mark_scheme: "Mark scheme",
   page_break: "Page break",
+  divider: "Divider",
 };
 
 export type TableCellType =
@@ -252,6 +254,8 @@ export interface TableConfig {
 /** Client-side mutable builder block */
 export interface BuilderBlock {
   _id: string;
+  /** Persisted assignment_questions.id when this block has a response */
+  question_id?: string | null;
   block_type: AssignmentBlockType;
   content: string;
   teacher_only: boolean;
@@ -260,6 +264,17 @@ export interface BuilderBlock {
   max_marks?: number | null;
   required?: boolean;
   choices?: string[];
+  student_visible?: boolean;
+  review_only?: boolean;
+  allow_attachments?: boolean;
+  teacher_note?: string | null;
+  mark_scheme_note?: string | null;
+  word_limit?: number | null;
+  char_limit?: number | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  correct_answer?: string | null;
+  comment_bank_key?: string | null;
   /** For table/vocabulary_table */
   tableConfig?: TableConfig;
   cells?: TableCellDef[];
@@ -306,6 +321,16 @@ export interface AssignmentQuestion {
   response_type: string;
   choices: string[];
   sort_order: number;
+  teacher_note?: string | null;
+  mark_scheme_note?: string | null;
+  word_limit?: number | null;
+  char_limit?: number | null;
+  allow_attachments?: boolean;
+  min_value?: number | null;
+  max_value?: number | null;
+  correct_answer?: unknown | null;
+  comment_bank_key?: string | null;
+  review_only?: boolean;
   created_at: string;
   updated_at: string;
 }

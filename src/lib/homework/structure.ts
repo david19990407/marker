@@ -14,6 +14,28 @@ export function newId(): string {
   return crypto.randomUUID();
 }
 
+/** Duplicate a block as new content (clears persisted question id). */
+export function cloneBlock(block: BuilderBlock): BuilderBlock {
+  return {
+    ...block,
+    _id: newId(),
+    question_id: null,
+    cells: block.cells?.map((c) => ({ ...c })),
+    choices: block.choices ? [...block.choices] : undefined,
+    tableConfig: block.tableConfig ? { ...block.tableConfig, col_labels: [...block.tableConfig.col_labels] } : undefined,
+  };
+}
+
+export function cloneSection(section: BuilderSection, titleSuffix = " (copy)"): BuilderSection {
+  return {
+    ...section,
+    _id: newId(),
+    title: `${section.title}${titleSuffix}`,
+    blocks: section.blocks.map((b) => cloneBlock(b)),
+    subsections: section.subsections.map((s) => cloneSection(s, "")),
+  };
+}
+
 // ── Factory helpers ──────────────────────────────────────────────────────────
 
 export function defaultTableConfig(rows = 3, cols = 2): TableConfig {
@@ -42,13 +64,63 @@ export function defaultTableCells(rows: number, cols: number): TableCellDef[] {
   return cells;
 }
 
+/** Vocabulary preset: Word | Define it | Apply it */
+export function createVocabularyTableBlock(): BuilderBlock {
+  const rows = 5;
+  const cols = 3;
+  const cells = defaultTableCells(rows, cols);
+
+  // Header row labels live in col_labels; row 0 is header when header_row=true
+  // Pre-fill word column (col 0) as readonly instructional for data rows,
+  // leaving Define/Apply as student_text.
+  for (let r = 1; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cell = cells.find((x) => x.row_index === r && x.col_index === c)!;
+      if (c === 0) {
+        cell.cell_type = "readonly";
+        cell.read_only = true;
+        cell.label = "";
+      } else {
+        cell.cell_type = "student_text";
+        cell.read_only = false;
+      }
+    }
+  }
+
+  return {
+    _id: newId(),
+    question_id: null,
+    block_type: "vocabulary_table",
+    content: "Vocabulary",
+    teacher_only: false,
+    prompt: "Complete the vocabulary table",
+    max_marks: null,
+    required: false,
+    tableConfig: {
+      rows,
+      cols,
+      header_row: true,
+      col_labels: ["Word", "Define it", "Apply it"],
+    },
+    cells,
+  };
+}
+
 export function createBlock(type: AssignmentBlockType): BuilderBlock {
+  if (type === "vocabulary_table") {
+    return createVocabularyTableBlock();
+  }
+
   const isTeacherOnly = type === "mark_scheme" || type === "teacher_review";
   const base: BuilderBlock = {
     _id: newId(),
+    question_id: null,
     block_type: type,
     content: "",
     teacher_only: isTeacherOnly,
+    student_visible: !isTeacherOnly,
+    review_only: type === "teacher_review",
+    allow_attachments: type === "file_upload",
   };
 
   if (isResponseType(type)) {
@@ -56,13 +128,24 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     base.max_marks = null;
     base.required = false;
     base.choices = type === "multiple_choice" ? ["Option A", "Option B"] : [];
+    base.teacher_note = null;
+    base.mark_scheme_note = null;
+    base.word_limit = null;
+    base.char_limit = null;
+    base.min_value = null;
+    base.max_value = null;
+    base.correct_answer = null;
+    base.comment_bank_key = null;
   }
 
-  if (type === "table" || type === "vocabulary_table") {
-    const rows = type === "vocabulary_table" ? 4 : 3;
-    const cols = type === "vocabulary_table" ? 2 : 3;
+  if (type === "table") {
+    const rows = 3;
+    const cols = 3;
     base.tableConfig = defaultTableConfig(rows, cols);
     base.cells = defaultTableCells(rows, cols);
+    base.prompt = "";
+    base.max_marks = null;
+    base.required = false;
   }
 
   return base;
@@ -87,9 +170,15 @@ export function isTeacherOnlyType(t: AssignmentBlockType): boolean {
   return t === "mark_scheme" || t === "teacher_review";
 }
 
+export function responseKey(block: BuilderBlock): string {
+  return block.question_id || block._id;
+}
+
 // ── Payload serialisation ────────────────────────────────────────────────────
 
 type BlockPayload = {
+  id: string;
+  question_id?: string | null;
   block_type: AssignmentBlockType;
   content: string;
   teacher_only: boolean;
@@ -98,11 +187,22 @@ type BlockPayload = {
   required?: boolean;
   choices?: unknown[];
   response_type?: string;
+  teacher_note?: string | null;
+  mark_scheme_note?: string | null;
+  word_limit?: number | null;
+  char_limit?: number | null;
+  allow_attachments?: boolean;
+  min_value?: number | null;
+  max_value?: number | null;
+  correct_answer?: unknown;
+  comment_bank_key?: string | null;
+  review_only?: boolean;
   cells?: TableCellDef[];
   config?: Record<string, unknown>;
 };
 
 type SectionPayload = {
+  id: string;
   title: string;
   blocks: BlockPayload[];
   subsections: SectionPayload[];
@@ -110,17 +210,31 @@ type SectionPayload = {
 
 function blockToPayload(b: BuilderBlock): BlockPayload {
   const payload: BlockPayload = {
+    id: b._id,
     block_type: b.block_type,
     content: b.content,
-    teacher_only: b.teacher_only,
+    teacher_only: b.teacher_only || b.student_visible === false,
   };
 
   if (isResponseType(b.block_type)) {
+    payload.question_id = b.question_id ?? null;
     payload.prompt = b.prompt ?? "";
     payload.max_marks = b.max_marks ?? null;
     payload.required = b.required ?? false;
     payload.choices = b.choices?.map((c) => ({ label: c })) ?? [];
     payload.response_type = b.block_type;
+    payload.teacher_note = b.teacher_note ?? null;
+    payload.mark_scheme_note = b.mark_scheme_note ?? null;
+    payload.word_limit = b.word_limit ?? null;
+    payload.char_limit = b.char_limit ?? null;
+    payload.allow_attachments = b.allow_attachments ?? false;
+    payload.min_value = b.min_value ?? null;
+    payload.max_value = b.max_value ?? null;
+    payload.correct_answer = b.correct_answer
+      ? { value: b.correct_answer }
+      : null;
+    payload.comment_bank_key = b.comment_bank_key ?? null;
+    payload.review_only = b.review_only ?? b.block_type === "teacher_review";
   }
 
   if (
@@ -136,6 +250,7 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
 
 function sectionToPayload(s: BuilderSection): SectionPayload {
   return {
+    id: s._id,
     title: s.title,
     blocks: s.blocks.map(blockToPayload),
     subsections: s.subsections.map(sectionToPayload),
@@ -165,6 +280,16 @@ type DbBlock = {
     response_type: string;
     choices: unknown;
     sort_order: number;
+    teacher_note?: string | null;
+    mark_scheme_note?: string | null;
+    word_limit?: number | null;
+    char_limit?: number | null;
+    allow_attachments?: boolean | null;
+    min_value?: number | null;
+    max_value?: number | null;
+    correct_answer?: unknown;
+    comment_bank_key?: string | null;
+    review_only?: boolean | null;
   }> | null;
   assignment_table_cells: Array<{
     row_index: number;
@@ -190,20 +315,41 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
   const q = b.assignment_questions?.[0] ?? null;
   const block: BuilderBlock = {
     _id: b.id,
+    question_id: q?.id ?? null,
     block_type: bt,
     content: b.content,
     teacher_only: b.teacher_only,
+    student_visible: !b.teacher_only,
   };
 
   if (q) {
     block.prompt = q.prompt;
     block.max_marks = q.max_marks;
     block.required = q.required;
+    block.teacher_note = q.teacher_note ?? null;
+    block.mark_scheme_note = q.mark_scheme_note ?? null;
+    block.word_limit = q.word_limit ?? null;
+    block.char_limit = q.char_limit ?? null;
+    block.allow_attachments = q.allow_attachments ?? false;
+    block.min_value = q.min_value != null ? Number(q.min_value) : null;
+    block.max_value = q.max_value != null ? Number(q.max_value) : null;
+    block.review_only = q.review_only ?? bt === "teacher_review";
+    block.comment_bank_key = q.comment_bank_key ?? null;
+    if (q.correct_answer && typeof q.correct_answer === "object" && q.correct_answer !== null) {
+      const ca = q.correct_answer as Record<string, unknown>;
+      block.correct_answer = ca.value != null ? String(ca.value) : null;
+    } else if (typeof q.correct_answer === "string") {
+      block.correct_answer = q.correct_answer;
+    } else {
+      block.correct_answer = null;
+    }
     const rawChoices = q.choices;
     if (Array.isArray(rawChoices)) {
       block.choices = rawChoices.map((c) => {
         if (typeof c === "string") return c;
-        if (c && typeof c === "object" && "label" in c) return String((c as Record<string, unknown>).label);
+        if (c && typeof c === "object" && "label" in c) {
+          return String((c as Record<string, unknown>).label);
+        }
         return String(c);
       });
     } else {
@@ -274,7 +420,11 @@ export async function loadTemplateStructure(
       `id, template_id, parent_section_id, title, sort_order,
        assignment_blocks (
          id, section_id, block_type, sort_order, content, config, teacher_only,
-         assignment_questions (id, prompt, max_marks, required, response_type, choices, sort_order),
+         assignment_questions (
+           id, prompt, max_marks, required, response_type, choices, sort_order,
+           teacher_note, mark_scheme_note, word_limit, char_limit, allow_attachments,
+           min_value, max_value, correct_answer, comment_bank_key, review_only
+         ),
          assignment_table_cells (row_index, col_index, cell_type, label, marks, read_only)
        )`,
     )
@@ -294,4 +444,18 @@ export async function loadTemplateStructure(
 
   const tree = buildTree(rows);
   return tree.length > 0 ? tree : [emptySection()];
+}
+
+/** Collect all response blocks in display order (skip teacher-only). */
+export function flattenStudentBlocks(sections: BuilderSection[]): BuilderBlock[] {
+  const out: BuilderBlock[] = [];
+  function walk(section: BuilderSection) {
+    for (const block of section.blocks) {
+      if (block.teacher_only || block.block_type === "mark_scheme") continue;
+      out.push(block);
+    }
+    for (const sub of section.subsections) walk(sub);
+  }
+  for (const s of sections) walk(s);
+  return out;
 }
