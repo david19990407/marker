@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BookOpen,
+  ClipboardList,
   LayoutDashboard,
   School,
   Settings,
@@ -28,11 +30,16 @@ function navForRole(role: Profile["role"]): NavItem[] {
   if (role === "teacher") {
     return [
       { href: "/teacher/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/teacher/classes", label: "My Classes", icon: School },
+      { href: "/teacher/assignments", label: "Assignments", icon: BookOpen },
+      { href: "/teacher/marking", label: "Marking Queue", icon: ClipboardList },
       { href: "/settings", label: "Settings", icon: Settings },
     ];
   }
   return [
     { href: "/student/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/student/classes", label: "My Classes", icon: School },
+    { href: "/student/homework", label: "Homework", icon: BookOpen },
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 }

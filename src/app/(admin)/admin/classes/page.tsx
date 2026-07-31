@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -74,9 +75,17 @@ export default async function AdminClassesPage() {
                           {memberCounts.get(c.id) ?? 0} students
                         </p>
                       </div>
-                      <Badge tone={c.archived ? "neutral" : "success"}>
-                        {c.archived ? "Archived" : "Active"}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge tone={c.archived ? "neutral" : "success"}>
+                          {c.archived ? "Archived" : "Active"}
+                        </Badge>
+                        <Link
+                          href={`/admin/classes/${c.id}`}
+                          className="text-sm font-medium text-brand-700 hover:underline"
+                        >
+                          Manage
+                        </Link>
+                      </div>
                     </div>
                   </li>
                 );

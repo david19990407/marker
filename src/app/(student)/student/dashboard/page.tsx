@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
 
@@ -12,49 +14,56 @@ export default async function StudentDashboardPage() {
     .from("class_members")
     .select("class_id")
     .eq("student_id", profile.id);
-
   const classIds = (memberships ?? []).map((m) => m.class_id);
 
-  let assignments: {
-    id: string;
-    title: string;
-    due_at: string | null;
-  }[] = [];
+  const { data: assignments } = classIds.length
+    ? await supabase
+        .from("assignments")
+        .select("id, title, due_at")
+        .in("class_id", classIds)
+        .eq("status", "published")
+        .order("due_at", { ascending: true })
+    : { data: [] as { id: string; title: string; due_at: string | null }[] };
 
-  if (classIds.length) {
-    const { data } = await supabase
-      .from("assignments")
-      .select("id, title, due_at")
-      .in("class_id", classIds)
-      .eq("status", "published")
-      .order("due_at", { ascending: true });
-    assignments = data ?? [];
-  }
-
-  const assignmentIds = assignments.map((a) => a.id);
+  const assignmentIds = (assignments ?? []).map((a) => a.id);
   const { data: submissions } = assignmentIds.length
     ? await supabase
         .from("submissions")
         .select("id, assignment_id, status, submitted_at, returned_at")
         .eq("student_id", profile.id)
         .in("assignment_id", assignmentIds)
-    : { data: [] as { id: string; assignment_id: string; status: string; submitted_at: string | null; returned_at: string | null }[] };
+    : {
+        data: [] as {
+          id: string;
+          assignment_id: string;
+          status: string;
+          submitted_at: string | null;
+          returned_at: string | null;
+        }[],
+      };
 
   const submissionByAssignment = new Map(
     (submissions ?? []).map((s) => [s.assignment_id, s]),
   );
 
-  const releasedFeedbackIds = (submissions ?? [])
+  const releasedIds = (submissions ?? [])
     .filter((s) => s.status === "returned" || s.status === "marked")
     .map((s) => s.id);
 
-  const { data: feedbackRows } = releasedFeedbackIds.length
+  const { data: feedbackRows } = releasedIds.length
     ? await supabase
         .from("feedback")
         .select("submission_id, mark, status, released_at")
-        .in("submission_id", releasedFeedbackIds)
+        .in("submission_id", releasedIds)
         .eq("status", "released")
-    : { data: [] as { submission_id: string; mark: number | null; status: string; released_at: string | null }[] };
+    : {
+        data: [] as {
+          submission_id: string;
+          mark: number | null;
+          status: string;
+          released_at: string | null;
+        }[],
+      };
 
   const feedbackBySubmission = new Map(
     (feedbackRows ?? []).map((f) => [f.submission_id, f]),
@@ -74,7 +83,9 @@ export default async function StudentDashboardPage() {
         </Card>
         <Card>
           <p className="text-sm text-slate-500">Assigned homework</p>
-          <p className="mt-2 text-3xl font-semibold">{assignments.length}</p>
+          <p className="mt-2 text-3xl font-semibold">
+            {assignments?.length ?? 0}
+          </p>
         </Card>
         <Card>
           <p className="text-sm text-slate-500">Released feedback</p>
@@ -84,9 +95,18 @@ export default async function StudentDashboardPage() {
         </Card>
       </div>
 
+      <div className="flex flex-wrap gap-2">
+        <Link href="/student/classes">
+          <Button variant="secondary">Join a class</Button>
+        </Link>
+        <Link href="/student/homework">
+          <Button>View homework</Button>
+        </Link>
+      </div>
+
       <Card>
         <h2 className="mb-4 font-semibold text-slate-900">Assigned homework</h2>
-        {assignments.length === 0 ? (
+        {!assignments?.length ? (
           <p className="text-sm text-slate-500">
             No assignments have been published
           </p>
@@ -130,6 +150,14 @@ export default async function StudentDashboardPage() {
                       No feedback released yet
                     </p>
                   )}
+                  <Link
+                    href={`/student/homework/${assignment.id}`}
+                    className="mt-3 inline-block"
+                  >
+                    <Button size="sm" variant="outline">
+                      Open
+                    </Button>
+                  </Link>
                 </li>
               );
             })}
