@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   School,
   Settings,
+  SlidersHorizontal,
   Upload,
   Users,
   X,
@@ -24,6 +25,11 @@ function navForRole(role: Profile["role"]): NavItem[] {
       { href: "/admin/users", label: "Users", icon: Users },
       { href: "/admin/users/import", label: "CSV Import", icon: Upload },
       { href: "/admin/classes", label: "Classes", icon: School },
+      {
+        href: "/admin/settings",
+        label: "School settings",
+        icon: SlidersHorizontal,
+      },
       { href: "/settings", label: "Settings", icon: Settings },
     ];
   }
@@ -74,11 +80,11 @@ export function Sidebar({
         <div className="mb-8 flex items-center justify-between px-2">
           <Link href="/" className="flex items-center gap-3" onClick={onClose}>
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white shadow-lg shadow-brand-500/30">
-              LC
+              HP
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-900">LitCoach</p>
-              <p className="text-xs text-slate-500">Homework Platform</p>
+              <p className="text-sm font-semibold text-slate-900">Homework Passport</p>
+              <p className="text-xs text-slate-500">School homework</p>
             </div>
           </Link>
           <button

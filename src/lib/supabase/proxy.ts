@@ -2,9 +2,11 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { DASHBOARD_PATH, type UserRole } from "@/lib/types";
 
-const PUBLIC_PATHS = ["/", "/login", "/forgot-password", "/update-password", "/auth/callback"];
+const PUBLIC_PATHS = ["/login", "/forgot-password", "/update-password", "/auth/callback"];
 
 function isPublicPath(pathname: string) {
+  // `/` is handled as a redirect (login or role dashboard), not a public page.
+  if (pathname === "/") return true;
   return PUBLIC_PATHS.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );

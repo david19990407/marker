@@ -100,6 +100,7 @@ export function parseCsv(text: string): ParsedCsvRow[] {
 
 export const CSV_TEMPLATE = `first_name,last_name,email,role,year_group,class_name
 Alex,Morgan,alex.morgan@school.edu,student,Year 11,11A English
-Jordan,Lee,jordan.lee@school.edu,student,Year 10,10B English
+Jordan,Lee,jordan.lee@school.edu,student,Year 12,12B English
+Sam,Taylor,sam.taylor@school.edu,student,Year 13,13A English
 Ms,Harper,ms.harper@school.edu,teacher,,
 `;

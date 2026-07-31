@@ -13,7 +13,7 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  title: "LitCoach — Homework Platform",
+  title: "Homework Passport",
   description:
     "Assignment, submission, marking and feedback platform for schools.",
 };

@@ -1,6 +1,13 @@
--- LitCoach Homework Platform — production Supabase schema
+-- Homework Passport — production Supabase schema
 -- Run this in the Supabase SQL editor after creating a project.
 -- Public self-registration should remain disabled in Auth settings.
+--
+-- After this file, run on the same database (in order):
+--   supabase/phase_01_branding_school_settings.sql
+--   supabase/phase_02_multi_teacher_classes.sql
+--   supabase/phase_03_assignment_templates_and_deployments.sql
+-- Existing live projects that already ran schema.sql should run only the
+-- phase_*.sql files (do not re-run this full schema).
 --
 -- Execution order (required for a fresh database):
 --   1. Extensions
@@ -47,7 +54,9 @@ create table public.profiles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint profiles_year_group_check check (
-    year_group is null or year_group in ('Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11')
+    year_group is null or year_group in (
+      'Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11', 'Year 12', 'Year 13'
+    )
   )
 );
 

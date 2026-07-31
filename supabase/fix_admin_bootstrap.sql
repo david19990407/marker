@@ -1,4 +1,4 @@
--- Migration: repair promote_user_to_admin bootstrap on an existing LitCoach database.
+-- Migration: repair promote_user_to_admin bootstrap on an existing Homework Passport database.
 -- Safe to run once. Does NOT recreate tables, enums, or storage buckets.
 --
 -- After this migration succeeds, promote your first admin with:

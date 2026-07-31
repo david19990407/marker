@@ -238,20 +238,38 @@ export async function submitHomeworkAction(
     .eq("id", result.submission.id);
   if (error) return { error: error.message };
 
-  const { data: classRow } = await result.supabase
-    .from("classes")
+  // Notify all teachers with marking permission (fallback to lead teacher)
+  const { data: classTeachers } = await result.supabase
+    .from("class_teachers")
     .select("teacher_id")
-    .eq("id", result.assignment.class_id)
-    .maybeSingle();
+    .eq("class_id", result.assignment.class_id)
+    .eq("can_mark_submissions", true);
 
-  if (classRow?.teacher_id) {
-    await result.supabase.from("notifications").insert({
-      user_id: classRow.teacher_id,
-      type: "homework_submitted",
-      title: "Homework submitted",
-      body: `${profile.display_name} submitted ${result.assignment.title}`,
-      link_path: `/teacher/marking/${result.submission.id}`,
-    });
+  if (classTeachers?.length) {
+    await result.supabase.from("notifications").insert(
+      classTeachers.map((ct) => ({
+        user_id: ct.teacher_id,
+        type: "homework_submitted" as const,
+        title: "Homework submitted",
+        body: `${profile.display_name} submitted ${result.assignment.title}`,
+        link_path: `/teacher/marking/${result.submission.id}`,
+      })),
+    );
+  } else {
+    const { data: classRow } = await result.supabase
+      .from("classes")
+      .select("teacher_id")
+      .eq("id", result.assignment.class_id)
+      .maybeSingle();
+    if (classRow?.teacher_id) {
+      await result.supabase.from("notifications").insert({
+        user_id: classRow.teacher_id,
+        type: "homework_submitted" as const,
+        title: "Homework submitted",
+        body: `${profile.display_name} submitted ${result.assignment.title}`,
+        link_path: `/teacher/marking/${result.submission.id}`,
+      });
+    }
   }
 
   revalidatePath(`/student/homework/${assignmentId}`);

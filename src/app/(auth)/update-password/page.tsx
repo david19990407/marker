@@ -9,7 +9,7 @@ export default function UpdatePasswordPage() {
           Set a new password
         </h1>
         <p className="mb-6 text-sm text-slate-500">
-          Choose a strong password for your LitCoach account.
+          Choose a strong password for your Homework Passport account.
         </p>
         <UpdatePasswordForm />
       </Card>
