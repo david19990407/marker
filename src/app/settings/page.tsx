@@ -16,7 +16,7 @@ export default async function SettingsPage() {
       <div className="mx-auto max-w-2xl space-y-6">
         <PageHeader
           title="Settings"
-          description="Your LitCoach profile details."
+          description="Your Homework Passport profile details."
         />
         <Card className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">

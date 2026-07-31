@@ -1,4 +1,4 @@
--- LitCoach Homework Platform — production Supabase schema
+-- Homework Passport — production Supabase schema
 -- Run this in the Supabase SQL editor after creating a project.
 -- Public self-registration should remain disabled in Auth settings.
 --

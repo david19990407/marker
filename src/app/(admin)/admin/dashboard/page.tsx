@@ -36,7 +36,7 @@ export default async function AdminDashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title={`Welcome, ${profile.first_name}`}
-        description="Manage users, classes and school-wide access for LitCoach."
+        description="Manage users, classes and school-wide access for Homework Passport."
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

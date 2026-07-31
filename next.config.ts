@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* LitCoach AI MVP */
+  /* Homework Passport */
 };
 
 export default nextConfig;

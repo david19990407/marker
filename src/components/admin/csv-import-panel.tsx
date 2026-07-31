@@ -29,7 +29,7 @@ export function CsvImportPanel() {
           <CardTitle>Upload or paste CSV</CardTitle>
           <a
             href={`data:text/csv;charset=utf-8,${encodeURIComponent(CSV_TEMPLATE)}`}
-            download="litcoach-users-template.csv"
+            download="homework-passport-users-template.csv"
             className="text-sm font-medium text-brand-700 hover:underline"
           >
             Download example CSV
