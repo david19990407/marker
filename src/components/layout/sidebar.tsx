@@ -3,55 +3,51 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  BookOpen,
-  Brain,
-  ChartNoAxesCombined,
-  ClipboardCheck,
-  FolderOpen,
-  GraduationCap,
   LayoutDashboard,
-  MessageSquareText,
+  School,
   Settings,
-  Sparkles,
+  Upload,
   Users,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/lib/auth/auth-context";
+import type { Profile } from "@/lib/types";
 
-const studentNav = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/lessons", label: "My Lessons", icon: BookOpen },
-  { href: "/revision", label: "Revision Hub", icon: Brain },
-  { href: "/essay", label: "Essay Marking", icon: ClipboardCheck },
-  { href: "/coach", label: "AI Coach", icon: MessageSquareText },
-  { href: "/catch-up", label: "Catch Up", icon: Sparkles },
-  { href: "/progress", label: "My Progress", icon: ChartNoAxesCombined },
-  { href: "/resources", label: "Resources", icon: FolderOpen },
-  { href: "/settings", label: "Settings", icon: Settings },
-];
+type NavItem = { href: string; label: string; icon: typeof LayoutDashboard };
 
-const teacherNav = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/teacher/lessons", label: "Manage Lessons", icon: GraduationCap },
-  { href: "/teacher/quizzes", label: "Quizzes", icon: Brain },
-  { href: "/teacher/essays", label: "Essay Reviews", icon: ClipboardCheck },
-  { href: "/teacher/analytics", label: "Student Progress", icon: Users },
-  { href: "/resources", label: "Resources", icon: FolderOpen },
-  { href: "/teacher/ai-settings", label: "AI Settings", icon: Sparkles },
-  { href: "/settings", label: "Settings", icon: Settings },
-];
+function navForRole(role: Profile["role"]): NavItem[] {
+  if (role === "admin") {
+    return [
+      { href: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/admin/users", label: "Users", icon: Users },
+      { href: "/admin/users/import", label: "CSV Import", icon: Upload },
+      { href: "/admin/classes", label: "Classes", icon: School },
+      { href: "/settings", label: "Settings", icon: Settings },
+    ];
+  }
+  if (role === "teacher") {
+    return [
+      { href: "/teacher/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/settings", label: "Settings", icon: Settings },
+    ];
+  }
+  return [
+    { href: "/student/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/settings", label: "Settings", icon: Settings },
+  ];
+}
 
 export function Sidebar({
   open,
   onClose,
+  profile,
 }: {
   open: boolean;
   onClose: () => void;
+  profile: Profile;
 }) {
   const pathname = usePathname();
-  const { user } = useAuth();
-  const nav = user?.role === "teacher" ? teacherNav : studentNav;
+  const nav = navForRole(profile.role);
 
   return (
     <>
@@ -69,13 +65,13 @@ export function Sidebar({
         )}
       >
         <div className="mb-8 flex items-center justify-between px-2">
-          <Link href="/dashboard" className="flex items-center gap-3" onClick={onClose}>
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-lg shadow-brand-500/30">
-              <Sparkles className="h-5 w-5" />
+          <Link href="/" className="flex items-center gap-3" onClick={onClose}>
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white shadow-lg shadow-brand-500/30">
+              LC
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-900">LitCoach AI</p>
-              <p className="text-xs text-slate-500">GCSE English</p>
+              <p className="text-sm font-semibold text-slate-900">LitCoach</p>
+              <p className="text-xs text-slate-500">Homework Platform</p>
             </div>
           </Link>
           <button
@@ -106,10 +102,8 @@ export function Sidebar({
               >
                 <Icon
                   className={cn(
-                    "h-5 w-5 transition",
-                    active
-                      ? "text-brand-600"
-                      : "text-slate-400 group-hover:text-slate-600",
+                    "h-5 w-5",
+                    active ? "text-brand-600" : "text-slate-400",
                   )}
                 />
                 {item.label}
@@ -118,24 +112,22 @@ export function Sidebar({
           })}
         </nav>
 
-        {user ? (
-          <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand-600 text-sm font-semibold text-white">
-                {user.avatarInitials}
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-slate-900">
-                  {user.name}
-                </p>
-                <p className="truncate text-xs capitalize text-slate-500">
-                  {user.role}
-                  {user.yearGroup ? ` · ${user.yearGroup}` : ""}
-                </p>
-              </div>
+        <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand-600 text-sm font-semibold text-white">
+              {profile.first_name[0]}
+              {profile.last_name[0]}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-slate-900">
+                {profile.display_name}
+              </p>
+              <p className="truncate text-xs capitalize text-slate-500">
+                {profile.role}
+              </p>
             </div>
           </div>
-        ) : null}
+        </div>
       </aside>
     </>
   );

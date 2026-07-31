@@ -1,71 +1,117 @@
-# LitCoach AI
+# LitCoach — Homework Platform
 
-AI-powered GCSE English learning platform for students and teachers.
+Assignment, submission, marking and feedback platform for schools.
 
-## Stack
+**Stack:** Next.js · TypeScript · Tailwind CSS · Supabase (Auth, Database, Storage)
 
-- **Next.js** (App Router) + **TypeScript**
-- **Tailwind CSS**
-- **Supabase** (schema + client ready; MVP uses rich dummy data)
-- **OpenAI API** (RAG-ready coach & essay marking with offline demo fallback)
-- **Vercel**-friendly deployment
+> Phases 1–3 are implemented: database schema, real authentication, and the admin portal (users, CSV import, classes). Teacher assignment/marking and student submission workflows follow in later phases.
 
-## Features
+## 1. Create a Supabase project
 
-### Student
-- Dashboard with progress, activity, tasks and AO tracking
-- Lesson library with search, filters and progress
-- Revision Hub (boards, topics, flashcards, past papers, AI weak-area tips)
-- Essay marking with AO breakdown and coaching feedback (no full rewrite)
-- AI Coach chat grounded in uploaded lesson content
-- Catch Up packs for missed lessons
-- Progress dashboard (radar, graph, achievements)
-- Searchable resources library with preview
+1. Create a project at [supabase.com](https://supabase.com).
+2. In **Authentication → Providers**, keep email enabled.
+3. In **Authentication → Settings**, disable public sign-ups (“Allow new users to sign up” = off).
+4. Users are invited by administrators only.
 
-### Teacher
-- Create / edit / delete lessons
-- Upload materials UI (PDF, PPT, Word, video)
-- Quiz builder
-- Essay review with mark override
-- Student analytics
-- AI settings configuration
+## 2. Run the database schema
 
-## Getting started
+1. Open **SQL Editor** in the Supabase dashboard.
+2. Paste and run the full contents of `supabase/schema.sql`.
+3. Confirm tables: `profiles`, `classes`, `class_members`, `assignments`, `assignment_resources`, `submissions`, `feedback`, `notifications`.
+4. Storage buckets `assignment-resources` and `student-submissions` are created by the schema (private).
+
+## 3. Create storage buckets (if needed)
+
+If bucket insert was skipped, create private buckets manually:
+
+- `assignment-resources`
+- `student-submissions`
+
+Then re-run the storage policy section of `supabase/schema.sql`.
+
+## 4. Local environment variables
+
+```bash
+cp .env.example .env.local
+```
+
+Fill in:
+
+| Variable | Where to find it |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Project Settings → API → Project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Project Settings → API → `anon` `public` key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API → `service_role` key (**server only**) |
+| `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` locally |
+
+Never expose `SUPABASE_SERVICE_ROLE_KEY` in client code or `NEXT_PUBLIC_*` variables.
+
+## 5. Vercel environment variables
+
+In the Vercel project settings, add the same four variables. Set `NEXT_PUBLIC_APP_URL` to your production URL (e.g. `https://your-app.vercel.app`).
+
+Also add the production URL to Supabase **Authentication → URL configuration** (Site URL + Redirect URLs), including:
+
+- `https://your-app.vercel.app/auth/callback`
+
+## 6. Create the first admin account
+
+1. In Supabase **Authentication → Users**, add a user with email/password (or send an invite).
+2. Confirm a `profiles` row exists (created by the `on_auth_user_created` trigger).
+3. In the SQL Editor, promote that user:
+
+```sql
+select public.promote_user_to_admin('your.email@school.edu');
+```
+
+See also `supabase/bootstrap_admin.sql`.
+
+## 7. Import users by CSV
+
+As an admin, open **Users → CSV Import**, or go to `/admin/users/import`.
+
+Exact columns:
+
+```csv
+first_name,last_name,email,role,year_group,class_name
+Alex,Morgan,alex.morgan@school.edu,student,Year 11,11A English
+Ms,Harper,ms.harper@school.edu,teacher,,
+```
+
+- `role` must be `admin`, `teacher`, or `student`
+- `year_group` optional except recommended for students (`Year 7`–`Year 11`)
+- `class_name` optional; missing classes are created when a teacher already exists
+- Preview validates emails, roles and duplicates before any accounts are created
+- Invites are sent with the service role on the server only
+
+## 8. Start locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in as **Student** or **Teacher**.
+Open [http://localhost:3000](http://localhost:3000) and sign in.
 
-### Optional integrations
+## 9. Deploy to Vercel
 
-Copy `.env.example` to `.env.local` and add:
+1. Push the repository and import it into Vercel.
+2. Set environment variables (step 5).
+3. Deploy.
+4. Confirm Auth redirect URLs in Supabase.
 
-- `OPENAI_API_KEY` — live coach / essay marking
-- `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` — persist users & content
+## Roles after login
 
-Apply the database schema from `supabase/schema.sql` in the Supabase SQL editor.
+| Role | Dashboard |
+|---|---|
+| Admin | `/admin/dashboard` |
+| Teacher | `/teacher/dashboard` |
+| Student | `/student/dashboard` |
 
-## Project structure
+## Scripts
 
+```bash
+npm run lint
+npm run build
+npm run start
 ```
-src/
-  app/                 # Routes (auth, platform pages, API)
-  components/          # UI, layout, charts
-  lib/
-    ai/                # OpenAI + RAG retrieval
-    auth/              # Demo auth context (swap for Supabase Auth)
-    data/              # Dummy data for a fully functional MVP
-    supabase/          # Client factory
-supabase/schema.sql    # Production-ready Postgres schema
-```
-
-## Design
-
-White interface, purple accents, large rounded cards, soft shadows and responsive layouts inspired by Notion / Linear / Duolingo / Canva.
-
-## Deploy
-
-Deploy on Vercel. Set the environment variables above in the project settings.

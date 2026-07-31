@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Outfit, Plus_Jakarta_Sans } from "next/font/google";
-import { AuthProvider } from "@/lib/auth/auth-context";
 import "./globals.css";
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -14,9 +13,9 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  title: "LitCoach AI — GCSE English Learning Platform",
+  title: "LitCoach — Homework Platform",
   description:
-    "AI-powered GCSE English coaching for lessons, revision, essay feedback, and progress tracking.",
+    "Assignment, submission, marking and feedback platform for schools.",
 };
 
 export default function RootLayout({
@@ -29,9 +28,7 @@ export default function RootLayout({
       lang="en-GB"
       className={`${plusJakarta.variable} ${outfit.variable} h-full antialiased`}
     >
-      <body className="min-h-full font-sans text-slate-900">
-        <AuthProvider>{children}</AuthProvider>
-      </body>
+      <body className="min-h-full font-sans text-slate-900">{children}</body>
     </html>
   );
 }
