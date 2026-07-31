@@ -1,11 +1,24 @@
 -- LitCoach Homework Platform — production Supabase schema
 -- Run this in the Supabase SQL editor after creating a project.
 -- Public self-registration should remain disabled in Auth settings.
+--
+-- Execution order (required for a fresh database):
+--   1. Extensions
+--   2. Enums
+--   3. Tables
+--   4. Indexes
+--   5. Functions
+--   6. Triggers
+--   7. Storage buckets
+--   8. Row Level Security (enable + policies last)
 
+-- ---------------------------------------------------------------------------
+-- 1. Extensions
+-- ---------------------------------------------------------------------------
 create extension if not exists "pgcrypto";
 
 -- ---------------------------------------------------------------------------
--- Enums
+-- 2. Enums
 -- ---------------------------------------------------------------------------
 create type public.user_role as enum ('admin', 'teacher', 'student');
 create type public.assignment_status as enum ('draft', 'published', 'archived');
@@ -20,7 +33,133 @@ create type public.notification_type as enum (
 );
 
 -- ---------------------------------------------------------------------------
--- Helpers
+-- 3. Tables
+-- ---------------------------------------------------------------------------
+create table public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  email text not null unique,
+  first_name text not null,
+  last_name text not null,
+  display_name text not null,
+  role public.user_role not null,
+  year_group text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint profiles_year_group_check check (
+    year_group is null or year_group in ('Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11')
+  )
+);
+
+create table public.classes (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  subject text not null default 'English',
+  year_group text,
+  teacher_id uuid not null references public.profiles (id) on delete restrict,
+  join_code text not null unique,
+  archived boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.class_members (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
+  student_id uuid not null references public.profiles (id) on delete cascade,
+  joined_at timestamptz not null default now(),
+  unique (class_id, student_id)
+);
+
+create table public.assignments (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete restrict,
+  title text not null,
+  instructions text not null default '',
+  due_at timestamptz,
+  maximum_mark numeric(6,2) not null default 30 check (maximum_mark > 0),
+  status public.assignment_status not null default 'draft',
+  allow_text_submission boolean not null default true,
+  allow_file_submission boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.assignment_resources (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  file_name text not null,
+  storage_path text not null,
+  file_type text not null,
+  file_size bigint,
+  created_at timestamptz not null default now()
+);
+
+create table public.submissions (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  student_id uuid not null references public.profiles (id) on delete cascade,
+  written_response text,
+  file_name text,
+  storage_path text,
+  status public.submission_status not null default 'draft',
+  submitted_at timestamptz,
+  marked_at timestamptz,
+  returned_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (assignment_id, student_id)
+);
+
+create table public.feedback (
+  id uuid primary key default gen_random_uuid(),
+  submission_id uuid not null unique references public.submissions (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete restrict,
+  mark numeric(6,2),
+  strengths text,
+  improvements text,
+  next_steps text,
+  private_notes text,
+  status public.feedback_status not null default 'draft',
+  released_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  type public.notification_type not null,
+  title text not null,
+  body text,
+  link_path text,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------------
+-- 4. Indexes
+-- ---------------------------------------------------------------------------
+create index profiles_role_idx on public.profiles (role);
+create index profiles_email_idx on public.profiles (email);
+create index profiles_active_idx on public.profiles (is_active);
+create index classes_teacher_idx on public.classes (teacher_id);
+create index classes_join_code_idx on public.classes (join_code);
+create index class_members_student_idx on public.class_members (student_id);
+create index class_members_class_idx on public.class_members (class_id);
+create index assignments_class_idx on public.assignments (class_id);
+create index assignments_teacher_idx on public.assignments (teacher_id);
+create index assignments_status_idx on public.assignments (status);
+create index submissions_assignment_idx on public.submissions (assignment_id);
+create index submissions_student_idx on public.submissions (student_id);
+create index submissions_status_idx on public.submissions (status);
+create index feedback_teacher_idx on public.feedback (teacher_id);
+create index feedback_status_idx on public.feedback (status);
+create index notifications_user_idx on public.notifications (user_id, created_at desc);
+
+-- ---------------------------------------------------------------------------
+-- 5. Functions (after tables they reference)
 -- ---------------------------------------------------------------------------
 create or replace function public.set_updated_at()
 returns trigger
@@ -127,155 +266,6 @@ as $$
   );
 $$;
 
--- ---------------------------------------------------------------------------
--- Tables
--- ---------------------------------------------------------------------------
-create table public.profiles (
-  id uuid primary key references auth.users (id) on delete cascade,
-  email text not null unique,
-  first_name text not null,
-  last_name text not null,
-  display_name text not null,
-  role public.user_role not null,
-  year_group text,
-  is_active boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint profiles_year_group_check check (
-    year_group is null or year_group in ('Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11')
-  )
-);
-
-create table public.classes (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  subject text not null default 'English',
-  year_group text,
-  teacher_id uuid not null references public.profiles (id) on delete restrict,
-  join_code text not null unique,
-  archived boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table public.class_members (
-  id uuid primary key default gen_random_uuid(),
-  class_id uuid not null references public.classes (id) on delete cascade,
-  student_id uuid not null references public.profiles (id) on delete cascade,
-  joined_at timestamptz not null default now(),
-  unique (class_id, student_id)
-);
-
-create table public.assignments (
-  id uuid primary key default gen_random_uuid(),
-  class_id uuid not null references public.classes (id) on delete cascade,
-  teacher_id uuid not null references public.profiles (id) on delete restrict,
-  title text not null,
-  instructions text not null default '',
-  due_at timestamptz,
-  maximum_mark numeric(6,2) not null default 30 check (maximum_mark > 0),
-  status public.assignment_status not null default 'draft',
-  allow_text_submission boolean not null default true,
-  allow_file_submission boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table public.assignment_resources (
-  id uuid primary key default gen_random_uuid(),
-  assignment_id uuid not null references public.assignments (id) on delete cascade,
-  file_name text not null,
-  storage_path text not null,
-  file_type text not null,
-  file_size bigint,
-  created_at timestamptz not null default now()
-);
-
-create table public.submissions (
-  id uuid primary key default gen_random_uuid(),
-  assignment_id uuid not null references public.assignments (id) on delete cascade,
-  student_id uuid not null references public.profiles (id) on delete cascade,
-  written_response text,
-  file_name text,
-  storage_path text,
-  status public.submission_status not null default 'draft',
-  submitted_at timestamptz,
-  marked_at timestamptz,
-  returned_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (assignment_id, student_id)
-);
-
-create table public.feedback (
-  id uuid primary key default gen_random_uuid(),
-  submission_id uuid not null unique references public.submissions (id) on delete cascade,
-  teacher_id uuid not null references public.profiles (id) on delete restrict,
-  mark numeric(6,2),
-  strengths text,
-  improvements text,
-  next_steps text,
-  private_notes text,
-  status public.feedback_status not null default 'draft',
-  released_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table public.notifications (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references public.profiles (id) on delete cascade,
-  type public.notification_type not null,
-  title text not null,
-  body text,
-  link_path text,
-  read_at timestamptz,
-  created_at timestamptz not null default now()
-);
-
--- ---------------------------------------------------------------------------
--- Indexes
--- ---------------------------------------------------------------------------
-create index profiles_role_idx on public.profiles (role);
-create index profiles_email_idx on public.profiles (email);
-create index profiles_active_idx on public.profiles (is_active);
-create index classes_teacher_idx on public.classes (teacher_id);
-create index classes_join_code_idx on public.classes (join_code);
-create index class_members_student_idx on public.class_members (student_id);
-create index class_members_class_idx on public.class_members (class_id);
-create index assignments_class_idx on public.assignments (class_id);
-create index assignments_teacher_idx on public.assignments (teacher_id);
-create index assignments_status_idx on public.assignments (status);
-create index submissions_assignment_idx on public.submissions (assignment_id);
-create index submissions_student_idx on public.submissions (student_id);
-create index submissions_status_idx on public.submissions (status);
-create index feedback_teacher_idx on public.feedback (teacher_id);
-create index feedback_status_idx on public.feedback (status);
-create index notifications_user_idx on public.notifications (user_id, created_at desc);
-
--- ---------------------------------------------------------------------------
--- Triggers
--- ---------------------------------------------------------------------------
-create trigger profiles_set_updated_at
-  before update on public.profiles
-  for each row execute function public.set_updated_at();
-
-create trigger classes_set_updated_at
-  before update on public.classes
-  for each row execute function public.set_updated_at();
-
-create trigger assignments_set_updated_at
-  before update on public.assignments
-  for each row execute function public.set_updated_at();
-
-create trigger submissions_set_updated_at
-  before update on public.submissions
-  for each row execute function public.set_updated_at();
-
-create trigger feedback_set_updated_at
-  before update on public.feedback
-  for each row execute function public.set_updated_at();
-
 -- Auto-create profile row when an auth user is created (values come from user metadata).
 create or replace function public.handle_new_user()
 returns trigger
@@ -319,11 +309,6 @@ begin
 end;
 $$;
 
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
-
 -- Prevent non-admins from changing role / is_active on their own profile.
 create or replace function public.protect_profile_security_fields()
 returns trigger
@@ -347,16 +332,10 @@ begin
 end;
 $$;
 
-create trigger profiles_protect_security_fields
-  before update on public.profiles
-  for each row execute function public.protect_profile_security_fields();
-
--- ---------------------------------------------------------------------------
 -- Bootstrap helper: promote an existing auth user to admin by email.
 -- Usage (run as database owner in SQL editor):
 --   select public.promote_user_to_admin('you@school.edu');
 -- Do not hard-code administrator emails in application source.
--- ---------------------------------------------------------------------------
 create or replace function public.promote_user_to_admin(p_email text)
 returns void
 language plpgsql
@@ -378,7 +357,73 @@ revoke all on function public.promote_user_to_admin(text) from public, anon, aut
 -- Execute only via service role / SQL editor (postgres).
 
 -- ---------------------------------------------------------------------------
--- Row Level Security
+-- 6. Triggers (after tables and functions)
+-- ---------------------------------------------------------------------------
+create trigger profiles_set_updated_at
+  before update on public.profiles
+  for each row execute function public.set_updated_at();
+
+create trigger classes_set_updated_at
+  before update on public.classes
+  for each row execute function public.set_updated_at();
+
+create trigger assignments_set_updated_at
+  before update on public.assignments
+  for each row execute function public.set_updated_at();
+
+create trigger submissions_set_updated_at
+  before update on public.submissions
+  for each row execute function public.set_updated_at();
+
+create trigger feedback_set_updated_at
+  before update on public.feedback
+  for each row execute function public.set_updated_at();
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+create trigger profiles_protect_security_fields
+  before update on public.profiles
+  for each row execute function public.protect_profile_security_fields();
+
+-- ---------------------------------------------------------------------------
+-- 7. Storage buckets (after schema tables exist)
+-- ---------------------------------------------------------------------------
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values
+  (
+    'assignment-resources',
+    'assignment-resources',
+    false,
+    20971520,
+    array[
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-powerpoint',
+      'image/png',
+      'image/jpeg',
+      'image/webp'
+    ]
+  ),
+  (
+    'student-submissions',
+    'student-submissions',
+    false,
+    20971520,
+    array[
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword'
+    ]
+  )
+on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 8. Row Level Security — enable tables, then create policies last
 -- ---------------------------------------------------------------------------
 alter table public.profiles enable row level security;
 alter table public.classes enable row level security;
@@ -642,43 +687,7 @@ create policy "Teachers insert notifications for own class students"
     )
   );
 
--- ---------------------------------------------------------------------------
--- Storage buckets (create via dashboard or storage API; policies below assume names)
--- ---------------------------------------------------------------------------
--- assignment-resources (private)
--- student-submissions (private)
-
-insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values
-  (
-    'assignment-resources',
-    'assignment-resources',
-    false,
-    20971520,
-    array[
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'application/vnd.ms-powerpoint',
-      'image/png',
-      'image/jpeg',
-      'image/webp'
-    ]
-  ),
-  (
-    'student-submissions',
-    'student-submissions',
-    false,
-    20971520,
-    array[
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword'
-    ]
-  )
-on conflict (id) do nothing;
-
+-- Storage object policies (after buckets + helper functions exist)
 create policy "Admins full access assignment resources storage"
   on storage.objects for all
   using (bucket_id = 'assignment-resources' and public.is_admin())
