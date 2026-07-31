@@ -54,13 +54,23 @@ export function Sidebar({
   open,
   onClose,
   profile,
+  platformDisplayName = "Homework Passport",
+  schoolName = null,
 }: {
   open: boolean;
   onClose: () => void;
   profile: Profile;
+  platformDisplayName?: string;
+  schoolName?: string | null;
 }) {
   const pathname = usePathname();
   const nav = navForRole(profile.role);
+  const initials = platformDisplayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("") || "HP";
 
   return (
     <>
@@ -80,11 +90,15 @@ export function Sidebar({
         <div className="mb-8 flex items-center justify-between px-2">
           <Link href="/" className="flex items-center gap-3" onClick={onClose}>
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white shadow-lg shadow-brand-500/30">
-              HP
+              {initials}
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-900">Homework Passport</p>
-              <p className="text-xs text-slate-500">School homework</p>
+              <p className="text-sm font-semibold text-slate-900">
+                {platformDisplayName}
+              </p>
+              {schoolName ? (
+                <p className="text-xs text-slate-500">{schoolName}</p>
+              ) : null}
             </div>
           </Link>
           <button

@@ -5,14 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { createUserAction } from "@/lib/actions/admin";
 import type { ActionResult } from "@/lib/actions/auth";
-import { YEAR_GROUPS } from "@/lib/types";
 
 const initial: ActionResult = {};
 
 export function CreateUserForm({
   classes,
+  yearGroups,
 }: {
   classes: { id: string; name: string }[];
+  yearGroups: string[];
 }) {
   const [state, action, pending] = useActionState(createUserAction, initial);
 
@@ -64,7 +65,7 @@ export function CreateUserForm({
             defaultValue=""
           >
             <option value="">—</option>
-            {YEAR_GROUPS.map((y) => (
+            {yearGroups.map((y) => (
               <option key={y} value={y}>
                 {y}
               </option>

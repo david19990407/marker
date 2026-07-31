@@ -12,6 +12,7 @@ import {
 } from "@/lib/validations/admin";
 import { generateJoinCode } from "@/lib/utils/join-code";
 import { parseCsv, type ParsedCsvRow } from "@/lib/utils/csv";
+import { getActiveYearGroups } from "@/lib/school/settings";
 import type { ActionResult } from "@/lib/actions/auth";
 
 async function assertAdmin() {
@@ -209,47 +210,45 @@ export async function createClassAction(
   formData: FormData,
 ): Promise<ActionResult> {
   await assertAdmin();
+  const additionalTeacherIds = formData
+    .getAll("additional_teacher_ids")
+    .map(String)
+    .filter(Boolean);
   const parsed = createClassSchema.safeParse({
     name: formData.get("name"),
     subject: formData.get("subject") || "English",
     year_group: formData.get("year_group") || null,
     teacher_id: formData.get("teacher_id"),
+    colour_hex: formData.get("colour_hex") || null,
+    additional_teacher_ids: additionalTeacherIds,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid class" };
   }
 
-  const admin = createAdminClient();
-  let joinCode = generateJoinCode();
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const { data: createdClass, error } = await admin
-      .from("classes")
-      .insert({ ...parsed.data, join_code: joinCode })
-      .select("id")
-      .maybeSingle();
-    if (!error && createdClass) {
-      // Register the assigned teacher as lead_teacher in class_teachers
-      await admin.from("class_teachers").upsert(
-        {
-          class_id: createdClass.id,
-          teacher_id: parsed.data.teacher_id,
-          membership_role: "lead_teacher",
-          can_create_assignments: true,
-          can_mark_submissions: true,
-          can_manage_members: true,
-        },
-        { onConflict: "class_id,teacher_id" },
-      );
-      revalidatePath("/admin/classes");
-      return { success: "Class created" };
-    }
-    if (error?.code === "23505") {
-      joinCode = generateJoinCode();
-      continue;
-    }
-    return { error: error?.message ?? "Failed to create class" };
+  // Use the authenticated server client + SECURITY DEFINER RPC (not anon / not open RLS).
+  const supabase = await createClient();
+  const extras = parsed.data.additional_teacher_ids.filter(
+    (id) => id !== parsed.data.teacher_id,
+  );
+  const { data, error } = await supabase.rpc("create_class_with_lead_teacher", {
+    p_name: parsed.data.name,
+    p_subject: parsed.data.subject,
+    p_year_group: parsed.data.year_group,
+    p_teacher_id: parsed.data.teacher_id,
+    p_colour_hex: parsed.data.colour_hex,
+    p_additional_teacher_ids: extras,
+  });
+
+  if (error) {
+    return { error: error.message ?? "Failed to create class" };
   }
-  return { error: "Could not generate a unique join code" };
+  if (!data) {
+    return { error: "Failed to create class" };
+  }
+
+  revalidatePath("/admin/classes");
+  return { success: "Class created" };
 }
 
 export async function assignStudentToClassAction(
@@ -295,14 +294,16 @@ export async function previewCsvImportAction(
 ): Promise<{ rows: ParsedCsvRow[]; error?: string }> {
   await assertAdmin();
   if (!csvText.trim()) return { rows: [], error: "CSV is empty" };
-  return { rows: parseCsv(csvText) };
+  const yearGroups = await getActiveYearGroups();
+  return { rows: parseCsv(csvText, yearGroups) };
 }
 
 export async function confirmCsvImportAction(
   csvText: string,
 ): Promise<{ summary?: ImportSummary; error?: string }> {
   await assertAdmin();
-  const rows = parseCsv(csvText);
+  const yearGroups = await getActiveYearGroups();
+  const rows = parseCsv(csvText, yearGroups);
   if (!rows.length) return { error: "No rows to import" };
   if (rows.some((r) => r.errors.length > 0 && !r.data)) {
     // Allow continuing only for valid rows; reject if header error

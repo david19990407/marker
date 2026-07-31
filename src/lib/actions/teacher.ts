@@ -68,49 +68,44 @@ export async function createTeacherClassAction(
   formData: FormData,
 ): Promise<ActionResult> {
   const profile = await assertTeacher();
+  if (profile.role === "student") {
+    return { error: "Students cannot create classes" };
+  }
   const parsed = teacherClassSchema.safeParse({
     name: formData.get("name"),
     subject: formData.get("subject") || "English",
     year_group: formData.get("year_group") || null,
+    colour_hex: formData.get("colour_hex") || null,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid class" };
   }
 
   const supabase = await createClient();
-  for (let i = 0; i < 5; i += 1) {
-    const join_code = generateJoinCode();
-    const { data, error } = await supabase
-      .from("classes")
-      .insert({
-        ...parsed.data,
-        teacher_id: profile.id,
-        join_code,
-      })
-      .select("id")
-      .single();
-    if (!error && data) {
-      // Register as lead teacher in class_teachers
-      await supabase.from("class_teachers").upsert(
-        {
-          class_id: data.id,
-          teacher_id: profile.id,
-          membership_role: "lead_teacher",
-          can_create_assignments: true,
-          can_mark_submissions: true,
-          can_manage_members: true,
-        },
-        { onConflict: "class_id,teacher_id" },
-      );
-      revalidatePath("/teacher/classes");
-      revalidatePath("/teacher/dashboard");
-      redirect(`/teacher/classes/${data.id}`);
-    }
-    if (error?.code !== "23505") {
-      return { error: error?.message ?? "Failed to create class" };
-    }
+  const { data, error } = await supabase.rpc("create_class_with_lead_teacher", {
+    p_name: parsed.data.name,
+    p_subject: parsed.data.subject,
+    p_year_group: parsed.data.year_group,
+    p_teacher_id: profile.id,
+    p_colour_hex: parsed.data.colour_hex,
+    p_additional_teacher_ids: [],
+  });
+
+  if (error) {
+    return { error: error.message ?? "Failed to create class" };
   }
-  return { error: "Could not generate a unique join code" };
+
+  const classId =
+    data && typeof data === "object" && "id" in data
+      ? String((data as { id: string }).id)
+      : null;
+  if (!classId) {
+    return { error: "Failed to create class" };
+  }
+
+  revalidatePath("/teacher/classes");
+  revalidatePath("/teacher/dashboard");
+  redirect(`/teacher/classes/${classId}`);
 }
 
 export async function updateTeacherClassAction(
@@ -124,14 +119,46 @@ export async function updateTeacherClassAction(
     name: formData.get("name"),
     subject: formData.get("subject") || "English",
     year_group: formData.get("year_group") || null,
+    colour_hex: formData.get("colour_hex") || null,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid class" };
   }
   const supabase = await createClient();
+
+  // Resolve optional FK IDs from admin-configured catalogues
+  let subject_id: string | null = null;
+  let year_group_id: string | null = null;
+  const { data: subjectRow } = await supabase
+    .from("school_subjects")
+    .select("id")
+    .ilike("name", parsed.data.subject)
+    .is("archived_at", null)
+    .maybeSingle();
+  subject_id = subjectRow?.id ?? null;
+  if (parsed.data.year_group) {
+    const { data: yearRows } = await supabase
+      .from("school_year_groups")
+      .select("id, name, label")
+      .is("archived_at", null);
+    const match = (yearRows ?? []).find(
+      (row) =>
+        (row.name || row.label || "").toLowerCase() ===
+        parsed.data.year_group!.toLowerCase(),
+    );
+    year_group_id = match?.id ?? null;
+  }
+
   const { error } = await supabase
     .from("classes")
-    .update(parsed.data)
+    .update({
+      name: parsed.data.name,
+      subject: parsed.data.subject,
+      year_group: parsed.data.year_group,
+      colour_hex: parsed.data.colour_hex,
+      subject_id,
+      year_group_id,
+    })
     .eq("id", classId);
   if (error) return { error: error.message };
   revalidatePath(`/teacher/classes/${classId}`);

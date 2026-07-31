@@ -14,7 +14,7 @@ export function SchoolSettingsForm({
   settings?: {
     school_name: string;
     platform_display_name: string;
-    max_upload_bytes: number;
+    max_upload_bytes?: number;
   };
 }) {
   const [state, action, pending] = useActionState(
@@ -34,26 +34,43 @@ export function SchoolSettingsForm({
           {state.success}
         </div>
       ) : null}
+
       <label className="block text-sm">
-        <span className="mb-1.5 block text-slate-500">School name</span>
+        <span className="mb-1.5 block font-medium text-slate-700">
+          School name
+        </span>
+        <span className="mb-1.5 block text-xs text-slate-500">
+          The organisation using the platform. Shown as a subtitle on login and
+          dashboards (for example “Homework Passport for Presdales School”).
+        </span>
         <Input
           name="school_name"
           required
-          defaultValue={settings?.school_name ?? "My School"}
-          placeholder="e.g. Greenfield Academy"
+          defaultValue={settings?.school_name ?? ""}
+          placeholder="e.g. Presdales School"
         />
       </label>
+
       <label className="block text-sm">
-        <span className="mb-1.5 block text-slate-500">Platform display name</span>
+        <span className="mb-1.5 block font-medium text-slate-700">
+          Platform display name
+        </span>
+        <span className="mb-1.5 block text-xs text-slate-500">
+          The product name shown to users in the sidebar, browser title, login
+          heading and navigation. Defaults to Homework Passport.
+        </span>
         <Input
           name="platform_display_name"
           required
-          defaultValue={settings?.platform_display_name ?? "Homework Passport"}
-          placeholder="e.g. Homework Passport"
+          defaultValue={
+            settings?.platform_display_name ?? "Homework Passport"
+          }
+          placeholder="Homework Passport"
         />
       </label>
+
       <Button type="submit" disabled={pending}>
-        {pending ? "Saving…" : "Save settings"}
+        {pending ? "Saving…" : "Save branding"}
       </Button>
     </form>
   );

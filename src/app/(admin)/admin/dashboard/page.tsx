@@ -4,9 +4,13 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
+import { getBranding } from "@/lib/school/branding";
 
 export default async function AdminDashboardPage() {
-  const profile = await requireProfile(["admin"]);
+  const [profile, branding] = await Promise.all([
+    requireProfile(["admin"]),
+    getBranding(),
+  ]);
   const supabase = await createClient();
 
   const [
@@ -36,7 +40,11 @@ export default async function AdminDashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title={`Welcome, ${profile.first_name}`}
-        description="Manage users, classes and school-wide access for Homework Passport."
+        description={
+          branding.schoolName
+            ? `Manage users, classes and school-wide access for ${branding.schoolName}.`
+            : `Manage users, classes and school-wide access for ${branding.platformDisplayName}.`
+        }
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

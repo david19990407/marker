@@ -7,6 +7,7 @@ import { EditUserForm } from "@/components/admin/edit-user-form";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
 import type { Profile } from "@/lib/types";
+import { getActiveYearGroups } from "@/lib/school/settings";
 
 export default async function EditUserPage({
   params,
@@ -17,7 +18,7 @@ export default async function EditUserPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [{ data: user }, { data: classes }, { data: memberships }] =
+  const [{ data: user }, { data: classes }, { data: memberships }, yearGroups] =
     await Promise.all([
       supabase.from("profiles").select("*").eq("id", id).maybeSingle(),
       supabase
@@ -26,6 +27,7 @@ export default async function EditUserPage({
         .eq("archived", false)
         .order("name"),
       supabase.from("class_members").select("class_id").eq("student_id", id),
+      getActiveYearGroups(),
     ]);
 
   if (!user) notFound();
@@ -49,6 +51,7 @@ export default async function EditUserPage({
           user={user as Profile}
           classes={classes ?? []}
           memberClassIds={(memberships ?? []).map((m) => m.class_id)}
+          yearGroups={yearGroups}
           canEditRole={canEditRole}
         />
       </Card>

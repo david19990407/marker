@@ -9,6 +9,11 @@ import { ClassDetailActions } from "@/components/teacher/class-detail-actions";
 import { CoTeachersPanel } from "@/components/teacher/co-teachers-panel";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
+import {
+  getActiveColours,
+  getActiveSubjects,
+  getActiveYearGroups,
+} from "@/lib/school/settings";
 
 export default async function TeacherClassDetailPage({
   params,
@@ -43,12 +48,17 @@ export default async function TeacherClassDetailPage({
   const hasAccess = membership !== null || classRow.teacher_id === profile.id;
   if (!hasAccess) notFound();
 
-  const [{ data: memberships }, { data: classTeachers }] = await Promise.all([
+  const [
+    { data: memberships },
+    { data: classTeachers },
+    subjects,
+    yearGroups,
+    colours,
+  ] = await Promise.all([
     supabase
       .from("class_members")
       .select(
-        "student_id, student:profiles!class_members_student_id_fkey(id, display_name, email)",
-      )
+        "student_id, student:profiles!class_members_student_id_fkey(id, display_name, email)",      )
       .eq("class_id", id),
     supabase
       .from("class_teachers")
@@ -56,6 +66,9 @@ export default async function TeacherClassDetailPage({
         "id, teacher_id, membership_role, can_create_assignments, can_mark_submissions, can_manage_members, teacher:profiles!class_teachers_teacher_id_fkey(id, display_name, email)",
       )
       .eq("class_id", id),
+    getActiveSubjects(),
+    getActiveYearGroups(),
+    getActiveColours(),
   ]);
 
   const members = (memberships ?? []).map((m) => {
@@ -105,7 +118,11 @@ export default async function TeacherClassDetailPage({
               name: classRow.name,
               subject: classRow.subject,
               year_group: classRow.year_group,
+              colour_hex: classRow.colour_hex ?? null,
             }}
+            subjects={subjects}
+            yearGroups={yearGroups}
+            colours={colours}
           />
         </Card>
         <Card>

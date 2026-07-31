@@ -5,10 +5,17 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
+import { getActiveYearGroups } from "@/lib/school/settings";
 
-export default async function TeacherClassesPage() {
+export default async function TeacherClassesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ year_group?: string }>;
+}) {
   const profile = await requireProfile(["teacher", "admin"]);
+  const params = await searchParams;
   const supabase = await createClient();
+  const yearGroups = await getActiveYearGroups();
 
   // Include classes where this teacher is a member via class_teachers
   const { data: ctRows } = await supabase
@@ -21,7 +28,16 @@ export default async function TeacherClassesPage() {
   // Deduplicate and flatten; fall back to empty if class_teachers not available
   const classesByIdMap = new Map<
     string,
-    { id: string; name: string; subject: string; year_group: string | null; join_code: string; archived: boolean; created_at: string; membership_role: string }
+    {
+      id: string;
+      name: string;
+      subject: string;
+      year_group: string | null;
+      join_code: string;
+      archived: boolean;
+      created_at: string;
+      membership_role: string;
+    }
   >();
   for (const row of ctRows ?? []) {
     const c = Array.isArray(row.classes) ? row.classes[0] : row.classes;
@@ -42,9 +58,14 @@ export default async function TeacherClassesPage() {
     }
   }
 
-  const classes = Array.from(classesByIdMap.values()).sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-  );
+  const classes = Array.from(classesByIdMap.values())
+    .filter((c) =>
+      params.year_group ? c.year_group === params.year_group : true,
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
 
   const classIds = classes.map((c) => c.id);
   const { data: members } = classIds.length
@@ -67,6 +88,30 @@ export default async function TeacherClassesPage() {
           </Link>
         }
       />
+
+      <Card>
+        <form method="get" className="flex flex-wrap items-end gap-3">
+          <label className="text-sm">
+            <span className="mb-1.5 block text-slate-500">Year group</span>
+            <select
+              name="year_group"
+              defaultValue={params.year_group ?? ""}
+              className="h-11 min-w-48 rounded-2xl border border-slate-200 bg-white px-3 text-sm"
+            >
+              <option value="">All year groups</option>
+              {yearGroups.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Button type="submit" variant="secondary">
+            Filter
+          </Button>
+        </form>
+      </Card>
+
       {!classes?.length ? (
         <Card>
           <p className="text-sm text-slate-500">No classes yet</p>

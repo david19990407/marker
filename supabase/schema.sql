@@ -6,10 +6,14 @@
 --   1. supabase/schema.sql
 --   2. supabase/repair_phases_01_to_03.sql   -- school settings, class_teachers, templates/RPCs
 --   3. supabase/phase_04_structured_homework_builder.sql  -- if using the homework builder
+--   4. supabase/fix_class_creation_rls.sql
+--   5. supabase/fix_school_settings_subjects_year_groups.sql
 --
 -- Existing LIVE project that already ran schema.sql but is missing
 -- school_settings / create_assignment_template_and_deploy:
---   Run ONLY: supabase/repair_phases_01_to_03.sql
+--   Run: supabase/repair_phases_01_to_03.sql
+--   Then: supabase/fix_class_creation_rls.sql
+--   Then: supabase/fix_school_settings_subjects_year_groups.sql
 --   Do NOT re-run this full schema.sql.
 --
 -- Individual phase_01 / phase_02 / phase_03 files remain available but are
@@ -58,12 +62,8 @@ create table public.profiles (
   year_group text,
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint profiles_year_group_check check (
-    year_group is null or year_group in (
-      'Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11', 'Year 12', 'Year 13'
-    )
-  )
+  updated_at timestamptz not null default now()
+  -- year_group values are administered via school_year_groups (no hard-coded check)
 );
 
 create table public.classes (
@@ -73,9 +73,12 @@ create table public.classes (
   year_group text,
   teacher_id uuid not null references public.profiles (id) on delete restrict,
   join_code text not null unique,
+  colour_hex text,
   archived boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+  -- subject_id / year_group_id FKs are added by
+  -- fix_school_settings_subjects_year_groups.sql after school_* tables exist
 );
 
 create table public.class_members (
@@ -595,10 +598,33 @@ create policy "Admins manage classes"
   using (public.is_admin())
   with check (public.is_admin());
 
-create policy "Teachers manage own classes"
-  on public.classes for all
-  using (public.is_teacher() and teacher_id = auth.uid())
-  with check (public.is_teacher() and teacher_id = auth.uid());
+-- Teacher class policies (split so INSERT does not require class_teachers membership).
+-- After repair_phases_01_to_03.sql, re-apply fix_class_creation_rls.sql which
+-- replaces the phase_02 FOR ALL policy with these insert-safe rules.
+create policy classes_teacher_select on public.classes
+  for select to authenticated
+  using (
+    public.is_admin()
+    or (public.is_teacher() and teacher_id = auth.uid())
+  );
+
+create policy classes_teacher_insert on public.classes
+  for insert to authenticated
+  with check (
+    public.is_admin()
+    or (public.is_teacher() and teacher_id = auth.uid())
+  );
+
+create policy classes_teacher_update on public.classes
+  for update to authenticated
+  using (
+    public.is_admin()
+    or (public.is_teacher() and teacher_id = auth.uid())
+  )
+  with check (
+    public.is_admin()
+    or (public.is_teacher() and teacher_id = auth.uid())
+  );
 
 create policy "Students view classes they belong to"
   on public.classes for select

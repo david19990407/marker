@@ -5,9 +5,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
+import { getBranding } from "@/lib/school/branding";
 
 export default async function StudentDashboardPage() {
-  const profile = await requireProfile(["student"]);
+  const [profile, branding] = await Promise.all([
+    requireProfile(["student"]),
+    getBranding(),
+  ]);
   const supabase = await createClient();
 
   const { data: memberships } = await supabase
@@ -73,7 +77,11 @@ export default async function StudentDashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title={`Welcome, ${profile.first_name}`}
-        description="Assigned homework, submission status and released feedback."
+        description={
+          branding.schoolName
+            ? `${branding.schoolName} — assigned homework, submission status and released feedback.`
+            : "Assigned homework, submission status and released feedback."
+        }
       />
 
       <div className="grid gap-4 sm:grid-cols-3">

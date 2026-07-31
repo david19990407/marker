@@ -1,4 +1,8 @@
-import { csvImportRowSchema, type CsvImportRow } from "@/lib/validations/admin";
+import {
+  createCsvImportRowSchema,
+  type CsvImportRow,
+} from "@/lib/validations/admin";
+import { YEAR_GROUPS } from "@/lib/types";
 
 export type ParsedCsvRow = {
   rowNumber: number;
@@ -32,7 +36,10 @@ function parseLine(line: string): string[] {
   return result;
 }
 
-export function parseCsv(text: string): ParsedCsvRow[] {
+export function parseCsv(
+  text: string,
+  allowedYearGroups: string[] = [...YEAR_GROUPS],
+): ParsedCsvRow[] {
   const lines = text
     .replace(/^\uFEFF/, "")
     .split(/\r?\n/)
@@ -54,6 +61,7 @@ export function parseCsv(text: string): ParsedCsvRow[] {
     ];
   }
 
+  const rowSchema = createCsvImportRowSchema(allowedYearGroups);
   const seenEmails = new Map<string, number>();
   const rows: ParsedCsvRow[] = [];
 
@@ -65,7 +73,7 @@ export function parseCsv(text: string): ParsedCsvRow[] {
     });
 
     const errors: string[] = [];
-    const parsed = csvImportRowSchema.safeParse({
+    const parsed = rowSchema.safeParse({
       first_name: raw.first_name,
       last_name: raw.last_name,
       email: raw.email,

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Outfit, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
+import { getBranding } from "@/lib/school/branding";
 
 const plusJakarta = Plus_Jakarta_Sans({
   variable: "--font-plus-jakarta",
@@ -12,11 +13,15 @@ const outfit = Outfit({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Homework Passport",
-  description:
-    "Assignment, submission, marking and feedback platform for schools.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const branding = await getBranding();
+  return {
+    title: branding.platformDisplayName,
+    description: branding.schoolName
+      ? `${branding.platformDisplayName} for ${branding.schoolName}`
+      : "Assignment, submission, marking and feedback platform for schools.",
+  };
+}
 
 export default function RootLayout({
   children,
