@@ -47,6 +47,12 @@ export default async function NewAssignmentPage() {
         }
       />
       <Card>
+        <p className="mb-4 text-sm text-slate-600">
+          Create a draft or publish to one or more classes, then open the{" "}
+          <strong>Homework builder</strong> to add sections, questions, tables and
+          vocabulary worksheets. You can schedule a release date and set shared or
+          per-class due dates below.
+        </p>
         <AssignmentForm classes={allClasses} />
       </Card>
     </div>

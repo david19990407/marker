@@ -346,6 +346,11 @@ export async function saveAssignmentAction(
 
     revalidatePath("/teacher/assignments");
     revalidatePath("/teacher/dashboard");
+
+    const deploymentIds = extractDeploymentIds(rpcResult);
+    if (deploymentIds[0]) {
+      redirect(`/teacher/assignments/${deploymentIds[0]}/builder`);
+    }
     redirect("/teacher/assignments");
   }
 
@@ -445,7 +450,9 @@ export async function copyAssignmentAction(
 
   const { data: assignment } = await supabase
     .from("assignments")
-    .select("id, class_id, teacher_id, title, instructions, allow_text_submission, allow_file_submission, maximum_mark")
+    .select(
+      "id, class_id, teacher_id, title, instructions, allow_text_submission, allow_file_submission, maximum_mark, template_id",
+    )
     .eq("id", assignmentId)
     .maybeSingle();
 
@@ -460,7 +467,7 @@ export async function copyAssignmentAction(
     if (!ct) return { error: "Assignment not found" };
   }
 
-  const { error: rpcError } = await supabase.rpc(
+  const { data: rpcResult, error: rpcError } = await supabase.rpc(
     "create_assignment_template_and_deploy",
     {
       p_title: `Copy of ${assignment.title}`,
@@ -477,6 +484,31 @@ export async function copyAssignmentAction(
     },
   );
   if (rpcError) return { error: rpcError.message };
+
+  const newTemplateId =
+    rpcResult && typeof rpcResult === "object"
+      ? (rpcResult as { template_id?: string }).template_id
+      : null;
+
+  // Copy structured homework blocks into the new template (new IDs)
+  if (assignment.template_id && newTemplateId) {
+    try {
+      const { loadTemplateStructure, structureToPayload, cloneSection } =
+        await import("@/lib/homework/structure");
+      const sourceSections = await loadTemplateStructure(
+        supabase,
+        assignment.template_id,
+      );
+      const copied = sourceSections.map((s) => cloneSection(s, ""));
+      const payload = structureToPayload(copied);
+      await supabase.rpc("save_assignment_structure", {
+        p_template_id: newTemplateId,
+        p_structure: payload,
+      });
+    } catch {
+      // Metadata copy already succeeded; structure copy is best-effort
+    }
+  }
 
   revalidatePath("/teacher/assignments");
   return { success: `Created draft copy "Copy of ${assignment.title}"` };

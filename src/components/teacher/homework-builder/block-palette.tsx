@@ -8,7 +8,14 @@ import type { AssignmentBlockType } from "@/lib/types";
 const PALETTE_GROUPS: { label: string; types: AssignmentBlockType[] }[] = [
   {
     label: "Layout",
-    types: ["heading", "subheading", "instruction", "rich_text", "page_break"],
+    types: [
+      "heading",
+      "subheading",
+      "instruction",
+      "rich_text",
+      "divider",
+      "page_break",
+    ],
   },
   {
     label: "Questions",

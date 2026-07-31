@@ -1,11 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BlockEditor } from "./block-editor";
 import { BlockPalette } from "./block-palette";
-import { emptySection, createBlock, newId } from "@/lib/homework/structure";
+import { emptySection, createBlock, cloneBlock, cloneSection } from "@/lib/homework/structure";
 import type { BuilderSection, BuilderBlock, AssignmentBlockType } from "@/lib/types";
 
 interface SectionListProps {
@@ -40,18 +41,7 @@ export function SectionList({
   }
 
   function duplicateSection(index: number) {
-    const copy: BuilderSection = {
-      ...sections[index],
-      _id: newId(),
-      title: `${sections[index].title} (copy)`,
-      blocks: sections[index].blocks.map((b) => ({ ...b, _id: newId() })),
-      subsections: sections[index].subsections.map((s) => ({
-        ...s,
-        _id: newId(),
-        blocks: s.blocks.map((b) => ({ ...b, _id: newId() })),
-        subsections: [],
-      })),
-    };
+    const copy = cloneSection(sections[index]);
     const next = [...sections];
     next.splice(index + 1, 0, copy);
     onChange(next);
@@ -103,6 +93,8 @@ function SectionItem({
   onMoveDown,
   onDuplicate,
 }: SectionItemProps) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
   function setTitle(title: string) {
     onUpdate({ ...section, title });
   }
@@ -136,9 +128,19 @@ function SectionItem({
   }
 
   function duplicateBlock(idx: number) {
-    const copy: BuilderBlock = { ...section.blocks[idx], _id: newId() };
+    const copy = cloneBlock(section.blocks[idx]);
     const next = [...section.blocks];
     next.splice(idx + 1, 0, copy);
+    onUpdate({ ...section, blocks: next });
+  }
+
+  function reorderBlocks(from: number, to: number) {
+    if (from === to || from < 0 || to < 0 || from >= section.blocks.length || to >= section.blocks.length) {
+      return;
+    }
+    const next = [...section.blocks];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
     onUpdate({ ...section, blocks: next });
   }
 
@@ -153,7 +155,6 @@ function SectionItem({
 
   return (
     <Card className={bgClass}>
-      {/* Section header */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="flex-1">
           {previewMode ? (
@@ -166,7 +167,7 @@ function SectionItem({
               onChange={(e) => setTitle(e.target.value)}
               className="font-semibold"
               placeholder="Section title"
-              aria-label="Section title"
+              aria-label={depth === 0 ? "Section title" : "Subsection title"}
             />
           )}
         </div>
@@ -206,37 +207,52 @@ function SectionItem({
         )}
       </div>
 
-      {/* Blocks */}
-      <div className="space-y-3">
+      <div className="space-y-3" role="list" aria-label="Blocks">
         {section.blocks.map((block, bi) => {
           if (previewMode && (block.teacher_only || block.block_type === "mark_scheme")) {
             return null;
           }
           return (
-            <BlockEditor
+            <div
               key={block._id}
-              block={block}
-              index={bi}
-              total={section.blocks.length}
-              previewMode={previewMode}
-              onChange={(updated) => updateBlock(bi, updated)}
-              onDelete={() => deleteBlock(bi)}
-              onMoveUp={() => moveBlock(bi, -1)}
-              onMoveDown={() => moveBlock(bi, 1)}
-              onDuplicate={() => duplicateBlock(bi)}
-            />
+              role="listitem"
+              draggable={!previewMode}
+              onDragStart={() => setDragIndex(bi)}
+              onDragOver={(e) => {
+                if (previewMode) return;
+                e.preventDefault();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragIndex == null) return;
+                reorderBlocks(dragIndex, bi);
+                setDragIndex(null);
+              }}
+              onDragEnd={() => setDragIndex(null)}
+              className={dragIndex === bi ? "opacity-60" : undefined}
+            >
+              <BlockEditor
+                block={block}
+                index={bi}
+                total={section.blocks.length}
+                previewMode={previewMode}
+                onChange={(updated) => updateBlock(bi, updated)}
+                onDelete={() => deleteBlock(bi)}
+                onMoveUp={() => moveBlock(bi, -1)}
+                onMoveDown={() => moveBlock(bi, 1)}
+                onDuplicate={() => duplicateBlock(bi)}
+              />
+            </div>
           );
         })}
       </div>
 
-      {/* Add block */}
       {!previewMode && (
         <div className="mt-4">
           <BlockPalette onAdd={addBlock} />
         </div>
       )}
 
-      {/* Subsections */}
       {(section.subsections.length > 0 || !previewMode) && depth === 0 && (
         <div className="mt-6 space-y-3">
           {section.subsections.length > 0 && (

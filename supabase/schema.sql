@@ -5,10 +5,11 @@
 -- Fresh install (new empty project), run in order:
 --   1. supabase/schema.sql
 --   2. supabase/repair_phases_01_to_03.sql   -- school settings, class_teachers, templates/RPCs
---   3. supabase/phase_04_structured_homework_builder.sql  -- if using the homework builder
---   4. supabase/fix_class_creation_rls.sql
---   5. supabase/fix_school_settings_subjects_year_groups.sql
---   6. supabase/fix_role_based_class_management_and_branding.sql
+--   3. supabase/phase_04_structured_homework_builder.sql  -- structured homework tables/RLS
+--   4. supabase/phase_06_structured_homework_builder.sql  -- ID-preserving save + question config
+--   5. supabase/fix_class_creation_rls.sql
+--   6. supabase/fix_school_settings_subjects_year_groups.sql
+--   7. supabase/fix_role_based_class_management_and_branding.sql
 --
 -- Existing LIVE project that already ran schema.sql but is missing
 -- school_settings / create_assignment_template_and_deploy:
@@ -16,6 +17,8 @@
 --   Then: supabase/fix_class_creation_rls.sql
 --   Then: supabase/fix_school_settings_subjects_year_groups.sql
 --   Then: supabase/fix_role_based_class_management_and_branding.sql
+--   Then: supabase/phase_04_structured_homework_builder.sql (if not already applied)
+--   Then: supabase/phase_06_structured_homework_builder.sql
 --   Do NOT re-run this full schema.sql.
 --
 -- Individual phase_01 / phase_02 / phase_03 files remain available but are

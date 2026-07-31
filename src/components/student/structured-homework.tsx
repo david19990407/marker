@@ -1,54 +1,220 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+  type ReactNode,
+} from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   saveStudentStructuredResponsesAction,
+  submitStructuredHomeworkAction,
   type StructuredResponseInput,
 } from "@/lib/actions/homework-builder";
+import { flattenStudentBlocks, isResponseType, responseKey } from "@/lib/homework/structure";
 import type { BuilderSection, BuilderBlock, StudentResponse } from "@/lib/types";
+
+export type ResponseWithCells = StudentResponse & {
+  cells?: Array<{
+    row_index: number;
+    col_index: number;
+    text_value: string | null;
+    numeric_value: number | null;
+    boolean_value: boolean | null;
+  }>;
+};
 
 interface Props {
   assignmentId: string;
   sections: BuilderSection[];
-  existingResponses: Record<string, StudentResponse>;
+  existingResponses: Record<string, ResponseWithCells>;
   editable: boolean;
+  /** When true, show review summary UI before final submit */
+  reviewMode?: boolean;
 }
+
+type TextValue = { type: "text"; text: string };
+type NumericValue = { type: "numeric"; numeric: number | null };
+type BoolValue = { type: "bool"; bool: boolean };
+type TableCellValues = {
+  type: "table";
+  cells: Array<{ row_index: number; col_index: number; text: string }>;
+};
+type ResponseValue = TextValue | NumericValue | BoolValue | TableCellValues;
+
+type AutosaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
 
 export function StructuredHomework({
   assignmentId,
   sections,
   existingResponses,
   editable,
+  reviewMode = false,
 }: Props) {
-  // keyed by question_id
-  const [values, setValues] = useState<Record<string, ResponseValue>>(
+  const [values, setValues] = useState<Record<string, ResponseValue>>(() =>
     buildInitialValues(sections, existingResponses),
   );
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [autosave, setAutosave] = useState<AutosaveStatus>("idle");
   const [pending, startTransition] = useTransition();
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestValues = useRef(values);
+  latestValues.current = values;
 
   function setValue(questionId: string, value: ResponseValue) {
+    if (!editable) return;
     setValues((prev) => ({ ...prev, [questionId]: value }));
+    setErrors((prev) => {
+      if (!prev[questionId]) return prev;
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+    setAutosave("dirty");
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      void persist(latestValues.current, false);
+    }, 1500);
+  }
+
+  async function persist(current: Record<string, ResponseValue>, submitting: boolean) {
+    const responses = collectResponses(current, sections);
+    setAutosave("saving");
+    const result = submitting
+      ? await submitStructuredHomeworkAction(assignmentId, responses)
+      : await saveStudentStructuredResponsesAction(assignmentId, responses);
+
+    if (result.error) {
+      setAutosave("error");
+      setFlash({ type: "error", msg: result.error });
+      return false;
+    }
+    setAutosave("saved");
+    setFlash({
+      type: "success",
+      msg: submitting ? "Homework submitted" : "Progress saved",
+    });
+    setTimeout(() => setFlash(null), 3000);
+    setTimeout(() => setAutosave((s) => (s === "saved" ? "idle" : s)), 2000);
+    return true;
   }
 
   function handleSave() {
+    if (timer.current) clearTimeout(timer.current);
     startTransition(async () => {
-      const responses = collectResponses(values);
-      const result = await saveStudentStructuredResponsesAction(assignmentId, responses);
-      setFlash(
-        result.error
-          ? { type: "error", msg: result.error }
-          : { type: "success", msg: "Responses saved" },
-      );
-      setTimeout(() => setFlash(null), 4000);
+      await persist(values, false);
     });
   }
 
+  function validate(): boolean {
+    const nextErrors: Record<string, string> = {};
+    const blocks = flattenStudentBlocks(sections).filter(
+      (b) => isResponseType(b.block_type) && !b.review_only,
+    );
+
+    for (const block of blocks) {
+      const qid = responseKey(block);
+      if (!block.question_id) continue;
+      const value = values[qid];
+
+      if (block.required) {
+        if (!value) {
+          nextErrors[qid] = "This question is required";
+          continue;
+        }
+        if (value.type === "text" && !value.text.trim()) {
+          nextErrors[qid] = "This question is required";
+        } else if (value.type === "numeric" && value.numeric == null) {
+          nextErrors[qid] = "Enter a number";
+        } else if (value.type === "bool" && !value.bool) {
+          nextErrors[qid] = "Please tick this box";
+        } else if (value.type === "table") {
+          const hasAny = value.cells.some((c) => c.text.trim());
+          if (!hasAny) nextErrors[qid] = "Complete at least one cell";
+        }
+      }
+
+      if (value?.type === "numeric" && value.numeric != null) {
+        if (block.min_value != null && value.numeric < block.min_value) {
+          nextErrors[qid] = `Minimum value is ${block.min_value}`;
+        }
+        if (block.max_value != null && value.numeric > block.max_value) {
+          nextErrors[qid] = `Maximum value is ${block.max_value}`;
+        }
+      }
+
+      if (value?.type === "text" && block.word_limit != null) {
+        const words = value.text.trim() ? value.text.trim().split(/\s+/).length : 0;
+        if (words > block.word_limit) {
+          nextErrors[qid] = `Word limit is ${block.word_limit}`;
+        }
+      }
+      if (value?.type === "text" && block.char_limit != null) {
+        if (value.text.length > block.char_limit) {
+          nextErrors[qid] = `Character limit is ${block.char_limit}`;
+        }
+      }
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  }
+
+  function handleSubmit() {
+    if (!validate()) {
+      setFlash({ type: "error", msg: "Please complete required fields before submitting" });
+      return;
+    }
+    if (timer.current) clearTimeout(timer.current);
+    startTransition(async () => {
+      const ok = await persist(values, true);
+      if (ok) {
+        window.location.href = `/student/homework/${assignmentId}`;
+      }
+    });
+  }
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  const autosaveLabel =
+    autosave === "dirty"
+      ? "Unsaved changes"
+      : autosave === "saving"
+        ? "Saving…"
+        : autosave === "saved"
+          ? "All changes saved"
+          : autosave === "error"
+            ? "Save failed"
+            : "Autosave ready";
+
   return (
     <div className="space-y-6">
+      {editable && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={autosave === "dirty" || autosave === "error" ? "warning" : "neutral"}>
+            {autosaveLabel}
+          </Badge>
+          {!reviewMode && (
+            <Link href={`/student/homework/${assignmentId}/review`}>
+              <Button variant="outline" size="sm">
+                Review before submit
+              </Button>
+            </Link>
+          )}
+        </div>
+      )}
+
       {flash && (
         <div
           className={`rounded-2xl border px-4 py-3 text-sm ${
@@ -56,8 +222,15 @@ export function StructuredHomework({
               ? "border-green-200 bg-green-50 text-green-800"
               : "border-rose-200 bg-rose-50 text-rose-800"
           }`}
+          role="status"
         >
           {flash.msg}
+        </div>
+      )}
+
+      {reviewMode && (
+        <div className="rounded-2xl border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-900">
+          Review your answers below. Submit only when every required question is complete.
         </div>
       )}
 
@@ -66,36 +239,71 @@ export function StructuredHomework({
           key={section._id}
           section={section}
           values={values}
+          errors={errors}
           onValueChange={setValue}
           editable={editable}
+          reviewMode={reviewMode}
         />
       ))}
 
       {editable && (
-        <Button onClick={handleSave} disabled={pending}>
-          {pending ? "Saving…" : "Save answers"}
-        </Button>
+        <div className="flex flex-wrap gap-3">
+          <Button onClick={handleSave} disabled={pending} variant="secondary">
+            {pending && autosave === "saving" ? "Saving…" : "Save progress"}
+          </Button>
+          {reviewMode ? (
+            <Button onClick={handleSubmit} disabled={pending}>
+              {pending ? "Submitting…" : "Submit homework"}
+            </Button>
+          ) : (
+            <Link href={`/student/homework/${assignmentId}/review`}>
+              <Button>Review & submit</Button>
+            </Link>
+          )}
+        </div>
+      )}
+
+      {!editable && (
+        <p className="text-sm text-slate-500">
+          This homework is read-only after submission
+          {!reviewMode ? (
+            <>
+              .{" "}
+              <Link
+                href={`/student/homework/${assignmentId}/review`}
+                className="text-brand-700 underline"
+              >
+                View review
+              </Link>
+            </>
+          ) : null}
+          .
+        </p>
       )}
     </div>
   );
 }
 
-// ── Section render ────────────────────────────────────────────────────────────
-
 function SectionView({
   section,
   values,
+  errors,
   onValueChange,
   editable,
+  reviewMode,
 }: {
   section: BuilderSection;
   values: Record<string, ResponseValue>;
+  errors: Record<string, string>;
   onValueChange: (qid: string, v: ResponseValue) => void;
   editable: boolean;
+  reviewMode: boolean;
 }) {
   return (
-    <div className="space-y-4">
-      <h3 className="text-base font-semibold text-slate-800">{section.title}</h3>
+    <section className="space-y-4" aria-labelledby={`section-${section._id}`}>
+      <h3 id={`section-${section._id}`} className="text-base font-semibold text-slate-800">
+        {section.title}
+      </h3>
       {section.blocks
         .filter((b) => !b.teacher_only && b.block_type !== "mark_scheme")
         .map((block) => (
@@ -103,13 +311,21 @@ function SectionView({
             key={block._id}
             block={block}
             values={values}
+            error={errors[responseKey(block)]}
             onValueChange={onValueChange}
             editable={editable}
+            reviewMode={reviewMode}
           />
         ))}
       {section.subsections.map((sub) => (
-        <div key={sub._id} className="ml-4 space-y-4 border-l-2 border-slate-100 pl-4">
-          <h4 className="text-sm font-semibold text-slate-700">{sub.title}</h4>
+        <div
+          key={sub._id}
+          className="ml-4 space-y-4 border-l-2 border-slate-100 pl-4"
+          aria-labelledby={`subsection-${sub._id}`}
+        >
+          <h4 id={`subsection-${sub._id}`} className="text-sm font-semibold text-slate-700">
+            {sub.title}
+          </h4>
           {sub.blocks
             .filter((b) => !b.teacher_only && b.block_type !== "mark_scheme")
             .map((block) => (
@@ -117,31 +333,40 @@ function SectionView({
                 key={block._id}
                 block={block}
                 values={values}
+                error={errors[responseKey(block)]}
                 onValueChange={onValueChange}
                 editable={editable}
+                reviewMode={reviewMode}
               />
             ))}
         </div>
       ))}
-    </div>
+    </section>
   );
 }
-
-// ── Block render ──────────────────────────────────────────────────────────────
 
 function BlockView({
   block,
   values,
+  error,
   onValueChange,
   editable,
+  reviewMode,
 }: {
   block: BuilderBlock;
   values: Record<string, ResponseValue>;
+  error?: string;
   onValueChange: (qid: string, v: ResponseValue) => void;
   editable: boolean;
+  reviewMode: boolean;
 }) {
-  const qid = block._id;
+  const qid = responseKey(block);
   const current = values[qid];
+  const fieldId = `q-${qid}`;
+
+  // Never show teacher notes / mark scheme to students
+  void block.teacher_note;
+  void block.mark_scheme_note;
 
   switch (block.block_type) {
     case "heading":
@@ -153,145 +378,286 @@ function BlockView({
       return (
         <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{block.content}</p>
       );
+    case "divider":
+      return <hr className="border-slate-200" />;
     case "page_break":
       return (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" aria-hidden>
           <div className="h-px flex-1 border-t border-dashed border-slate-300" />
         </div>
       );
-
-    case "numbered_question":
-    case "extended_writing":
+    case "image":
       return (
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-slate-800">
-            {block.prompt || block.content}
-            {block.required && <span className="ml-1 text-rose-500">*</span>}
-            {block.max_marks != null && (
-              <span className="ml-2 text-xs font-normal text-slate-400">
-                [{block.max_marks} marks]
-              </span>
-            )}
-          </p>
-          {editable ? (
-            <Textarea
-              value={(current as TextValue)?.text ?? ""}
-              onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
-              className="min-h-28"
-              placeholder="Write your answer here…"
+        <figure className="space-y-1">
+          {block.content.startsWith("http") ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={block.content}
+              alt={block.prompt || "Homework image"}
+              className="max-h-80 w-full rounded-2xl object-contain"
             />
           ) : (
-            <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
-              {(current as TextValue)?.text || "—"}
-            </p>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              {block.content || "Image"}
+            </div>
+          )}
+        </figure>
+      );
+    case "downloadable_resource":
+      return (
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm">
+          {block.content.startsWith("http") ? (
+            <a
+              href={block.content}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-brand-700 underline"
+            >
+              Download resource
+            </a>
+          ) : (
+            <span className="text-slate-700">{block.content || "Resource"}</span>
           )}
         </div>
       );
 
-    case "short_text":
-      return (
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-slate-800">
-            {block.prompt || block.content}
-            {block.required && <span className="ml-1 text-rose-500">*</span>}
-          </p>
-          {editable ? (
-            <Input
-              value={(current as TextValue)?.text ?? ""}
-              onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
-              placeholder="Short answer…"
-            />
-          ) : (
-            <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
-              {(current as TextValue)?.text || "—"}
-            </p>
-          )}
-        </div>
-      );
-
-    case "numeric":
-      return (
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-slate-800">
-            {block.prompt || block.content}
-            {block.required && <span className="ml-1 text-rose-500">*</span>}
-          </p>
-          {editable ? (
-            <Input
-              type="number"
-              value={(current as NumericValue)?.numeric ?? ""}
-              onChange={(e) =>
-                onValueChange(qid, {
-                  type: "numeric",
-                  numeric: e.target.value ? Number(e.target.value) : null,
-                })
-              }
-              className="w-40"
-              placeholder="0"
-            />
-          ) : (
-            <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
-              {(current as NumericValue)?.numeric ?? "—"}
-            </p>
-          )}
-        </div>
-      );
-
-    case "multiple_choice":
-      return (
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-slate-800">
-            {block.prompt || block.content}
-            {block.required && <span className="ml-1 text-rose-500">*</span>}
-          </p>
-          <div className="space-y-1">
-            {(block.choices ?? []).map((choice, i) => (
-              <label key={i} className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name={`mcq-${qid}`}
-                  value={choice}
-                  checked={(current as TextValue)?.text === choice}
-                  onChange={() => onValueChange(qid, { type: "text", text: choice })}
-                  disabled={!editable}
-                />
-                {choice}
-              </label>
-            ))}
+    case "teacher_review":
+      if (block.review_only !== false) {
+        return (
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            {block.content || block.prompt || "Teacher review item"}
+            <p className="mt-1 text-xs text-slate-400">Your teacher will review this.</p>
           </div>
-        </div>
-      );
+        );
+      }
+      break;
 
-    case "tick_box":
-      return (
+    default:
+      break;
+  }
+
+  if (block.review_only) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+        {block.content || block.prompt || "Review item"}
+      </div>
+    );
+  }
+
+  if (
+    block.block_type === "numbered_question" ||
+    block.block_type === "extended_writing"
+  ) {
+    return (
+      <QuestionShell
+        block={block}
+        fieldId={fieldId}
+        error={error}
+        reviewMode={reviewMode}
+      >
+        {editable ? (
+          <Textarea
+            id={fieldId}
+            value={(current as TextValue)?.text ?? ""}
+            onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
+            className="min-h-28"
+            placeholder="Write your answer here…"
+            maxLength={block.char_limit ?? undefined}
+            aria-required={block.required}
+            aria-invalid={!!error}
+          />
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+            {(current as TextValue)?.text || "—"}
+          </p>
+        )}
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "short_text") {
+    return (
+      <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
+        {editable ? (
+          <Input
+            id={fieldId}
+            value={(current as TextValue)?.text ?? ""}
+            onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
+            placeholder="Short answer…"
+            maxLength={block.char_limit ?? undefined}
+            aria-required={block.required}
+            aria-invalid={!!error}
+          />
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+            {(current as TextValue)?.text || "—"}
+          </p>
+        )}
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "numeric") {
+    return (
+      <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
+        {editable ? (
+          <Input
+            id={fieldId}
+            type="number"
+            value={(current as NumericValue)?.numeric ?? ""}
+            onChange={(e) =>
+              onValueChange(qid, {
+                type: "numeric",
+                numeric: e.target.value !== "" ? Number(e.target.value) : null,
+              })
+            }
+            className="w-40"
+            min={block.min_value ?? undefined}
+            max={block.max_value ?? undefined}
+            placeholder="0"
+            aria-required={block.required}
+            aria-invalid={!!error}
+          />
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+            {(current as NumericValue)?.numeric ?? "—"}
+          </p>
+        )}
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "multiple_choice") {
+    return (
+      <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
+        <div className="space-y-1" role="radiogroup" aria-labelledby={fieldId}>
+          {(block.choices ?? []).map((choice, i) => (
+            <label key={i} className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name={`mcq-${qid}`}
+                value={choice}
+                checked={(current as TextValue)?.text === choice}
+                onChange={() => onValueChange(qid, { type: "text", text: choice })}
+                disabled={!editable}
+              />
+              {choice}
+            </label>
+          ))}
+        </div>
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "tick_box") {
+    return (
+      <div className="space-y-1">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
             checked={(current as BoolValue)?.bool ?? false}
             onChange={(e) => onValueChange(qid, { type: "bool", bool: e.target.checked })}
             disabled={!editable}
+            aria-invalid={!!error}
           />
-          <span className="font-medium text-slate-800">{block.prompt || block.content}</span>
+          <span className="font-medium text-slate-800">
+            {block.prompt || block.content}
+            {block.required && <span className="ml-1 text-rose-500">*</span>}
+          </span>
         </label>
-      );
+        {error && <p className="text-xs text-rose-600">{error}</p>}
+      </div>
+    );
+  }
 
-    case "table":
-    case "vocabulary_table":
-      return (
+  if (block.block_type === "file_upload") {
+    return (
+      <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
+        {editable ? (
+          <div className="space-y-2">
+            <Input
+              id={fieldId}
+              type="file"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                onValueChange(qid, {
+                  type: "text",
+                  text: file ? file.name : "",
+                });
+              }}
+              aria-required={block.required}
+            />
+            <p className="text-xs text-slate-400">
+              File name is saved with your progress. Full upload storage follows assignment resources.
+            </p>
+            {(current as TextValue)?.text && (
+              <p className="text-xs text-slate-600">Selected: {(current as TextValue).text}</p>
+            )}
+          </div>
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+            {(current as TextValue)?.text || "No file"}
+          </p>
+        )}
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "table" || block.block_type === "vocabulary_table") {
+    return (
+      <div className="space-y-1">
         <TableView
           block={block}
           current={current as TableCellValues | undefined}
           onChange={(v) => onValueChange(qid, v)}
           editable={editable}
         />
-      );
-
-    default:
-      return null;
+        {error && <p className="text-xs text-rose-600">{error}</p>}
+      </div>
+    );
   }
+
+  return null;
 }
 
-// ── Table view ────────────────────────────────────────────────────────────────
+function QuestionShell({
+  block,
+  fieldId,
+  error,
+  reviewMode,
+  children,
+}: {
+  block: BuilderBlock;
+  fieldId: string;
+  error?: string;
+  reviewMode: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={`space-y-2 ${reviewMode ? "rounded-2xl border border-slate-100 p-3" : ""}`}
+    >
+      <label htmlFor={fieldId} className="block text-sm font-medium text-slate-800">
+        {block.content || block.prompt}
+        {block.required && <span className="ml-1 text-rose-500">*</span>}
+        {block.max_marks != null && (
+          <span className="ml-2 text-xs font-normal text-slate-400">
+            [{block.max_marks} marks]
+          </span>
+        )}
+      </label>
+      {block.content && block.prompt && (
+        <p className="whitespace-pre-wrap text-xs text-slate-500">{block.prompt}</p>
+      )}
+      {children}
+      {error && (
+        <p className="text-xs text-rose-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function TableView({
   block,
@@ -332,7 +698,11 @@ function TableView({
             <thead>
               <tr className="bg-slate-50">
                 {Array.from({ length: cfg.cols }, (_, ci) => (
-                  <th key={ci} className="px-4 py-2 text-left text-xs font-semibold text-slate-600">
+                  <th
+                    key={ci}
+                    scope="col"
+                    className="px-4 py-2 text-left text-xs font-semibold text-slate-600"
+                  >
                     {(cfg.col_labels ?? [])[ci] ?? `Column ${ci + 1}`}
                   </th>
                 ))}
@@ -348,21 +718,27 @@ function TableView({
                     const cellDef = cells.find(
                       (c) => c.row_index === ri && c.col_index === ci,
                     );
-                    const isReadOnly = cellDef?.cell_type === "readonly" || cellDef?.read_only;
+                    const isReadOnly =
+                      cellDef?.cell_type === "readonly" || cellDef?.read_only;
                     const isTick = cellDef?.cell_type === "tick";
                     const isTeacherReview = cellDef?.cell_type === "teacher_review";
+                    const label = `${(cfg.col_labels ?? [])[ci] ?? `Column ${ci + 1}`}, row ${ri + 1}`;
 
                     if (isTeacherReview) {
                       return (
                         <td key={ci} className="px-4 py-2">
-                          <span className="text-xs text-slate-400">[Teacher review]</span>
+                          <span className="sr-only">Teacher review cell</span>
+                          <span className="text-xs text-slate-300">—</span>
                         </td>
                       );
                     }
 
                     if (isReadOnly) {
                       return (
-                        <td key={ci} className="bg-slate-50 px-4 py-2 text-xs text-slate-600">
+                        <td
+                          key={ci}
+                          className="bg-slate-50 px-4 py-2 text-xs text-slate-600"
+                        >
                           {cellDef?.label ?? ""}
                         </td>
                       );
@@ -373,8 +749,11 @@ function TableView({
                         <td key={ci} className="px-4 py-2">
                           <input
                             type="checkbox"
+                            aria-label={label}
                             checked={getCellValue(ri, ci) === "true"}
-                            onChange={(e) => setCellValue(ri, ci, e.target.checked ? "true" : "false")}
+                            onChange={(e) =>
+                              setCellValue(ri, ci, e.target.checked ? "true" : "false")
+                            }
                             disabled={!editable}
                           />
                         </td>
@@ -387,6 +766,7 @@ function TableView({
                           cellDef?.cell_type === "student_numeric" ? (
                             <Input
                               type="number"
+                              aria-label={label}
                               value={getCellValue(ri, ci)}
                               onChange={(e) => setCellValue(ri, ci, e.target.value)}
                               className="h-8 text-xs"
@@ -395,6 +775,7 @@ function TableView({
                           ) : (
                             <input
                               type="text"
+                              aria-label={label}
                               value={getCellValue(ri, ci)}
                               onChange={(e) => setCellValue(ri, ci, e.target.value)}
                               className="h-8 w-full rounded-xl border border-slate-200 px-2 text-xs outline-none focus:border-brand-400"
@@ -419,68 +800,80 @@ function TableView({
   );
 }
 
-// ── Value types ───────────────────────────────────────────────────────────────
-
-type TextValue = { type: "text"; text: string };
-type NumericValue = { type: "numeric"; numeric: number | null };
-type BoolValue = { type: "bool"; bool: boolean };
-type TableCellValues = {
-  type: "table";
-  cells: Array<{ row_index: number; col_index: number; text: string }>;
-};
-type ResponseValue = TextValue | NumericValue | BoolValue | TableCellValues;
-
 function buildInitialValues(
   sections: BuilderSection[],
-  existing: Record<string, StudentResponse>,
+  existing: Record<string, ResponseWithCells>,
 ): Record<string, ResponseValue> {
   const result: Record<string, ResponseValue> = {};
 
   function processSection(section: BuilderSection) {
     for (const block of section.blocks) {
-      const resp = existing[block._id];
+      if (!isResponseType(block.block_type)) continue;
+      const qid = responseKey(block);
+      const resp = existing[qid] ?? (block.question_id ? existing[block.question_id] : undefined);
       if (!resp) continue;
+
       if (block.block_type === "numeric") {
-        result[block._id] = { type: "numeric", numeric: resp.numeric_value };
+        result[qid] = { type: "numeric", numeric: resp.numeric_value };
       } else if (block.block_type === "tick_box") {
-        result[block._id] = { type: "bool", bool: resp.boolean_value ?? false };
+        result[qid] = { type: "bool", bool: resp.boolean_value ?? false };
+      } else if (
+        block.block_type === "table" ||
+        block.block_type === "vocabulary_table"
+      ) {
+        result[qid] = {
+          type: "table",
+          cells: (resp.cells ?? []).map((c) => ({
+            row_index: c.row_index,
+            col_index: c.col_index,
+            text:
+              c.text_value ??
+              (c.numeric_value != null ? String(c.numeric_value) : "") ??
+              (c.boolean_value != null ? String(c.boolean_value) : ""),
+          })),
+        };
       } else {
-        result[block._id] = { type: "text", text: resp.text_value ?? "" };
+        result[qid] = { type: "text", text: resp.text_value ?? "" };
       }
     }
-    for (const sub of section.subsections) {
-      processSection(sub);
-    }
+    for (const sub of section.subsections) processSection(sub);
   }
 
-  for (const section of sections) {
-    processSection(section);
-  }
-
+  for (const section of sections) processSection(section);
   return result;
 }
 
 function collectResponses(
   values: Record<string, ResponseValue>,
+  sections: BuilderSection[],
 ): StructuredResponseInput[] {
-  return Object.entries(values).map(([question_id, value]) => {
+  const blocks = flattenStudentBlocks(sections).filter(
+    (b) => isResponseType(b.block_type) && b.question_id,
+  );
+  const out: StructuredResponseInput[] = [];
+
+  for (const block of blocks) {
+    const qid = block.question_id!;
+    const value = values[responseKey(block)];
+    if (!value) continue;
+
     if (value.type === "text") {
-      return { question_id, text_value: value.text || null };
+      out.push({ question_id: qid, text_value: value.text || null });
+    } else if (value.type === "numeric") {
+      out.push({ question_id: qid, numeric_value: value.numeric });
+    } else if (value.type === "bool") {
+      out.push({ question_id: qid, boolean_value: value.bool });
+    } else {
+      out.push({
+        question_id: qid,
+        cells: value.cells.map((c) => ({
+          row_index: c.row_index,
+          col_index: c.col_index,
+          text_value: c.text || null,
+        })),
+      });
     }
-    if (value.type === "numeric") {
-      return { question_id, numeric_value: value.numeric };
-    }
-    if (value.type === "bool") {
-      return { question_id, boolean_value: value.bool };
-    }
-    // table
-    return {
-      question_id,
-      cells: value.cells.map((c) => ({
-        row_index: c.row_index,
-        col_index: c.col_index,
-        text_value: c.text || null,
-      })),
-    };
-  });
+  }
+
+  return out;
 }
