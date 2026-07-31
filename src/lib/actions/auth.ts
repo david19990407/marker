@@ -87,7 +87,7 @@ export async function forgotPasswordAction(
 
   const supabase = await createClient();
   const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
-    redirectTo: `${getAppUrl()}/auth/callback?next=/update-password`,
+    redirectTo: `${getAppUrl()}/auth/callback`,
   });
 
   if (error) {
@@ -125,15 +125,27 @@ export async function updatePasswordAction(
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (user) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle();
-    if (profile) {
-      redirect(DASHBOARD_PATH[profile.role as UserRole]);
-    }
+  if (!user) {
+    redirect("/login");
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  revalidatePath("/", "layout");
+
+  // Role-based landing after invite / recovery password setup.
+  if (profile?.role === "student") {
+    redirect("/student/dashboard");
+  }
+  if (profile?.role === "teacher") {
+    redirect("/teacher/dashboard");
+  }
+  if (profile?.role === "admin") {
+    redirect("/admin/dashboard");
   }
 
   redirect("/login");
