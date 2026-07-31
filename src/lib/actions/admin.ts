@@ -243,19 +243,32 @@ export async function createClassAction(
   const admin = createAdminClient();
   let joinCode = generateJoinCode();
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const { error } = await admin.from("classes").insert({
-      ...parsed.data,
-      join_code: joinCode,
-    });
-    if (!error) {
+    const { data: createdClass, error } = await admin
+      .from("classes")
+      .insert({ ...parsed.data, join_code: joinCode })
+      .select("id")
+      .maybeSingle();
+    if (!error && createdClass) {
+      // Register the assigned teacher as lead_teacher in class_teachers
+      await admin.from("class_teachers").upsert(
+        {
+          class_id: createdClass.id,
+          teacher_id: parsed.data.teacher_id,
+          membership_role: "lead_teacher",
+          can_create_assignments: true,
+          can_mark_submissions: true,
+          can_manage_members: true,
+        },
+        { onConflict: "class_id,teacher_id" },
+      );
       revalidatePath("/admin/classes");
       return { success: "Class created" };
     }
-    if (error.code === "23505") {
+    if (error?.code === "23505") {
       joinCode = generateJoinCode();
       continue;
     }
-    return { error: error.message };
+    return { error: error?.message ?? "Failed to create class" };
   }
   return { error: "Could not generate a unique join code" };
 }

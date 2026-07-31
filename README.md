@@ -1,10 +1,10 @@
-# LitCoach — Homework Platform
+# Homework Passport
 
 Assignment, submission, marking and feedback platform for schools.
 
 **Stack:** Next.js · TypeScript · Tailwind CSS · Supabase (Auth, Database, Storage)
 
-> Phases 1–5 are implemented: database schema, real authentication, admin portal, teacher classes/assignments/marking, and student homework submission.
+> Core platform plus Phases 1–4 are implemented: database schema, real authentication, admin portal, teacher classes/assignments/marking, student homework submission, school settings, multi-teacher classes, and multi-class assignment templates with deployments.
 
 ## 1. Create a Supabase project
 
@@ -15,10 +15,14 @@ Assignment, submission, marking and feedback platform for schools.
 
 ## 2. Run the database schema
 
-1. Open **SQL Editor** in the Supabase dashboard.
-2. Paste and run the full contents of `supabase/schema.sql`.
-3. Confirm tables: `profiles`, `classes`, `class_members`, `assignments`, `assignment_resources`, `submissions`, `feedback`, `notifications`.
-4. Storage buckets `assignment-resources` and `student-submissions` are created by the schema (private).
+Run the SQL files in the Supabase **SQL Editor** in this order:
+
+1. `supabase/schema.sql` — core tables: `profiles`, `classes`, `class_members`, `assignments`, `assignment_resources`, `submissions`, `feedback`, `notifications`; storage buckets.
+2. `supabase/phase_01_branding_school_settings.sql` — school settings, year groups (Year 7–13), subjects, class colours, marking symbols.
+3. `supabase/phase_02_multi_teacher_classes.sql` — `class_teachers` many-to-many, RLS updates for co-teacher access.
+4. `supabase/phase_03_assignment_templates_and_deployments.sql` — `assignment_templates`, multi-class deploy RPC, template content sync trigger.
+
+> Run phases in order on an existing database. Each migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`).
 
 ## 3. Create storage buckets (if needed)
 
@@ -79,7 +83,7 @@ Ms,Harper,ms.harper@school.edu,teacher,,
 ```
 
 - `role` must be `admin`, `teacher`, or `student`
-- `year_group` optional except recommended for students (`Year 7`–`Year 11`)
+- `year_group` optional except recommended for students (`Year 7`–`Year 13`)
 - `class_name` optional; missing classes are created when a teacher already exists
 - Preview validates emails, roles and duplicates before any accounts are created
 - Invites are sent with the service role on the server only

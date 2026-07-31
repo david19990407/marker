@@ -21,9 +21,20 @@ export default async function TeacherAssignmentDetailPage({
     .from("assignments")
     .select("*, classes(name)")
     .eq("id", id)
-    .eq("teacher_id", profile.id)
     .maybeSingle();
+
   if (!assignment) notFound();
+
+  // Verify access: teacher_id match OR class_teachers membership
+  if (assignment.teacher_id !== profile.id) {
+    const { data: ct } = await supabase
+      .from("class_teachers")
+      .select("id")
+      .eq("class_id", assignment.class_id)
+      .eq("teacher_id", profile.id)
+      .maybeSingle();
+    if (!ct) notFound();
+  }
 
   const [{ data: resources }, { data: submissions }] = await Promise.all([
     supabase

@@ -17,20 +17,47 @@ export default async function EditAssignmentPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [{ data: assignment }, { data: classes }] = await Promise.all([
-    supabase
-      .from("assignments")
-      .select("*")
-      .eq("id", id)
+  const { data: assignment } = await supabase
+    .from("assignments")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  // Verify access: teacher_id match or class_teachers membership
+  if (assignment && assignment.teacher_id !== profile.id) {
+    const { data: ct } = await supabase
+      .from("class_teachers")
+      .select("id")
+      .eq("class_id", assignment.class_id)
       .eq("teacher_id", profile.id)
-      .maybeSingle(),
-    supabase
-      .from("classes")
-      .select("id, name")
-      .eq("teacher_id", profile.id)
-      .eq("archived", false)
-      .order("name"),
-  ]);
+      .maybeSingle();
+    if (!ct) {
+      notFound();
+    }
+  }
+
+  // Classes the teacher can assign to (for the class display)
+  const { data: ctRows } = await supabase
+    .from("class_teachers")
+    .select("classes(id, name, archived)")
+    .eq("teacher_id", profile.id);
+
+  const classesFromCt = (ctRows ?? []).flatMap((row) => {
+    const c = Array.isArray(row.classes) ? row.classes[0] : row.classes;
+    return c && !c.archived ? [{ id: c.id, name: c.name }] : [];
+  });
+
+  const { data: legacyClasses } = await supabase
+    .from("classes")
+    .select("id, name")
+    .eq("teacher_id", profile.id)
+    .eq("archived", false);
+
+  const classIdsSeen = new Set(classesFromCt.map((c) => c.id));
+  const classes = [
+    ...classesFromCt,
+    ...(legacyClasses ?? []).filter((c) => !classIdsSeen.has(c.id)),
+  ].sort((a, b) => a.name.localeCompare(b.name));
 
   if (!assignment) notFound();
 

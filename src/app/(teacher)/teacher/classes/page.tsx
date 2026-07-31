@@ -9,13 +9,44 @@ import { createClient } from "@/lib/supabase/server";
 export default async function TeacherClassesPage() {
   const profile = await requireProfile(["teacher", "admin"]);
   const supabase = await createClient();
-  const { data: classes } = await supabase
-    .from("classes")
-    .select("id, name, subject, year_group, join_code, archived")
-    .eq("teacher_id", profile.id)
-    .order("created_at", { ascending: false });
 
-  const classIds = (classes ?? []).map((c) => c.id);
+  // Include classes where this teacher is a member via class_teachers
+  const { data: ctRows } = await supabase
+    .from("class_teachers")
+    .select(
+      "membership_role, classes(id, name, subject, year_group, join_code, archived, created_at)",
+    )
+    .eq("teacher_id", profile.id);
+
+  // Deduplicate and flatten; fall back to empty if class_teachers not available
+  const classesByIdMap = new Map<
+    string,
+    { id: string; name: string; subject: string; year_group: string | null; join_code: string; archived: boolean; created_at: string; membership_role: string }
+  >();
+  for (const row of ctRows ?? []) {
+    const c = Array.isArray(row.classes) ? row.classes[0] : row.classes;
+    if (c && !classesByIdMap.has(c.id)) {
+      classesByIdMap.set(c.id, { ...c, membership_role: row.membership_role });
+    }
+  }
+
+  // Also include legacy classes where teacher_id = profile.id but not yet in class_teachers
+  const { data: legacyClasses } = await supabase
+    .from("classes")
+    .select("id, name, subject, year_group, join_code, archived, created_at")
+    .eq("teacher_id", profile.id);
+
+  for (const c of legacyClasses ?? []) {
+    if (!classesByIdMap.has(c.id)) {
+      classesByIdMap.set(c.id, { ...c, membership_role: "lead_teacher" });
+    }
+  }
+
+  const classes = Array.from(classesByIdMap.values()).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+
+  const classIds = classes.map((c) => c.id);
   const { data: members } = classIds.length
     ? await supabase.from("class_members").select("class_id").in("class_id", classIds)
     : { data: [] as { class_id: string }[] };
@@ -46,9 +77,16 @@ export default async function TeacherClassesPage() {
             <Card key={c.id}>
               <div className="mb-2 flex items-start justify-between gap-2">
                 <h2 className="font-semibold text-slate-900">{c.name}</h2>
-                <Badge tone={c.archived ? "neutral" : "success"}>
-                  {c.archived ? "Archived" : "Active"}
-                </Badge>
+                <div className="flex gap-1.5">
+                  {c.membership_role !== "lead_teacher" ? (
+                    <Badge tone="neutral" className="capitalize">
+                      {c.membership_role.replace(/_/g, " ")}
+                    </Badge>
+                  ) : null}
+                  <Badge tone={c.archived ? "neutral" : "success"}>
+                    {c.archived ? "Archived" : "Active"}
+                  </Badge>
+                </div>
               </div>
               <p className="text-sm text-slate-500">
                 {c.subject}

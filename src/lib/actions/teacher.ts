@@ -11,10 +11,12 @@ import {
 } from "@/lib/utils/files";
 import {
   assignmentSchema,
+  createAssignmentSchema,
   feedbackSchema,
   teacherClassSchema,
 } from "@/lib/validations/teacher";
 import type { ActionResult } from "@/lib/actions/auth";
+import type { ClassTeacherRole } from "@/lib/types";
 
 async function assertTeacher() {
   return requireProfile(["teacher", "admin"]);
@@ -22,15 +24,43 @@ async function assertTeacher() {
 
 async function assertOwnsClass(classId: string, teacherId: string) {
   const supabase = await createClient();
-  const { data } = await supabase
+  // Check class_teachers membership first (covers co-teachers)
+  const { data: membership } = await supabase
+    .from("class_teachers")
+    .select("id")
+    .eq("class_id", classId)
+    .eq("teacher_id", teacherId)
+    .maybeSingle();
+  if (membership) return;
+  // Fallback: check legacy classes.teacher_id for classes created before migration
+  const { data: cls } = await supabase
     .from("classes")
     .select("id, teacher_id")
     .eq("id", classId)
     .maybeSingle();
-  if (!data || data.teacher_id !== teacherId) {
+  if (!cls || cls.teacher_id !== teacherId) {
     throw new Error("Class not found");
   }
-  return data;
+}
+
+async function assertLeadTeacher(classId: string, teacherId: string) {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("class_teachers")
+    .select("membership_role")
+    .eq("class_id", classId)
+    .eq("teacher_id", teacherId)
+    .maybeSingle();
+  if (data?.membership_role === "lead_teacher") return;
+  // Fallback: original teacher_id is implicitly lead
+  const { data: cls } = await supabase
+    .from("classes")
+    .select("teacher_id")
+    .eq("id", classId)
+    .maybeSingle();
+  if (!cls || cls.teacher_id !== teacherId) {
+    throw new Error("Only the lead teacher can perform this action");
+  }
 }
 
 export async function createTeacherClassAction(
@@ -60,6 +90,18 @@ export async function createTeacherClassAction(
       .select("id")
       .single();
     if (!error && data) {
+      // Register as lead teacher in class_teachers
+      await supabase.from("class_teachers").upsert(
+        {
+          class_id: data.id,
+          teacher_id: profile.id,
+          membership_role: "lead_teacher",
+          can_create_assignments: true,
+          can_mark_submissions: true,
+          can_manage_members: true,
+        },
+        { onConflict: "class_id,teacher_id" },
+      );
       revalidatePath("/teacher/classes");
       revalidatePath("/teacher/dashboard");
       redirect(`/teacher/classes/${data.id}`);
@@ -90,8 +132,7 @@ export async function updateTeacherClassAction(
   const { error } = await supabase
     .from("classes")
     .update(parsed.data)
-    .eq("id", classId)
-    .eq("teacher_id", profile.id);
+    .eq("id", classId);
   if (error) return { error: error.message };
   revalidatePath(`/teacher/classes/${classId}`);
   revalidatePath("/teacher/classes");
@@ -102,13 +143,12 @@ export async function archiveTeacherClassAction(
   classId: string,
 ): Promise<ActionResult> {
   const profile = await assertTeacher();
-  await assertOwnsClass(classId, profile.id);
+  await assertLeadTeacher(classId, profile.id);
   const supabase = await createClient();
   const { error } = await supabase
     .from("classes")
     .update({ archived: true })
-    .eq("id", classId)
-    .eq("teacher_id", profile.id);
+    .eq("id", classId);
   if (error) return { error: error.message };
   revalidatePath("/teacher/classes");
   return { success: "Class archived" };
@@ -118,15 +158,14 @@ export async function regenerateJoinCodeAction(
   classId: string,
 ): Promise<ActionResult> {
   const profile = await assertTeacher();
-  await assertOwnsClass(classId, profile.id);
+  await assertLeadTeacher(classId, profile.id);
   const supabase = await createClient();
   for (let i = 0; i < 5; i += 1) {
     const join_code = generateJoinCode();
     const { error } = await supabase
       .from("classes")
       .update({ join_code })
-      .eq("id", classId)
-      .eq("teacher_id", profile.id);
+      .eq("id", classId);
     if (!error) {
       revalidatePath(`/teacher/classes/${classId}`);
       return { success: `New join code: ${join_code}` };
@@ -205,17 +244,181 @@ export async function removeStudentFromTeacherClassAction(
   return { success: "Student removed" };
 }
 
+export async function addClassTeacherAction(
+  classId: string,
+  _prev: ActionResult,
+  formData: FormData,
+): Promise<ActionResult> {
+  const profile = await assertTeacher();
+  await assertLeadTeacher(classId, profile.id);
+
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  const role = (String(formData.get("role") ?? "teacher")) as ClassTeacherRole;
+  if (!email) return { error: "Enter a teacher email" };
+
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const admin = createAdminClient();
+  const { data: teacher } = await admin
+    .from("profiles")
+    .select("id, role, is_active, display_name")
+    .eq("email", email)
+    .maybeSingle();
+
+  if (!teacher || teacher.role === "student" || !teacher.is_active) {
+    return { error: "No active teacher found with that email" };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("class_teachers").upsert(
+    {
+      class_id: classId,
+      teacher_id: teacher.id,
+      membership_role: role,
+      can_create_assignments: true,
+      can_mark_submissions: true,
+      can_manage_members: role === "lead_teacher",
+    },
+    { onConflict: "class_id,teacher_id" },
+  );
+  if (error) return { error: error.message };
+  revalidatePath(`/teacher/classes/${classId}`);
+  return { success: `${teacher.display_name} added as ${role.replace(/_/g, " ")}` };
+}
+
+export async function updateClassTeacherRoleAction(
+  classId: string,
+  targetTeacherId: string,
+  role: ClassTeacherRole,
+): Promise<ActionResult> {
+  const profile = await assertTeacher();
+  await assertLeadTeacher(classId, profile.id);
+
+  if (targetTeacherId === profile.id) {
+    return { error: "You cannot change your own role" };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("class_teachers")
+    .update({
+      membership_role: role,
+      can_manage_members: role === "lead_teacher",
+    })
+    .eq("class_id", classId)
+    .eq("teacher_id", targetTeacherId);
+  if (error) return { error: error.message };
+  revalidatePath(`/teacher/classes/${classId}`);
+  return { success: "Role updated" };
+}
+
+export async function removeClassTeacherAction(
+  classId: string,
+  targetTeacherId: string,
+): Promise<ActionResult> {
+  const profile = await assertTeacher();
+  await assertLeadTeacher(classId, profile.id);
+
+  if (targetTeacherId === profile.id) {
+    return { error: "You cannot remove yourself from the class" };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("class_teachers")
+    .delete()
+    .eq("class_id", classId)
+    .eq("teacher_id", targetTeacherId);
+  if (error) return { error: error.message };
+  revalidatePath(`/teacher/classes/${classId}`);
+  return { success: "Teacher removed from class" };
+}
+
 export async function saveAssignmentAction(
   assignmentId: string | null,
   _prev: ActionResult,
   formData: FormData,
 ): Promise<ActionResult> {
   const profile = await assertTeacher();
+  const supabase = await createClient();
+
+  // --- CREATE: multi-class via RPC ---
+  if (!assignmentId) {
+    const classIds = formData.getAll("class_ids").map(String).filter(Boolean);
+    const parsed = createAssignmentSchema.safeParse({
+      class_ids: classIds,
+      title: formData.get("title"),
+      instructions: formData.get("instructions") || "",
+      due_at: formData.get("due_at") || undefined,
+      release_at: formData.get("release_at") || undefined,
+      maximum_mark: formData.get("maximum_mark") || 30,
+      allow_text_submission:
+        formData.get("allow_text_submission") === "on" ||
+        formData.get("allow_text_submission") === "true",
+      allow_file_submission:
+        formData.get("allow_file_submission") === "on" ||
+        formData.get("allow_file_submission") === "true",
+      status: formData.get("status") || "draft",
+    });
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Invalid assignment" };
+    }
+    if (!parsed.data.allow_text_submission && !parsed.data.allow_file_submission) {
+      return { error: "Allow at least one submission method" };
+    }
+
+    let perClassDueAt: Record<string, string> = {};
+    const perClassJson = String(formData.get("per_class_due_at_json") || "{}");
+    try {
+      perClassDueAt = JSON.parse(perClassJson);
+    } catch {
+      // use empty
+    }
+
+    const { error: rpcError } = await supabase.rpc(
+      "create_assignment_template_and_deploy",
+      {
+        p_title: parsed.data.title,
+        p_instructions: parsed.data.instructions,
+        p_class_ids: parsed.data.class_ids,
+        p_due_at: parsed.data.due_at,
+        p_release_at: parsed.data.release_at,
+        p_maximum_mark: parsed.data.maximum_mark,
+        p_allow_text: parsed.data.allow_text_submission,
+        p_allow_file: parsed.data.allow_file_submission,
+        p_status: parsed.data.status,
+        p_per_class_due_at: perClassDueAt,
+      },
+    );
+    if (rpcError) return { error: rpcError.message };
+
+    if (parsed.data.status === "published") {
+      for (const classId of parsed.data.class_ids) {
+        const { data: deployments } = await supabase
+          .from("assignments")
+          .select("id, title")
+          .eq("class_id", classId)
+          .eq("teacher_id", profile.id)
+          .eq("title", parsed.data.title)
+          .limit(1);
+        const dep = deployments?.[0];
+        if (dep) {
+          await maybeNotifyPublished(dep.id, "published", classId, dep.title);
+        }
+      }
+    }
+
+    revalidatePath("/teacher/assignments");
+    revalidatePath("/teacher/dashboard");
+    redirect("/teacher/assignments");
+  }
+
+  // --- EDIT: single deployment ---
   const parsed = assignmentSchema.safeParse({
     class_id: formData.get("class_id"),
     title: formData.get("title"),
     instructions: formData.get("instructions") || "",
     due_at: formData.get("due_at") || undefined,
+    release_at: formData.get("release_at") || undefined,
     maximum_mark: formData.get("maximum_mark") || 30,
     allow_text_submission:
       formData.get("allow_text_submission") === "on" ||
@@ -224,6 +427,9 @@ export async function saveAssignmentAction(
       formData.get("allow_file_submission") === "on" ||
       formData.get("allow_file_submission") === "true",
     status: formData.get("status") || "draft",
+    update_template:
+      formData.get("update_template") === "on" ||
+      formData.get("update_template") === "true",
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid assignment" };
@@ -232,45 +438,110 @@ export async function saveAssignmentAction(
     return { error: "Allow at least one submission method" };
   }
 
-  await assertOwnsClass(parsed.data.class_id, profile.id);
-  const supabase = await createClient();
+  const { data: existing } = await supabase
+    .from("assignments")
+    .select("id, teacher_id, class_id, template_id")
+    .eq("id", assignmentId)
+    .maybeSingle();
+  if (!existing) return { error: "Assignment not found" };
 
-  const payload = {
-    ...parsed.data,
-    teacher_id: profile.id,
-  };
-
-  if (assignmentId) {
-    const { data: existing } = await supabase
-      .from("assignments")
-      .select("id, teacher_id")
-      .eq("id", assignmentId)
+  // Authorisation: teacher_id match OR class_teachers membership
+  if (existing.teacher_id !== profile.id) {
+    const { data: ct } = await supabase
+      .from("class_teachers")
+      .select("id")
+      .eq("class_id", existing.class_id)
+      .eq("teacher_id", profile.id)
       .maybeSingle();
-    if (!existing || existing.teacher_id !== profile.id) {
-      return { error: "Assignment not found" };
-    }
-    const { error } = await supabase
-      .from("assignments")
-      .update(payload)
-      .eq("id", assignmentId);
-    if (error) return { error: error.message };
-    await maybeNotifyPublished(assignmentId, parsed.data.status, parsed.data.class_id, parsed.data.title);
-    revalidatePath("/teacher/assignments");
-    revalidatePath(`/teacher/assignments/${assignmentId}`);
-    return { success: "Assignment saved" };
+    if (!ct) return { error: "Assignment not found" };
   }
 
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from("assignments")
-    .insert(payload)
-    .select("id")
-    .single();
-  if (error || !data) return { error: error?.message ?? "Failed to create" };
+    .update({
+      class_id: parsed.data.class_id,
+      title: parsed.data.title,
+      instructions: parsed.data.instructions,
+      due_at: parsed.data.due_at,
+      release_at: parsed.data.release_at,
+      maximum_mark: parsed.data.maximum_mark,
+      allow_text_submission: parsed.data.allow_text_submission,
+      allow_file_submission: parsed.data.allow_file_submission,
+      status: parsed.data.status,
+    })
+    .eq("id", assignmentId);
+  if (error) return { error: error.message };
 
-  await maybeNotifyPublished(data.id, parsed.data.status, parsed.data.class_id, parsed.data.title);
+  // Optionally sync content changes back to the template (triggers DB sync to other deployments)
+  if (
+    parsed.data.update_template &&
+    existing.template_id
+  ) {
+    await supabase
+      .from("assignment_templates")
+      .update({
+        title: parsed.data.title,
+        instructions: parsed.data.instructions,
+        allow_text_submission: parsed.data.allow_text_submission,
+        allow_file_submission: parsed.data.allow_file_submission,
+        default_maximum_mark: parsed.data.maximum_mark,
+      })
+      .eq("id", existing.template_id);
+  }
+
+  await maybeNotifyPublished(
+    assignmentId,
+    parsed.data.status,
+    parsed.data.class_id,
+    parsed.data.title,
+  );
   revalidatePath("/teacher/assignments");
-  revalidatePath("/teacher/dashboard");
-  redirect(`/teacher/assignments/${data.id}`);
+  revalidatePath(`/teacher/assignments/${assignmentId}`);
+  return { success: "Assignment saved" };
+}
+
+export async function copyAssignmentAction(
+  assignmentId: string,
+): Promise<ActionResult> {
+  const profile = await assertTeacher();
+  const supabase = await createClient();
+
+  const { data: assignment } = await supabase
+    .from("assignments")
+    .select("id, class_id, teacher_id, title, instructions, allow_text_submission, allow_file_submission, maximum_mark")
+    .eq("id", assignmentId)
+    .maybeSingle();
+
+  if (!assignment) return { error: "Assignment not found" };
+  if (assignment.teacher_id !== profile.id) {
+    const { data: ct } = await supabase
+      .from("class_teachers")
+      .select("id")
+      .eq("class_id", assignment.class_id)
+      .eq("teacher_id", profile.id)
+      .maybeSingle();
+    if (!ct) return { error: "Assignment not found" };
+  }
+
+  const { error: rpcError } = await supabase.rpc(
+    "create_assignment_template_and_deploy",
+    {
+      p_title: `Copy of ${assignment.title}`,
+      p_instructions: assignment.instructions,
+      p_class_ids: [assignment.class_id],
+      p_due_at: null,
+      p_release_at: null,
+      p_maximum_mark: assignment.maximum_mark,
+      p_allow_text: assignment.allow_text_submission,
+      p_allow_file: assignment.allow_file_submission,
+      p_status: "draft",
+      p_per_class_due_at: {},
+    },
+  );
+  if (rpcError) return { error: rpcError.message };
+
+  revalidatePath("/teacher/assignments");
+  return { success: `Created draft copy "Copy of ${assignment.title}"` };
 }
 
 async function maybeNotifyPublished(
@@ -296,6 +567,7 @@ async function maybeNotifyPublished(
     })),
   );
 }
+
 
 export async function archiveAssignmentAction(
   assignmentId: string,
