@@ -15,15 +15,25 @@ Assignment, submission, marking and feedback platform for schools.
 
 ## 2. Run the database schema
 
-Run the SQL files in the Supabase **SQL Editor** in this order:
+### Existing live project (already has core tables)
 
-1. `supabase/schema.sql` — core tables: `profiles`, `classes`, `class_members`, `assignments`, `assignment_resources`, `submissions`, `feedback`, `notifications`; storage buckets.
-2. `supabase/phase_01_branding_school_settings.sql` — school settings, year groups (Year 7–13), subjects, class colours, marking symbols.
-3. `supabase/phase_02_multi_teacher_classes.sql` — `class_teachers` many-to-many, RLS updates for co-teacher access.
-4. `supabase/phase_03_assignment_templates_and_deployments.sql` — `assignment_templates`, multi-class deploy RPC, template content sync trigger.
-5. `supabase/phase_04_structured_homework_builder.sql` — `assignment_sections`, `assignment_blocks`, `assignment_questions`, `assignment_table_cells`, `student_responses`, `response_cells`; `save_assignment_structure` RPC; RLS policies for teacher/student access.
+If School Settings or multi-class assignment deploy fails with missing `school_settings` / `create_assignment_template_and_deploy`, run **only**:
 
-> Run phases in order on an existing database. Each migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `do $$ begin … exception when duplicate_object then null; end $$`).
+1. `supabase/repair_phases_01_to_03.sql`
+
+Do **not** re-run `schema.sql`. The repair file is idempotent, preserves data, recreates RPCs with the correct parameter names, and reloads the PostgREST schema cache.
+
+Then, if the homework builder is in use and not yet migrated:
+
+2. `supabase/phase_04_structured_homework_builder.sql`
+
+### Fresh empty project
+
+1. `supabase/schema.sql` — core tables and RLS.
+2. `supabase/repair_phases_01_to_03.sql` — school settings, year groups, subjects, `class_teachers`, assignment templates + deploy RPCs.
+3. `supabase/phase_04_structured_homework_builder.sql` — structured homework builder tables/RPC.
+
+> Individual `phase_01` / `phase_02` / `phase_03` files remain in the repo but are superseded for production repair by `repair_phases_01_to_03.sql`.
 
 ## 3. Create storage buckets (if needed)
 

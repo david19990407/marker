@@ -374,7 +374,7 @@ export async function saveAssignmentAction(
       // use empty
     }
 
-    const { error: rpcError } = await supabase.rpc(
+    const { data: rpcResult, error: rpcError } = await supabase.rpc(
       "create_assignment_template_and_deploy",
       {
         p_title: parsed.data.title,
@@ -387,22 +387,42 @@ export async function saveAssignmentAction(
         p_allow_file: parsed.data.allow_file_submission,
         p_status: parsed.data.status,
         p_per_class_due_at: perClassDueAt,
+        p_academic_year: null,
       },
     );
     if (rpcError) return { error: rpcError.message };
 
     if (parsed.data.status === "published") {
-      for (const classId of parsed.data.class_ids) {
-        const { data: deployments } = await supabase
-          .from("assignments")
-          .select("id, title")
-          .eq("class_id", classId)
-          .eq("teacher_id", profile.id)
-          .eq("title", parsed.data.title)
-          .limit(1);
-        const dep = deployments?.[0];
-        if (dep) {
-          await maybeNotifyPublished(dep.id, "published", classId, dep.title);
+      const deploymentIds = extractDeploymentIds(rpcResult);
+      if (deploymentIds.length) {
+        for (const deploymentId of deploymentIds) {
+          const { data: dep } = await supabase
+            .from("assignments")
+            .select("id, title, class_id")
+            .eq("id", deploymentId)
+            .maybeSingle();
+          if (dep) {
+            await maybeNotifyPublished(
+              dep.id,
+              "published",
+              dep.class_id,
+              dep.title,
+            );
+          }
+        }
+      } else {
+        for (const classId of parsed.data.class_ids) {
+          const { data: deployments } = await supabase
+            .from("assignments")
+            .select("id, title")
+            .eq("class_id", classId)
+            .eq("teacher_id", profile.id)
+            .eq("title", parsed.data.title)
+            .limit(1);
+          const dep = deployments?.[0];
+          if (dep) {
+            await maybeNotifyPublished(dep.id, "published", classId, dep.title);
+          }
         }
       }
     }
@@ -536,12 +556,21 @@ export async function copyAssignmentAction(
       p_allow_file: assignment.allow_file_submission,
       p_status: "draft",
       p_per_class_due_at: {},
+      p_academic_year: null,
     },
   );
   if (rpcError) return { error: rpcError.message };
 
   revalidatePath("/teacher/assignments");
   return { success: `Created draft copy "Copy of ${assignment.title}"` };
+}
+
+/** Normalise create_assignment_template_and_deploy jsonb/uuid return shapes. */
+function extractDeploymentIds(rpcResult: unknown): string[] {
+  if (!rpcResult || typeof rpcResult !== "object") return [];
+  const ids = (rpcResult as { deployment_ids?: unknown }).deployment_ids;
+  if (!Array.isArray(ids)) return [];
+  return ids.filter((id): id is string => typeof id === "string");
 }
 
 async function maybeNotifyPublished(

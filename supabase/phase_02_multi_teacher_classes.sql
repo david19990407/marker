@@ -263,3 +263,6 @@ create policy "Teachers manage feedback for their class submissions" on public.f
         and public.teacher_can_mark_submissions(a.class_id)
     )
   );
+
+-- Reload PostgREST schema cache
+notify pgrst, 'reload schema';

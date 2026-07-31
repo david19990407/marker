@@ -62,11 +62,17 @@ do $$ begin
   end if;
 end $$;
 
--- Unique deployment per template+class
+-- Unique deployment per template+class (idempotent)
 do $$ begin
-  alter table public.assignments
-    add constraint assignments_template_class_unique unique (template_id, class_id);
-exception when duplicate_object then null;
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'assignments_template_class_unique'
+      and conrelid = 'public.assignments'::regclass
+  ) then
+    alter table public.assignments
+      add constraint assignments_template_class_unique unique (template_id, class_id);
+  end if;
 end $$;
 
 create or replace function public.set_assignment_template_updated_at()
@@ -237,7 +243,7 @@ create or replace function public.create_assignment_template_and_deploy(
   p_per_class_due_at jsonb default '{}'::jsonb,
   p_academic_year text default null
 )
-returns uuid
+returns jsonb
 language plpgsql
 security definer
 set search_path = public
@@ -245,12 +251,13 @@ as $$
 declare
   v_actor uuid := auth.uid();
   v_template_id uuid;
+  v_deployment_ids uuid[];
 begin
   if v_actor is null or not (public.is_teacher() or public.is_admin()) then
     raise exception 'Not authorized';
   end if;
 
-  if p_class_ids is null or array_length(p_class_ids, 1) is null then
+  if p_class_ids is null or coalesce(array_length(p_class_ids, 1), 0) = 0 then
     raise exception 'Select at least one class';
   end if;
 
@@ -265,12 +272,17 @@ begin
   )
   returning id into v_template_id;
 
-  perform public.deploy_assignment_template(
+  select coalesce(array_agg(d.id), '{}'::uuid[])
+  into v_deployment_ids
+  from public.deploy_assignment_template(
     v_template_id, p_class_ids, p_due_at, p_release_at,
     p_maximum_mark, p_status, coalesce(p_per_class_due_at, '{}'::jsonb)
-  );
+  ) as d;
 
-  return v_template_id;
+  return jsonb_build_object(
+    'template_id', v_template_id,
+    'deployment_ids', to_jsonb(v_deployment_ids)
+  );
 end;
 $$;
 
@@ -283,3 +295,6 @@ grant execute on function public.create_assignment_template_and_deploy(
   text, text, uuid[], timestamptz, timestamptz, numeric, boolean, boolean,
   public.assignment_status, jsonb, text
 ) to authenticated;
+
+-- Reload PostgREST schema cache
+notify pgrst, 'reload schema';
