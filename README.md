@@ -4,7 +4,7 @@ Assignment, submission, marking and feedback platform for schools.
 
 **Stack:** Next.js · TypeScript · Tailwind CSS · Supabase (Auth, Database, Storage)
 
-> Phases 1–3 are implemented: database schema, real authentication, and the admin portal (users, CSV import, classes). Teacher assignment/marking and student submission workflows follow in later phases.
+> Phases 1–5 are implemented: database schema, real authentication, admin portal, teacher classes/assignments/marking, and student homework submission.
 
 ## 1. Create a Supabase project
 
