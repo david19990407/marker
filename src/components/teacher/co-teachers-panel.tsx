@@ -1,10 +1,13 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { addClassTeacherAction } from "@/lib/actions/teacher";
+import {
+  addClassTeacherAction,
+  removeClassTeacherAction,
+} from "@/lib/actions/teacher";
 import type { ActionResult } from "@/lib/actions/auth";
 import type { ClassTeacherRole } from "@/lib/types";
 
@@ -39,6 +42,7 @@ export function CoTeachersPanel({
 }) {
   const addAction = addClassTeacherAction.bind(null, classId);
   const [state, action, pending] = useActionState(addAction, initial);
+  const [removing, startRemove] = useTransition();
 
   return (
     <div className="space-y-4">
@@ -63,22 +67,18 @@ export function CoTeachersPanel({
                   {ROLE_LABELS[t.membership_role] ?? t.membership_role}
                 </Badge>
                 {isLead && t.teacher_id !== currentTeacherId ? (
-                  <form
-                    action={async () => {
-                      "use server";
-                      const { removeClassTeacherAction: remove } = await import(
-                        "@/lib/actions/teacher"
-                      );
-                      await remove(classId, t.teacher_id);
-                    }}
+                  <button
+                    type="button"
+                    disabled={removing}
+                    onClick={() =>
+                      startRemove(async () => {
+                        await removeClassTeacherAction(classId, t.teacher_id);
+                      })
+                    }
+                    className="rounded-xl px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
                   >
-                    <button
-                      type="submit"
-                      className="rounded-xl px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50"
-                    >
-                      Remove
-                    </button>
-                  </form>
+                    Remove
+                  </button>
                 ) : null}
               </div>
             </li>
@@ -109,6 +109,7 @@ export function CoTeachersPanel({
               type="email"
               placeholder="teacher@school.edu"
               className="flex-1"
+              required
             />
             <select
               name="role"
