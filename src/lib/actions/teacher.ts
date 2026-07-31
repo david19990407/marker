@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
-import { generateJoinCode } from "@/lib/utils/join-code";
 import {
   assertSafeUpload,
   buildStoragePath,
@@ -40,26 +39,6 @@ async function assertOwnsClass(classId: string, teacherId: string) {
     .maybeSingle();
   if (!cls || cls.teacher_id !== teacherId) {
     throw new Error("Class not found");
-  }
-}
-
-async function assertLeadTeacher(classId: string, teacherId: string) {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from("class_teachers")
-    .select("membership_role")
-    .eq("class_id", classId)
-    .eq("teacher_id", teacherId)
-    .maybeSingle();
-  if (data?.membership_role === "lead_teacher") return;
-  // Fallback: original teacher_id is implicitly lead
-  const { data: cls } = await supabase
-    .from("classes")
-    .select("teacher_id")
-    .eq("id", classId)
-    .maybeSingle();
-  if (!cls || cls.teacher_id !== teacherId) {
-    throw new Error("Only the lead teacher can perform this action");
   }
 }
 
@@ -109,97 +88,40 @@ export async function createTeacherClassAction(
 }
 
 export async function updateTeacherClassAction(
-  classId: string,
-  _prev: ActionResult,
-  formData: FormData,
+  ..._args: [string, ActionResult, FormData]
 ): Promise<ActionResult> {
-  const profile = await assertTeacher();
-  await assertOwnsClass(classId, profile.id);
-  const parsed = teacherClassSchema.safeParse({
-    name: formData.get("name"),
-    subject: formData.get("subject") || "English",
-    year_group: formData.get("year_group") || null,
-    colour_hex: formData.get("colour_hex") || null,
-  });
-  if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid class" };
-  }
-  const supabase = await createClient();
-
-  // Resolve optional FK IDs from admin-configured catalogues
-  let subject_id: string | null = null;
-  let year_group_id: string | null = null;
-  const { data: subjectRow } = await supabase
-    .from("school_subjects")
-    .select("id")
-    .ilike("name", parsed.data.subject)
-    .is("archived_at", null)
-    .maybeSingle();
-  subject_id = subjectRow?.id ?? null;
-  if (parsed.data.year_group) {
-    const { data: yearRows } = await supabase
-      .from("school_year_groups")
-      .select("id, name, label")
-      .is("archived_at", null);
-    const match = (yearRows ?? []).find(
-      (row) =>
-        (row.name || row.label || "").toLowerCase() ===
-        parsed.data.year_group!.toLowerCase(),
-    );
-    year_group_id = match?.id ?? null;
-  }
-
-  const { error } = await supabase
-    .from("classes")
-    .update({
-      name: parsed.data.name,
-      subject: parsed.data.subject,
-      year_group: parsed.data.year_group,
-      colour_hex: parsed.data.colour_hex,
-      subject_id,
-      year_group_id,
-    })
-    .eq("id", classId);
-  if (error) return { error: error.message };
-  revalidatePath(`/teacher/classes/${classId}`);
-  revalidatePath("/teacher/classes");
-  return { success: "Class updated" };
+  await assertTeacher();
+  void _args;
+  return {
+    error:
+      "Teachers cannot change class name, subject, year group or colour. Ask an administrator.",
+  };
 }
 
 export async function archiveTeacherClassAction(
-  classId: string,
+  ..._args: [string]
 ): Promise<ActionResult> {
-  const profile = await assertTeacher();
-  await assertLeadTeacher(classId, profile.id);
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("classes")
-    .update({ archived: true })
-    .eq("id", classId);
-  if (error) return { error: error.message };
-  revalidatePath("/teacher/classes");
-  return { success: "Class archived" };
+  await assertTeacher();
+  void _args;
+  return {
+    error: "Only administrators can archive or restore classes.",
+  };
 }
 
 export async function regenerateJoinCodeAction(
   classId: string,
-): Promise<ActionResult> {
+): Promise<ActionResult & { code?: string }> {
   const profile = await assertTeacher();
-  await assertLeadTeacher(classId, profile.id);
+  await assertOwnsClass(classId, profile.id);
   const supabase = await createClient();
-  for (let i = 0; i < 5; i += 1) {
-    const join_code = generateJoinCode();
-    const { error } = await supabase
-      .from("classes")
-      .update({ join_code })
-      .eq("id", classId);
-    if (!error) {
-      revalidatePath(`/teacher/classes/${classId}`);
-      return { success: `New join code: ${join_code}` };
-    }
-    if (error.code !== "23505") return { error: error.message };
-  }
-  return { error: "Could not regenerate join code" };
+  const { data, error } = await supabase.rpc("regenerate_class_join_code", {
+    p_class_id: classId,
+  });
+  if (error) return { error: error.message };
+  const code = typeof data === "string" ? data : String(data ?? "");
+  revalidatePath(`/teacher/classes/${classId}`);
+  revalidatePath(`/admin/classes/${classId}`);
+  return { success: `New join code: ${code}`, code };
 }
 
 export async function addStudentToClassAction(
@@ -222,6 +144,16 @@ export async function addStudentByEmailAction(
   const { createAdminClient } = await import("@/lib/supabase/admin");
   const admin = createAdminClient();
 
+  const { data: classRow } = await admin
+    .from("classes")
+    .select("id, archived")
+    .eq("id", classId)
+    .maybeSingle();
+  if (!classRow) return { error: "Class not found" };
+  if (classRow.archived) {
+    return { error: "Cannot add students to an archived class" };
+  }
+
   let student: { id: string; role: string; is_active: boolean; display_name: string } | null =
     null;
   if (studentId) {
@@ -238,18 +170,35 @@ export async function addStudentByEmailAction(
       .eq("email", email.trim().toLowerCase())
       .maybeSingle();
     student = data;
+  } else {
+    return { error: "Enter a student email" };
   }
 
-  if (!student || student.role !== "student" || !student.is_active) {
-    return { error: "No active student found with that email" };
+  if (!student) return { error: "No account found with that email" };
+  if (student.role !== "student") return { error: "That user is not a student" };
+  if (!student.is_active) return { error: "That student account is inactive" };
+
+  const { data: existing } = await admin
+    .from("class_members")
+    .select("id")
+    .eq("class_id", classId)
+    .eq("student_id", student.id)
+    .maybeSingle();
+  if (existing) {
+    return { error: "That student is already enrolled in this class" };
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.from("class_members").upsert(
-    { class_id: classId, student_id: student.id },
-    { onConflict: "class_id,student_id" },
-  );
-  if (error) return { error: error.message };
+  const { error } = await supabase.from("class_members").insert({
+    class_id: classId,
+    student_id: student.id,
+  });
+  if (error) {
+    if (error.code === "23505") {
+      return { error: "That student is already enrolled in this class" };
+    }
+    return { error: error.message };
+  }
   revalidatePath(`/teacher/classes/${classId}`);
   return { success: `${student.display_name} added to the class` };
 }
@@ -272,92 +221,33 @@ export async function removeStudentFromTeacherClassAction(
 }
 
 export async function addClassTeacherAction(
-  classId: string,
-  _prev: ActionResult,
-  formData: FormData,
+  ..._args: [string, ActionResult, FormData]
 ): Promise<ActionResult> {
-  const profile = await assertTeacher();
-  await assertLeadTeacher(classId, profile.id);
-
-  const email = String(formData.get("email") ?? "").trim().toLowerCase();
-  const role = (String(formData.get("role") ?? "teacher")) as ClassTeacherRole;
-  if (!email) return { error: "Enter a teacher email" };
-
-  const { createAdminClient } = await import("@/lib/supabase/admin");
-  const admin = createAdminClient();
-  const { data: teacher } = await admin
-    .from("profiles")
-    .select("id, role, is_active, display_name")
-    .eq("email", email)
-    .maybeSingle();
-
-  if (!teacher || teacher.role === "student" || !teacher.is_active) {
-    return { error: "No active teacher found with that email" };
-  }
-
-  const supabase = await createClient();
-  const { error } = await supabase.from("class_teachers").upsert(
-    {
-      class_id: classId,
-      teacher_id: teacher.id,
-      membership_role: role,
-      can_create_assignments: true,
-      can_mark_submissions: true,
-      can_manage_members: role === "lead_teacher",
-    },
-    { onConflict: "class_id,teacher_id" },
-  );
-  if (error) return { error: error.message };
-  revalidatePath(`/teacher/classes/${classId}`);
-  return { success: `${teacher.display_name} added as ${role.replace(/_/g, " ")}` };
+  await assertTeacher();
+  void _args;
+  return {
+    error: "Only administrators can add teachers to a class.",
+  };
 }
 
 export async function updateClassTeacherRoleAction(
-  classId: string,
-  targetTeacherId: string,
-  role: ClassTeacherRole,
+  ..._args: [string, string, ClassTeacherRole]
 ): Promise<ActionResult> {
-  const profile = await assertTeacher();
-  await assertLeadTeacher(classId, profile.id);
-
-  if (targetTeacherId === profile.id) {
-    return { error: "You cannot change your own role" };
-  }
-
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("class_teachers")
-    .update({
-      membership_role: role,
-      can_manage_members: role === "lead_teacher",
-    })
-    .eq("class_id", classId)
-    .eq("teacher_id", targetTeacherId);
-  if (error) return { error: error.message };
-  revalidatePath(`/teacher/classes/${classId}`);
-  return { success: "Role updated" };
+  await assertTeacher();
+  void _args;
+  return {
+    error: "Only administrators can change class teacher roles.",
+  };
 }
 
 export async function removeClassTeacherAction(
-  classId: string,
-  targetTeacherId: string,
+  ..._args: [string, string]
 ): Promise<ActionResult> {
-  const profile = await assertTeacher();
-  await assertLeadTeacher(classId, profile.id);
-
-  if (targetTeacherId === profile.id) {
-    return { error: "You cannot remove yourself from the class" };
-  }
-
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("class_teachers")
-    .delete()
-    .eq("class_id", classId)
-    .eq("teacher_id", targetTeacherId);
-  if (error) return { error: error.message };
-  revalidatePath(`/teacher/classes/${classId}`);
-  return { success: "Teacher removed from class" };
+  await assertTeacher();
+  void _args;
+  return {
+    error: "Only administrators can remove teachers from a class.",
+  };
 }
 
 export async function saveAssignmentAction(

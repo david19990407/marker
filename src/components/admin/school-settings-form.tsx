@@ -14,6 +14,9 @@ export function SchoolSettingsForm({
   settings?: {
     school_name: string;
     platform_display_name: string;
+    primary_colour?: string;
+    secondary_colour?: string;
+    accent_colour?: string;
     max_upload_bytes?: number;
   };
 }) {
@@ -41,7 +44,7 @@ export function SchoolSettingsForm({
         </span>
         <span className="mb-1.5 block text-xs text-slate-500">
           The organisation using the platform. Shown as a subtitle on login and
-          dashboards (for example “Homework Passport for Presdales School”).
+          dashboards.
         </span>
         <Input
           name="school_name"
@@ -56,8 +59,8 @@ export function SchoolSettingsForm({
           Platform display name
         </span>
         <span className="mb-1.5 block text-xs text-slate-500">
-          The product name shown to users in the sidebar, browser title, login
-          heading and navigation. Defaults to Homework Passport.
+          Product name in the sidebar, browser title, login heading and
+          navigation.
         </span>
         <Input
           name="platform_display_name"
@@ -68,6 +71,49 @@ export function SchoolSettingsForm({
           placeholder="Homework Passport"
         />
       </label>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <label className="text-sm">
+          <span className="mb-1.5 block font-medium text-slate-700">
+            Primary colour
+          </span>
+          <Input
+            name="primary_colour"
+            type="color"
+            required
+            defaultValue={settings?.primary_colour ?? "#7C3AED"}
+            className="h-11 cursor-pointer p-1"
+          />
+        </label>
+        <label className="text-sm">
+          <span className="mb-1.5 block font-medium text-slate-700">
+            Secondary colour
+          </span>
+          <Input
+            name="secondary_colour"
+            type="color"
+            required
+            defaultValue={settings?.secondary_colour ?? "#4F46E5"}
+            className="h-11 cursor-pointer p-1"
+          />
+        </label>
+        <label className="text-sm">
+          <span className="mb-1.5 block font-medium text-slate-700">
+            Accent colour
+          </span>
+          <Input
+            name="accent_colour"
+            type="color"
+            required
+            defaultValue={settings?.accent_colour ?? "#0D9488"}
+            className="h-11 cursor-pointer p-1"
+          />
+        </label>
+      </div>
+      <p className="text-xs text-slate-500">
+        These colours drive buttons, sidebar accents and page backgrounds across
+        admin, teacher and student views. Prefer colours with good contrast.
+      </p>
 
       <Button type="submit" disabled={pending}>
         {pending ? "Saving…" : "Save branding"}

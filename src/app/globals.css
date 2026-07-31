@@ -3,6 +3,9 @@
 :root {
   --background: #fafafa;
   --foreground: #0f172a;
+  --primary-colour: #7c3aed;
+  --secondary-colour: #4f46e5;
+  --accent-colour: #0d9488;
   --brand-50: #f5f3ff;
   --brand-100: #ede9fe;
   --brand-400: #a78bfa;
