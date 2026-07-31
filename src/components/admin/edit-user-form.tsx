@@ -18,10 +18,13 @@ export function EditUserForm({
   user,
   classes,
   memberClassIds,
+  canEditRole = true,
 }: {
   user: Profile;
   classes: { id: string; name: string }[];
   memberClassIds: string[];
+  /** False when editing your own account (unless you are the seeded admin). */
+  canEditRole?: boolean;
 }) {
   const boundUpdate = updateUserAction.bind(null, user.id);
   const [state, action, pending] = useActionState(boundUpdate, initial);
@@ -58,15 +61,24 @@ export function EditUserForm({
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="text-sm">
             <span className="mb-1.5 block text-slate-500">Role</span>
+            {!canEditRole ? (
+              <input type="hidden" name="role" value={user.role} />
+            ) : null}
             <select
-              name="role"
+              name={canEditRole ? "role" : undefined}
               defaultValue={user.role}
-              className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm"
+              disabled={!canEditRole}
+              className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm disabled:bg-slate-50 disabled:text-slate-500"
             >
               <option value="student">Student</option>
               <option value="teacher">Teacher</option>
               <option value="admin">Admin</option>
             </select>
+            {!canEditRole ? (
+              <p className="mt-1.5 text-xs text-slate-500">
+                You cannot change your own role.
+              </p>
+            ) : null}
           </label>
           <label className="text-sm">
             <span className="mb-1.5 block text-slate-500">Year group</span>
