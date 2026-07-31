@@ -1,12 +1,6 @@
--- Migration: repair promote_user_to_admin bootstrap on an existing LitCoach database.
+-- Migration: allow admins (and service role) to change other users' roles,
+-- while blocking self-role changes except for the first seeded admin.
 -- Safe to run once. Does NOT recreate tables, enums, or storage buckets.
---
--- After this migration succeeds, promote your first admin with:
---   select public.promote_user_to_admin('your.email@school.edu');
---
--- Note: role-guard rules for admin edits of other users live in
--- supabase/fix_profile_role_guard.sql (run that as well if promoting
--- users from the Admin UI fails with "Users cannot change their own role").
 
 create or replace function public.is_seeded_admin(p_user_id uuid)
 returns boolean
@@ -43,7 +37,6 @@ declare
   v_jwt_role text;
   v_is_service boolean := false;
 begin
-  -- Allow only the SECURITY DEFINER bootstrap/admin path that sets this GUC.
   if current_setting('app.bypass_profile_security', true) = 'on' then
     return new;
   end if;
@@ -61,10 +54,12 @@ begin
   v_is_service := coalesce(v_jwt_role = 'service_role', false);
 
   if new.role is distinct from old.role then
+    -- Authenticated self-edit: only the first seeded admin may change their own role.
     if v_actor is not null and v_actor = new.id then
       if not public.is_seeded_admin(v_actor) then
         raise exception 'Users cannot change their own role';
       end if;
+    -- Other-user edits require an admin session or the trusted service role.
     elsif not (public.is_admin() or v_is_service) then
       raise exception 'Users cannot change their own role';
     end if;
@@ -82,25 +77,3 @@ begin
   return new;
 end;
 $$;
-
-create or replace function public.promote_user_to_admin(p_email text)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  -- Transaction-local bypass for protect_profile_security_fields only.
-  perform set_config('app.bypass_profile_security', 'on', true);
-
-  update public.profiles
-  set role = 'admin', is_active = true
-  where lower(email) = lower(p_email);
-
-  if not found then
-    raise exception 'No profile found for %', p_email;
-  end if;
-end;
-$$;
-
-revoke all on function public.promote_user_to_admin(text) from public, anon, authenticated;

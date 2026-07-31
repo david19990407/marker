@@ -18,6 +18,21 @@ async function assertAdmin() {
   return requireProfile(["admin"]);
 }
 
+/** Earliest admin by created_at — the bootstrap / seed administrator. */
+async function getSeededAdminId(
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<string | null> {
+  const { data } = await admin
+    .from("profiles")
+    .select("id")
+    .eq("role", "admin")
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
 export async function createUserAction(
   _prev: ActionResult,
   formData: FormData,
@@ -96,7 +111,7 @@ export async function updateUserAction(
   _prev: ActionResult,
   formData: FormData,
 ): Promise<ActionResult> {
-  await assertAdmin();
+  const actor = await assertAdmin();
 
   const classIds = formData.getAll("class_ids").map(String).filter(Boolean);
   const isActiveValues = formData.getAll("is_active").map(String);
@@ -116,6 +131,25 @@ export async function updateUserAction(
   const data = parsed.data;
   const admin = createAdminClient();
   const displayName = `${data.first_name} ${data.last_name}`.trim();
+
+  const { data: existing, error: existingError } = await admin
+    .from("profiles")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (existingError || !existing) {
+    return { error: existingError?.message ?? "User not found" };
+  }
+
+  // Service-role updates bypass auth.uid() in the DB trigger, so enforce
+  // self-role protection here. The first seeded admin is exempt.
+  if (actor.id === userId && data.role !== existing.role) {
+    const seededAdminId = await getSeededAdminId(admin);
+    if (seededAdminId !== actor.id) {
+      return { error: "Users cannot change their own role" };
+    }
+  }
 
   const { error } = await admin
     .from("profiles")
