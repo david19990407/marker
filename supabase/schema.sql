@@ -310,6 +310,8 @@ end;
 $$;
 
 -- Prevent non-admins from changing role / is_active on their own profile.
+-- Bootstrap/admin SQL can temporarily bypass via:
+--   select set_config('app.bypass_profile_security', 'on', true);
 create or replace function public.protect_profile_security_fields()
 returns trigger
 language plpgsql
@@ -317,6 +319,10 @@ security definer
 set search_path = public
 as $$
 begin
+  if current_setting('app.bypass_profile_security', true) = 'on' then
+    return new;
+  end if;
+
   if not public.is_admin() then
     if new.role is distinct from old.role then
       raise exception 'Users cannot change their own role';
@@ -336,6 +342,8 @@ $$;
 -- Usage (run as database owner in SQL editor):
 --   select public.promote_user_to_admin('you@school.edu');
 -- Do not hard-code administrator emails in application source.
+-- SECURITY DEFINER + transaction-local GUC bypasses protect_profile_security_fields
+-- only for this function call. Normal users remain blocked from changing their role.
 create or replace function public.promote_user_to_admin(p_email text)
 returns void
 language plpgsql
@@ -343,6 +351,9 @@ security definer
 set search_path = public
 as $$
 begin
+  -- Transaction-local bypass for the profile security trigger.
+  perform set_config('app.bypass_profile_security', 'on', true);
+
   update public.profiles
   set role = 'admin', is_active = true
   where lower(email) = lower(p_email);
