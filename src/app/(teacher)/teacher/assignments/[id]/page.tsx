@@ -61,7 +61,10 @@ export default async function TeacherAssignmentDetailPage({
         title={assignment.title}
         description={className ?? "Assignment"}
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/teacher/assignments/${id}/builder`}>
+              <Button>Homework builder</Button>
+            </Link>
             <Link href={`/teacher/assignments/${id}/edit`}>
               <Button variant="secondary">Edit</Button>
             </Link>

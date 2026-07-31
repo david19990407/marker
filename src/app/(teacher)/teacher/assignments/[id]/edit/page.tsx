@@ -66,9 +66,14 @@ export default async function EditAssignmentPage({
       <PageHeader
         title="Edit assignment"
         action={
-          <Link href={`/teacher/assignments/${id}`}>
-            <Button variant="outline">Back</Button>
-          </Link>
+          <div className="flex gap-2">
+            <Link href={`/teacher/assignments/${id}/builder`}>
+              <Button variant="secondary">Homework builder</Button>
+            </Link>
+            <Link href={`/teacher/assignments/${id}`}>
+              <Button variant="outline">Back</Button>
+            </Link>
+          </div>
         }
       />
       <Card>

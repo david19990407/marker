@@ -4,7 +4,7 @@ Assignment, submission, marking and feedback platform for schools.
 
 **Stack:** Next.js · TypeScript · Tailwind CSS · Supabase (Auth, Database, Storage)
 
-> Core platform plus Phases 1–4 are implemented: database schema, real authentication, admin portal, teacher classes/assignments/marking, student homework submission, school settings, multi-teacher classes, and multi-class assignment templates with deployments.
+> Core platform plus Phases 1–5 are implemented: database schema, real authentication, admin portal, teacher classes/assignments/marking, student homework submission, school settings, multi-teacher classes, multi-class assignment templates with deployments, and structured homework builder with sections, blocks, and student responses.
 
 ## 1. Create a Supabase project
 
@@ -21,8 +21,9 @@ Run the SQL files in the Supabase **SQL Editor** in this order:
 2. `supabase/phase_01_branding_school_settings.sql` — school settings, year groups (Year 7–13), subjects, class colours, marking symbols.
 3. `supabase/phase_02_multi_teacher_classes.sql` — `class_teachers` many-to-many, RLS updates for co-teacher access.
 4. `supabase/phase_03_assignment_templates_and_deployments.sql` — `assignment_templates`, multi-class deploy RPC, template content sync trigger.
+5. `supabase/phase_04_structured_homework_builder.sql` — `assignment_sections`, `assignment_blocks`, `assignment_questions`, `assignment_table_cells`, `student_responses`, `response_cells`; `save_assignment_structure` RPC; RLS policies for teacher/student access.
 
-> Run phases in order on an existing database. Each migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`).
+> Run phases in order on an existing database. Each migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `do $$ begin … exception when duplicate_object then null; end $$`).
 
 ## 3. Create storage buckets (if needed)
 

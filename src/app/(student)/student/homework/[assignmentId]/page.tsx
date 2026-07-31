@@ -5,9 +5,13 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmissionPanel } from "@/components/student/submission-panel";
+import { StructuredHomework } from "@/components/student/structured-homework";
 import { DownloadButton } from "@/components/shared/download-button";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
+import { loadTemplateStructure } from "@/lib/homework/structure";
+import { RESPONSE_BLOCK_TYPES } from "@/lib/types";
+import type { StudentResponse } from "@/lib/types";
 
 export default async function StudentAssignmentPage({
   params,
@@ -21,7 +25,7 @@ export default async function StudentAssignmentPage({
   const { data: assignment } = await supabase
     .from("assignments")
     .select(
-      "id, title, instructions, due_at, maximum_mark, status, allow_text_submission, allow_file_submission, class_id, classes(name)",
+      "id, title, instructions, due_at, maximum_mark, status, allow_text_submission, allow_file_submission, class_id, template_id, classes(name)",
     )
     .eq("id", assignmentId)
     .eq("status", "published")
@@ -58,6 +62,55 @@ export default async function StudentAssignmentPage({
           .eq("status", "released")
           .maybeSingle()
       : { data: null };
+
+  // Load structured content if template exists
+  let structuredSections = null;
+  const existingResponses: Record<string, StudentResponse> = {};
+  let hasStructuredBlocks = false;
+
+  if (assignment.template_id) {
+    try {
+      const sections = await loadTemplateStructure(supabase, assignment.template_id);
+
+      // Check if there are any non-trivial blocks
+      const allBlocks = sections.flatMap((s) => [
+        ...s.blocks,
+        ...s.subsections.flatMap((sub) => sub.blocks),
+      ]);
+      const nonEmpty = allBlocks.filter(
+        (b) => !b.teacher_only && b.block_type !== "mark_scheme",
+      );
+      const hasResponseBlocks = nonEmpty.some((b) =>
+        (RESPONSE_BLOCK_TYPES as readonly string[]).includes(b.block_type),
+      );
+
+      // Show structured view when there are multiple blocks or response blocks
+      hasStructuredBlocks =
+        hasResponseBlocks ||
+        nonEmpty.length > 1 ||
+        (nonEmpty.length === 1 && nonEmpty[0].block_type !== "instruction");
+
+      if (hasStructuredBlocks) {
+        structuredSections = sections;
+
+        // Load existing student responses
+        if (submission) {
+          const { data: responses } = await supabase
+            .from("student_responses")
+            .select("*")
+            .eq("submission_id", submission.id);
+
+          if (responses) {
+            for (const r of responses) {
+              existingResponses[r.question_id] = r as StudentResponse;
+            }
+          }
+        }
+      }
+    } catch {
+      // If structure load fails, fall back to legacy view
+    }
+  }
 
   const relatedClass = assignment.classes as
     | { name: string }
@@ -97,12 +150,26 @@ export default async function StudentAssignmentPage({
         <Badge tone="neutral">Max {assignment.maximum_mark}</Badge>
       </div>
 
-      <Card>
-        <CardTitle className="mb-2">Instructions</CardTitle>
-        <p className="whitespace-pre-wrap text-sm leading-7 text-slate-600">
-          {assignment.instructions || "No instructions provided."}
-        </p>
-      </Card>
+      {/* Structured homework content */}
+      {hasStructuredBlocks && structuredSections ? (
+        <Card>
+          <CardTitle className="mb-4">Homework questions</CardTitle>
+          <StructuredHomework
+            assignmentId={assignmentId}
+            sections={structuredSections}
+            existingResponses={existingResponses}
+            editable={editable}
+          />
+        </Card>
+      ) : (
+        /* Legacy instructions card */
+        <Card>
+          <CardTitle className="mb-2">Instructions</CardTitle>
+          <p className="whitespace-pre-wrap text-sm leading-7 text-slate-600">
+            {assignment.instructions || "No instructions provided."}
+          </p>
+        </Card>
+      )}
 
       <Card>
         <CardTitle className="mb-4">Resources</CardTitle>
@@ -126,18 +193,43 @@ export default async function StudentAssignmentPage({
         )}
       </Card>
 
-      <Card>
-        <CardTitle className="mb-4">Submit work</CardTitle>
-        <SubmissionPanel
-          assignmentId={assignmentId}
-          allowText={assignment.allow_text_submission}
-          allowFile={assignment.allow_file_submission}
-          editable={editable}
-          writtenResponse={submission?.written_response ?? null}
-          fileName={submission?.file_name ?? null}
-          storagePath={submission?.storage_path ?? null}
-        />
-      </Card>
+      {/* Legacy submission panel (text/file) — always shown when assignment allows it */}
+      {(assignment.allow_text_submission || assignment.allow_file_submission) && (
+        <Card>
+          <CardTitle className="mb-4">Submit work</CardTitle>
+          <SubmissionPanel
+            assignmentId={assignmentId}
+            allowText={assignment.allow_text_submission}
+            allowFile={assignment.allow_file_submission}
+            editable={editable}
+            writtenResponse={submission?.written_response ?? null}
+            fileName={submission?.file_name ?? null}
+            storagePath={submission?.storage_path ?? null}
+          />
+        </Card>
+      )}
+
+      {/* If structured only (no text/file submission), show submit button */}
+      {hasStructuredBlocks &&
+        !assignment.allow_text_submission &&
+        !assignment.allow_file_submission &&
+        editable && (
+          <Card>
+            <CardTitle className="mb-2">Submit homework</CardTitle>
+            <p className="mb-4 text-sm text-slate-600">
+              Save your answers above, then submit when you&apos;re ready.
+            </p>
+            <SubmissionPanel
+              assignmentId={assignmentId}
+              allowText={false}
+              allowFile={false}
+              editable={editable}
+              writtenResponse={null}
+              fileName={null}
+              storagePath={null}
+            />
+          </Card>
+        )}
 
       <Card>
         <CardTitle className="mb-2">Teacher feedback</CardTitle>
