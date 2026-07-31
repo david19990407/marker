@@ -18,7 +18,9 @@ export function LoginForm({ errorFromQuery }: { errorFromQuery?: string }) {
           {state.error ||
             (errorFromQuery === "inactive"
               ? "This account has been deactivated."
-              : errorFromQuery)}
+              : errorFromQuery === "auth_callback_failed"
+                ? "Invitation or password-reset link is invalid or expired. Ask an administrator to resend it."
+                : errorFromQuery)}
         </div>
       )}
       <label className="block text-sm">

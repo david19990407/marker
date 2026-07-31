@@ -57,7 +57,7 @@ export async function createUserAction(
         role: data.role,
         year_group: data.year_group ?? "",
       },
-      redirectTo: `${getAppUrl()}/auth/callback?next=/update-password`,
+      redirectTo: `${getAppUrl()}/auth/callback`,
     },
   );
 
@@ -185,7 +185,7 @@ export async function resetUserPasswordAction(
 
   const supabase = await createClient();
   const { error } = await supabase.auth.resetPasswordForEmail(profile.email, {
-    redirectTo: `${getAppUrl()}/auth/callback?next=/update-password`,
+    redirectTo: `${getAppUrl()}/auth/callback`,
   });
   if (error) return { error: error.message };
   return { success: `Password reset email sent to ${profile.email}` };
@@ -361,7 +361,7 @@ export async function confirmCsvImportAction(
             role: data.role,
             year_group: data.year_group ?? "",
           },
-          redirectTo: `${getAppUrl()}/auth/callback?next=/update-password`,
+          redirectTo: `${getAppUrl()}/auth/callback`,
         },
       );
 
