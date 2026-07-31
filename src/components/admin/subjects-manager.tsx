@@ -16,7 +16,7 @@ import {
   BUILT_IN_SUBJECT_ICONS,
   type ClassColourOption,
   type SubjectOption,
-} from "@/lib/school/settings";
+} from "@/lib/school/catalog";
 import type { ActionResult } from "@/lib/actions/auth";
 
 const initial: ActionResult = {};

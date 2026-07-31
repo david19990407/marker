@@ -11,7 +11,7 @@ import {
   toggleYearGroupActiveAction,
   updateYearGroupAction,
 } from "@/lib/actions/school-settings";
-import type { YearGroupOption } from "@/lib/school/settings";
+import type { YearGroupOption } from "@/lib/school/catalog";
 import type { ActionResult } from "@/lib/actions/auth";
 
 const initial: ActionResult = {};

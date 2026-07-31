@@ -8,7 +8,7 @@ import {
   moveClassColourAction,
   toggleClassColourActiveAction,
 } from "@/lib/actions/school-settings";
-import type { ClassColourOption } from "@/lib/school/settings";
+import type { ClassColourOption } from "@/lib/school/catalog";
 import type { ActionResult } from "@/lib/actions/auth";
 
 const initial: ActionResult = {};

@@ -1,4 +1,4 @@
-import { BUILT_IN_SUBJECT_ICONS } from "@/lib/school/settings";
+import { BUILT_IN_SUBJECT_ICONS } from "@/lib/school/catalog";
 
 export function SubjectIconsPanel() {
   return (
