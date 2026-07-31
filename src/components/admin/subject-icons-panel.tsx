@@ -1,20 +1,31 @@
 import { BUILT_IN_SUBJECT_ICONS } from "@/lib/school/catalog";
+import { SubjectIcon } from "@/components/shared/subject-icon";
 
 export function SubjectIconsPanel() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-500">
-        Built-in icons available when configuring subjects. You can also upload
-        an SVG or PNG on each subject.
+        Built-in icons available when configuring subjects. Uploaded SVG or PNG
+        icons use the same fixed container so size and alignment stay consistent.
       </p>
       <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {BUILT_IN_SUBJECT_ICONS.map((icon) => (
           <li
             key={icon.key}
-            className="rounded-2xl border border-slate-100 px-3 py-2 text-sm"
+            className="flex items-center gap-3 rounded-2xl border border-slate-100 px-3 py-2 text-sm"
           >
-            <p className="font-medium text-slate-800">{icon.label}</p>
-            <p className="text-xs text-slate-500">{icon.key}</p>
+            <SubjectIcon
+              name={icon.label}
+              iconType="built_in"
+              iconValue={icon.key}
+              colour="#7C3AED"
+              size="sm"
+              label={icon.label}
+            />
+            <div>
+              <p className="font-medium text-slate-800">{icon.label}</p>
+              <p className="text-xs text-slate-500">{icon.key}</p>
+            </div>
           </li>
         ))}
       </ul>

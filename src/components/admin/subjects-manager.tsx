@@ -17,6 +17,7 @@ import {
   type ClassColourOption,
   type SubjectOption,
 } from "@/lib/school/catalog";
+import { SubjectIcon } from "@/components/shared/subject-icon";
 import type { ActionResult } from "@/lib/actions/auth";
 
 const initial: ActionResult = {};
@@ -177,13 +178,13 @@ export function SubjectsManager({
             ) : (
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex items-center gap-3">
-                  <span
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-xs font-semibold text-white"
-                    style={{ backgroundColor: subject.colour }}
-                    title={subject.icon_value}
-                  >
-                    {subject.name.slice(0, 2).toUpperCase()}
-                  </span>
+                  <SubjectIcon
+                    name={subject.name}
+                    iconType={subject.icon_type}
+                    iconValue={subject.icon_value}
+                    colour={subject.colour}
+                    size="sm"
+                  />
                   <div>
                     <p className="font-medium text-slate-800">
                       {subject.name}

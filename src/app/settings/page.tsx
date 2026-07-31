@@ -14,11 +14,7 @@ export default async function SettingsPage() {
   const branding = await getBranding();
 
   return (
-    <AppShell
-      profile={profile}
-      platformDisplayName={branding.platformDisplayName}
-      schoolName={branding.schoolName}
-    >
+    <AppShell profile={profile} branding={branding}>
       <div className="mx-auto max-w-2xl space-y-6">
         <PageHeader
           title="Settings"

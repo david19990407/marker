@@ -12,11 +12,7 @@ export default async function TeacherLayout({
     getBranding(),
   ]);
   return (
-    <AppShell
-      profile={profile}
-      platformDisplayName={branding.platformDisplayName}
-      schoolName={branding.schoolName}
-    >
+    <AppShell profile={profile} branding={branding}>
       {children}
     </AppShell>
   );

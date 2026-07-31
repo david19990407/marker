@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { SubjectIcon } from "@/components/shared/subject-icon";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import { getActiveYearGroups } from "@/lib/school/settings";
@@ -17,15 +18,13 @@ export default async function TeacherClassesPage({
   const supabase = await createClient();
   const yearGroups = await getActiveYearGroups();
 
-  // Include classes where this teacher is a member via class_teachers
   const { data: ctRows } = await supabase
     .from("class_teachers")
     .select(
-      "membership_role, classes(id, name, subject, year_group, join_code, archived, created_at)",
+      "membership_role, classes(id, name, subject, year_group, join_code, archived, created_at, colour_hex, subject_id)",
     )
     .eq("teacher_id", profile.id);
 
-  // Deduplicate and flatten; fall back to empty if class_teachers not available
   const classesByIdMap = new Map<
     string,
     {
@@ -36,6 +35,8 @@ export default async function TeacherClassesPage({
       join_code: string;
       archived: boolean;
       created_at: string;
+      colour_hex: string | null;
+      subject_id: string | null;
       membership_role: string;
     }
   >();
@@ -46,10 +47,11 @@ export default async function TeacherClassesPage({
     }
   }
 
-  // Also include legacy classes where teacher_id = profile.id but not yet in class_teachers
   const { data: legacyClasses } = await supabase
     .from("classes")
-    .select("id, name, subject, year_group, join_code, archived, created_at")
+    .select(
+      "id, name, subject, year_group, join_code, archived, created_at, colour_hex, subject_id",
+    )
     .eq("teacher_id", profile.id);
 
   for (const c of legacyClasses ?? []) {
@@ -68,20 +70,42 @@ export default async function TeacherClassesPage({
     );
 
   const classIds = classes.map((c) => c.id);
-  const { data: members } = classIds.length
-    ? await supabase.from("class_members").select("class_id").in("class_id", classIds)
-    : { data: [] as { class_id: string }[] };
+  const subjectIds = Array.from(
+    new Set(classes.map((c) => c.subject_id).filter(Boolean)),
+  ) as string[];
+
+  const [{ data: members }, { data: subjects }] = await Promise.all([
+    classIds.length
+      ? supabase.from("class_members").select("class_id").in("class_id", classIds)
+      : Promise.resolve({ data: [] as { class_id: string }[] }),
+    subjectIds.length
+      ? supabase
+          .from("school_subjects")
+          .select("id, icon_type, icon_value, colour, icon_key, icon_storage_path")
+          .in("id", subjectIds)
+      : Promise.resolve({
+          data: [] as Array<{
+            id: string;
+            icon_type: string | null;
+            icon_value: string | null;
+            colour: string | null;
+            icon_key: string | null;
+            icon_storage_path: string | null;
+          }>,
+        }),
+  ]);
 
   const counts = new Map<string, number>();
   (members ?? []).forEach((m) => {
     counts.set(m.class_id, (counts.get(m.class_id) ?? 0) + 1);
   });
+  const subjectById = new Map((subjects ?? []).map((s) => [s.id, s]));
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="My Classes"
-        description="Create classes, share join codes and manage members."
+        description="View classes, share join codes and manage members."
         action={
           <Link href="/teacher/classes/new">
             <Button>New class</Button>
@@ -118,35 +142,64 @@ export default async function TeacherClassesPage({
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {classes.map((c) => (
-            <Card key={c.id}>
-              <div className="mb-2 flex items-start justify-between gap-2">
-                <h2 className="font-semibold text-slate-900">{c.name}</h2>
-                <div className="flex gap-1.5">
-                  {c.membership_role !== "lead_teacher" ? (
-                    <Badge tone="neutral" className="capitalize">
-                      {c.membership_role.replace(/_/g, " ")}
-                    </Badge>
-                  ) : null}
-                  <Badge tone={c.archived ? "neutral" : "success"}>
-                    {c.archived ? "Archived" : "Active"}
-                  </Badge>
+          {classes.map((c) => {
+            const subject = c.subject_id
+              ? subjectById.get(c.subject_id)
+              : undefined;
+            const colour =
+              subject?.colour || c.colour_hex || "#7C3AED";
+            return (
+              <Card key={c.id} className="relative overflow-hidden">
+                <div
+                  className="absolute inset-x-0 top-0 h-1.5"
+                  style={{ backgroundColor: colour }}
+                />
+                <div className="mb-2 flex items-start gap-3">
+                  <SubjectIcon
+                    name={c.subject}
+                    iconType={subject?.icon_type}
+                    iconValue={
+                      subject?.icon_value ||
+                      subject?.icon_storage_path ||
+                      subject?.icon_key
+                    }
+                    colour={colour}
+                    size="md"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <h2 className="font-semibold text-slate-900">{c.name}</h2>
+                      <div className="flex gap-1.5">
+                        {c.membership_role !== "lead_teacher" ? (
+                          <Badge tone="neutral" className="capitalize">
+                            {c.membership_role.replace(/_/g, " ")}
+                          </Badge>
+                        ) : null}
+                        <Badge tone={c.archived ? "neutral" : "success"}>
+                          {c.archived ? "Archived" : "Active"}
+                        </Badge>
+                      </div>
+                    </div>
+                    <p className="text-sm text-slate-500">
+                      {c.subject}
+                      {c.year_group ? ` · ${c.year_group}` : ""}
+                    </p>
+                    <p className="mt-2 text-xs text-slate-400">
+                      Join code: {c.join_code} · {counts.get(c.id) ?? 0} students
+                    </p>
+                    <Link
+                      href={`/teacher/classes/${c.id}`}
+                      className="mt-4 inline-block"
+                    >
+                      <Button size="sm" variant="secondary">
+                        Open
+                      </Button>
+                    </Link>
+                  </div>
                 </div>
-              </div>
-              <p className="text-sm text-slate-500">
-                {c.subject}
-                {c.year_group ? ` · ${c.year_group}` : ""}
-              </p>
-              <p className="mt-2 text-xs text-slate-400">
-                Join code: {c.join_code} · {counts.get(c.id) ?? 0} students
-              </p>
-              <Link href={`/teacher/classes/${c.id}`} className="mt-4 inline-block">
-                <Button size="sm" variant="secondary">
-                  Open
-                </Button>
-              </Link>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

@@ -18,11 +18,13 @@ export default async function AdminSettingsPage() {
   const supabase = await createClient();
 
   const [settingsResult, yearGroups, subjects, colours] = await Promise.all([
-    supabase
-      .from("school_settings")
-      .select("id, school_name, platform_display_name, max_upload_bytes")
-      .limit(1)
-      .maybeSingle(),
+      supabase
+        .from("school_settings")
+        .select(
+          "id, school_name, platform_display_name, primary_colour, secondary_colour, accent_colour, max_upload_bytes",
+        )
+        .limit(1)
+        .maybeSingle(),
     getAllYearGroupOptions(),
     getAllSubjectOptions(),
     getAllColourOptions(),

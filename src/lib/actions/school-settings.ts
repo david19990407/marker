@@ -28,11 +28,18 @@ function duplicateMessage(error: { code?: string; message?: string }, entity: st
   return error.message ?? `Failed to save ${entity}`;
 }
 
+function isHexColour(value: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(value);
+}
+
 export async function getSchoolSettingsAction(): Promise<{
   data?: {
     id: string;
     school_name: string;
     platform_display_name: string;
+    primary_colour: string;
+    secondary_colour: string;
+    accent_colour: string;
     max_upload_bytes: number;
   };
   error?: string;
@@ -41,7 +48,9 @@ export async function getSchoolSettingsAction(): Promise<{
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("school_settings")
-    .select("id, school_name, platform_display_name, max_upload_bytes")
+    .select(
+      "id, school_name, platform_display_name, primary_colour, secondary_colour, accent_colour, max_upload_bytes",
+    )
     .limit(1)
     .maybeSingle();
   if (error) return { error: error.message };
@@ -57,9 +66,15 @@ export async function updateSchoolSettingsAction(
   const platformDisplayName = String(
     formData.get("platform_display_name") ?? "",
   ).trim();
+  const primaryColour = String(formData.get("primary_colour") ?? "").trim();
+  const secondaryColour = String(formData.get("secondary_colour") ?? "").trim();
+  const accentColour = String(formData.get("accent_colour") ?? "").trim();
 
   if (!schoolName) return { error: "School name is required" };
   if (!platformDisplayName) return { error: "Platform display name is required" };
+  if (!isHexColour(primaryColour) || !isHexColour(secondaryColour) || !isHexColour(accentColour)) {
+    return { error: "Theme colours must be valid hex values such as #7C3AED" };
+  }
 
   const supabase = await createClient();
   const { data: existing } = await supabase
@@ -68,23 +83,24 @@ export async function updateSchoolSettingsAction(
     .limit(1)
     .maybeSingle();
 
+  const payload = {
+    school_name: schoolName,
+    platform_display_name: platformDisplayName,
+    primary_colour: primaryColour,
+    secondary_colour: secondaryColour,
+    accent_colour: accentColour,
+    updated_by: profile.id,
+    updated_at: new Date().toISOString(),
+  };
+
   if (existing) {
     const { error } = await supabase
       .from("school_settings")
-      .update({
-        school_name: schoolName,
-        platform_display_name: platformDisplayName,
-        updated_by: profile.id,
-        updated_at: new Date().toISOString(),
-      })
+      .update(payload)
       .eq("id", existing.id);
     if (error) return { error: error.message };
   } else {
-    const { error } = await supabase.from("school_settings").insert({
-      school_name: schoolName,
-      platform_display_name: platformDisplayName,
-      updated_by: profile.id,
-    });
+    const { error } = await supabase.from("school_settings").insert(payload);
     if (error) return { error: error.message };
   }
 
@@ -387,6 +403,32 @@ export async function deleteSubjectAction(
   return { success: "Subject deleted" };
 }
 
+function sanitizeSvg(raw: string): string | null {
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("<script") ||
+    lower.includes("javascript:") ||
+    lower.includes("onload=") ||
+    lower.includes("onerror=") ||
+    lower.includes("<foreignobject") ||
+    lower.includes("xlink:href") ||
+    lower.includes("data:text/html")
+  ) {
+    return null;
+  }
+  if (!lower.includes("<svg")) return null;
+  return raw;
+}
+
+function pngDimensions(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 24) return null;
+  if (buffer.toString("ascii", 1, 4) !== "PNG") return null;
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
+}
+
 export async function uploadSubjectIconAction(
   formData: FormData,
 ): Promise<{ path?: string; publicUrl?: string; error?: string }> {
@@ -403,13 +445,40 @@ export async function uploadSubjectIconAction(
     return { error: "Icon must be 512KB or smaller" };
   }
 
-  const ext = type === "image/svg+xml" ? "svg" : "png";
-  const path = `icons/${crypto.randomUUID()}.${ext}`;
   const supabase = await createClient();
-  const buffer = Buffer.from(await file.arrayBuffer());
+  let uploadBody: Buffer;
+  let contentType = type;
+  let ext = "png";
+
+  if (type === "image/svg+xml") {
+    const raw = await file.text();
+    const safe = sanitizeSvg(raw);
+    if (!safe) {
+      return {
+        error:
+          "SVG rejected. Remove scripts or event handlers and upload a simple icon SVG.",
+      };
+    }
+    uploadBody = Buffer.from(safe, "utf8");
+    ext = "svg";
+    contentType = "image/svg+xml";
+  } else {
+    uploadBody = Buffer.from(await file.arrayBuffer());
+    const dims = pngDimensions(uploadBody);
+    if (!dims) return { error: "Invalid PNG file" };
+    if (dims.width < 16 || dims.height < 16) {
+      return { error: "PNG icons must be at least 16×16 pixels" };
+    }
+    if (dims.width > 2048 || dims.height > 2048) {
+      return { error: "PNG icons must be 2048×2048 pixels or smaller" };
+    }
+    ext = "png";
+  }
+
+  const path = `icons/${crypto.randomUUID()}.${ext}`;
   const { error } = await supabase.storage
     .from("subject-icons")
-    .upload(path, buffer, { contentType: type, upsert: false });
+    .upload(path, uploadBody, { contentType, upsert: false });
   if (error) return { error: error.message };
 
   const { data } = supabase.storage.from("subject-icons").getPublicUrl(path);

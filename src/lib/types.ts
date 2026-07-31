@@ -123,6 +123,9 @@ export interface SchoolSettings {
   id: string;
   school_name: string;
   platform_display_name: string;
+  primary_colour?: string;
+  secondary_colour?: string;
+  accent_colour?: string;
   max_upload_bytes: number;
   permitted_mime_types: string[];
   updated_by: string | null;
