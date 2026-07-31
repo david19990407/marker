@@ -1,220 +1,754 @@
--- LitCoach AI — Supabase schema (PostgreSQL)
--- Apply in the Supabase SQL editor. Designed for ~500 students initially, scalable with indexes.
+-- LitCoach Homework Platform — production Supabase schema
+-- Run this in the Supabase SQL editor after creating a project.
+-- Public self-registration should remain disabled in Auth settings.
+--
+-- Execution order (required for a fresh database):
+--   1. Extensions
+--   2. Enums
+--   3. Tables
+--   4. Indexes
+--   5. Functions
+--   6. Triggers
+--   7. Storage buckets
+--   8. Row Level Security (enable + policies last)
 
+-- ---------------------------------------------------------------------------
+-- 1. Extensions
+-- ---------------------------------------------------------------------------
 create extension if not exists "pgcrypto";
-create extension if not exists "vector";
 
-create type public.user_role as enum ('student', 'teacher');
-create type public.resource_category as enum (
-  'Revision Guides',
-  'Knowledge Organisers',
-  'Model Answers',
-  'Worksheets',
-  'Videos',
-  'Past Papers',
-  'Mark Schemes',
-  'Flashcards'
+-- ---------------------------------------------------------------------------
+-- 2. Enums
+-- ---------------------------------------------------------------------------
+create type public.user_role as enum ('admin', 'teacher', 'student');
+create type public.assignment_status as enum ('draft', 'published', 'archived');
+create type public.submission_status as enum ('draft', 'submitted', 'late', 'marked', 'returned');
+create type public.feedback_status as enum ('draft', 'released');
+create type public.notification_type as enum (
+  'assignment_published',
+  'deadline_approaching',
+  'homework_submitted',
+  'feedback_released',
+  'submission_reopened'
 );
-create type public.essay_status as enum ('pending', 'ai_marked', 'teacher_reviewed');
 
+-- ---------------------------------------------------------------------------
+-- 3. Tables
+-- ---------------------------------------------------------------------------
 create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   email text not null unique,
-  full_name text not null,
-  role public.user_role not null default 'student',
+  first_name text not null,
+  last_name text not null,
+  display_name text not null,
+  role public.user_role not null,
   year_group text,
-  exam_board text,
-  avatar_initials text,
+  is_active boolean not null default true,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table public.lessons (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  description text not null,
-  topic text not null,
-  exam_board text not null,
-  year_group text not null,
-  paper text not null,
-  objectives text[] not null default '{}',
-  slides_url text,
-  worksheets text[] not null default '{}',
-  videos text[] not null default '{}',
-  homework text,
-  ai_summary text,
-  estimated_minutes int not null default 45,
-  text_name text,
-  created_by uuid references public.profiles (id),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table public.lesson_embeddings (
-  id uuid primary key default gen_random_uuid(),
-  lesson_id uuid not null references public.lessons (id) on delete cascade,
-  chunk_index int not null,
-  content text not null,
-  embedding vector(1536),
-  created_at timestamptz not null default now()
-);
-
-create table public.resources (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  description text not null,
-  category public.resource_category not null,
-  topic text not null,
-  exam_board text not null,
-  file_type text not null,
-  file_url text,
-  preview_text text,
-  downloads int not null default 0,
-  created_by uuid references public.profiles (id),
-  created_at timestamptz not null default now()
-);
-
-create table public.quizzes (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  topic text not null,
-  lesson_id uuid references public.lessons (id) on delete set null,
-  questions jsonb not null default '[]',
-  created_by uuid references public.profiles (id),
-  created_at timestamptz not null default now()
-);
-
-create table public.essay_submissions (
-  id uuid primary key default gen_random_uuid(),
-  student_id uuid not null references public.profiles (id) on delete cascade,
-  question text not null,
-  essay_text text not null,
-  status public.essay_status not null default 'pending',
-  version int not null default 1,
-  parent_submission_id uuid references public.essay_submissions (id),
-  submitted_at timestamptz not null default now()
-);
-
-create table public.essay_feedback (
-  id uuid primary key default gen_random_uuid(),
-  submission_id uuid not null unique references public.essay_submissions (id) on delete cascade,
-  estimated_mark numeric(5,2) not null,
-  out_of numeric(5,2) not null default 30,
-  estimated_level text not null,
-  ao1 numeric(5,2) not null,
-  ao2 numeric(5,2) not null,
-  ao3 numeric(5,2) not null,
-  ao4 numeric(5,2) not null,
-  strengths text[] not null default '{}',
-  weaknesses text[] not null default '{}',
-  improvements text[] not null default '{}',
-  next_steps text[] not null default '{}',
-  teacher_override_mark numeric(5,2),
-  teacher_notes text,
-  created_at timestamptz not null default now()
-);
-
-create table public.progress (
-  id uuid primary key default gen_random_uuid(),
-  student_id uuid not null references public.profiles (id) on delete cascade,
-  lesson_id uuid references public.lessons (id) on delete cascade,
-  progress_percent int not null default 0 check (progress_percent between 0 and 100),
-  completed boolean not null default false,
-  quizzes_completed int not null default 0,
-  essays_submitted int not null default 0,
-  average_mark numeric(5,2),
-  ao1 numeric(5,2) default 0,
-  ao2 numeric(5,2) default 0,
-  ao3 numeric(5,2) default 0,
-  ao4 numeric(5,2) default 0,
   updated_at timestamptz not null default now(),
-  unique (student_id, lesson_id)
+  constraint profiles_year_group_check check (
+    year_group is null or year_group in ('Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11')
+  )
 );
 
-create table public.student_activity (
+create table public.classes (
   id uuid primary key default gen_random_uuid(),
+  name text not null,
+  subject text not null default 'English',
+  year_group text,
+  teacher_id uuid not null references public.profiles (id) on delete restrict,
+  join_code text not null unique,
+  archived boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.class_members (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
   student_id uuid not null references public.profiles (id) on delete cascade,
-  activity_type text not null,
+  joined_at timestamptz not null default now(),
+  unique (class_id, student_id)
+);
+
+create table public.assignments (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete restrict,
   title text not null,
-  description text,
-  metadata jsonb default '{}',
+  instructions text not null default '',
+  due_at timestamptz,
+  maximum_mark numeric(6,2) not null default 30 check (maximum_mark > 0),
+  status public.assignment_status not null default 'draft',
+  allow_text_submission boolean not null default true,
+  allow_file_submission boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.assignment_resources (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  file_name text not null,
+  storage_path text not null,
+  file_type text not null,
+  file_size bigint,
   created_at timestamptz not null default now()
 );
 
-create table public.ai_conversations (
+create table public.submissions (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  student_id uuid not null references public.profiles (id) on delete cascade,
+  written_response text,
+  file_name text,
+  storage_path text,
+  status public.submission_status not null default 'draft',
+  submitted_at timestamptz,
+  marked_at timestamptz,
+  returned_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (assignment_id, student_id)
+);
+
+create table public.feedback (
+  id uuid primary key default gen_random_uuid(),
+  submission_id uuid not null unique references public.submissions (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete restrict,
+  mark numeric(6,2),
+  strengths text,
+  improvements text,
+  next_steps text,
+  private_notes text,
+  status public.feedback_status not null default 'draft',
+  released_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.notifications (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles (id) on delete cascade,
-  title text,
+  type public.notification_type not null,
+  title text not null,
+  body text,
+  link_path text,
+  read_at timestamptz,
   created_at timestamptz not null default now()
 );
 
-create table public.ai_messages (
-  id uuid primary key default gen_random_uuid(),
-  conversation_id uuid not null references public.ai_conversations (id) on delete cascade,
-  role text not null check (role in ('user', 'assistant', 'system')),
-  content text not null,
-  sources jsonb default '[]',
-  created_at timestamptz not null default now()
-);
+-- ---------------------------------------------------------------------------
+-- 4. Indexes
+-- ---------------------------------------------------------------------------
+create index profiles_role_idx on public.profiles (role);
+create index profiles_email_idx on public.profiles (email);
+create index profiles_active_idx on public.profiles (is_active);
+create index classes_teacher_idx on public.classes (teacher_id);
+create index classes_join_code_idx on public.classes (join_code);
+create index class_members_student_idx on public.class_members (student_id);
+create index class_members_class_idx on public.class_members (class_id);
+create index assignments_class_idx on public.assignments (class_id);
+create index assignments_teacher_idx on public.assignments (teacher_id);
+create index assignments_status_idx on public.assignments (status);
+create index submissions_assignment_idx on public.submissions (assignment_id);
+create index submissions_student_idx on public.submissions (student_id);
+create index submissions_status_idx on public.submissions (status);
+create index feedback_teacher_idx on public.feedback (teacher_id);
+create index feedback_status_idx on public.feedback (status);
+create index notifications_user_idx on public.notifications (user_id, created_at desc);
 
-create table public.ai_settings (
-  id uuid primary key default gen_random_uuid(),
-  school_id text not null default 'default',
-  model text not null default 'gpt-4o-mini',
-  temperature numeric(3,2) not null default 0.40,
-  system_prompt text not null,
-  max_context_chunks int not null default 6,
-  coaching_style text not null default 'socratic',
-  allow_homework_completion boolean not null default false,
-  updated_by uuid references public.profiles (id),
-  updated_at timestamptz not null default now()
-);
+-- ---------------------------------------------------------------------------
+-- 5. Functions (after tables they reference)
+-- ---------------------------------------------------------------------------
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
 
-create index lessons_topic_idx on public.lessons (topic);
-create index lessons_exam_board_idx on public.lessons (exam_board);
-create index resources_category_idx on public.resources (category);
-create index essay_submissions_student_idx on public.essay_submissions (student_id);
-create index student_activity_student_created_idx on public.student_activity (student_id, created_at desc);
-create index lesson_embeddings_lesson_idx on public.lesson_embeddings (lesson_id);
-create index ai_messages_conversation_idx on public.ai_messages (conversation_id, created_at);
+create or replace function public.current_user_role()
+returns public.user_role
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select role from public.profiles where id = auth.uid();
+$$;
 
--- Optional: ivfflat index once you have enough embedding rows
--- create index lesson_embeddings_embedding_idx on public.lesson_embeddings
---   using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'admin' and is_active = true
+  );
+$$;
 
+create or replace function public.is_teacher()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'teacher' and is_active = true
+  );
+$$;
+
+create or replace function public.is_student()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'student' and is_active = true
+  );
+$$;
+
+create or replace function public.teacher_owns_class(p_class_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.classes c
+    where c.id = p_class_id
+      and c.teacher_id = auth.uid()
+      and public.is_teacher()
+  );
+$$;
+
+create or replace function public.student_in_class(p_class_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.class_members cm
+    where cm.class_id = p_class_id
+      and cm.student_id = auth.uid()
+  );
+$$;
+
+create or replace function public.teacher_teaches_student(p_student_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.class_members cm
+    join public.classes c on c.id = cm.class_id
+    where cm.student_id = p_student_id
+      and c.teacher_id = auth.uid()
+      and c.archived = false
+  );
+$$;
+
+-- Auto-create profile row when an auth user is created (values come from user metadata).
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_first text := coalesce(new.raw_user_meta_data ->> 'first_name', '');
+  v_last text := coalesce(new.raw_user_meta_data ->> 'last_name', '');
+  v_role text := coalesce(new.raw_user_meta_data ->> 'role', 'student');
+  v_year text := new.raw_user_meta_data ->> 'year_group';
+  v_display text;
+begin
+  if v_role not in ('admin', 'teacher', 'student') then
+    v_role := 'student';
+  end if;
+
+  v_display := nullif(trim(both from coalesce(new.raw_user_meta_data ->> 'display_name', '')), '');
+  if v_display is null then
+    v_display := trim(both from (v_first || ' ' || v_last));
+  end if;
+  if v_display = '' then
+    v_display := split_part(new.email, '@', 1);
+  end if;
+
+  insert into public.profiles (
+    id, email, first_name, last_name, display_name, role, year_group
+  ) values (
+    new.id,
+    new.email,
+    coalesce(nullif(v_first, ''), 'User'),
+    coalesce(nullif(v_last, ''), 'Account'),
+    v_display,
+    v_role::public.user_role,
+    nullif(v_year, '')
+  )
+  on conflict (id) do nothing;
+
+  return new;
+end;
+$$;
+
+-- Prevent non-admins from changing role / is_active on their own profile.
+create or replace function public.protect_profile_security_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    if new.role is distinct from old.role then
+      raise exception 'Users cannot change their own role';
+    end if;
+    if new.is_active is distinct from old.is_active then
+      raise exception 'Users cannot change active status';
+    end if;
+    if new.email is distinct from old.email then
+      raise exception 'Email must be changed via authentication settings';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+-- Bootstrap helper: promote an existing auth user to admin by email.
+-- Usage (run as database owner in SQL editor):
+--   select public.promote_user_to_admin('you@school.edu');
+-- Do not hard-code administrator emails in application source.
+create or replace function public.promote_user_to_admin(p_email text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.profiles
+  set role = 'admin', is_active = true
+  where lower(email) = lower(p_email);
+
+  if not found then
+    raise exception 'No profile found for %', p_email;
+  end if;
+end;
+$$;
+
+revoke all on function public.promote_user_to_admin(text) from public, anon, authenticated;
+-- Execute only via service role / SQL editor (postgres).
+
+-- ---------------------------------------------------------------------------
+-- 6. Triggers (after tables and functions)
+-- ---------------------------------------------------------------------------
+create trigger profiles_set_updated_at
+  before update on public.profiles
+  for each row execute function public.set_updated_at();
+
+create trigger classes_set_updated_at
+  before update on public.classes
+  for each row execute function public.set_updated_at();
+
+create trigger assignments_set_updated_at
+  before update on public.assignments
+  for each row execute function public.set_updated_at();
+
+create trigger submissions_set_updated_at
+  before update on public.submissions
+  for each row execute function public.set_updated_at();
+
+create trigger feedback_set_updated_at
+  before update on public.feedback
+  for each row execute function public.set_updated_at();
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+create trigger profiles_protect_security_fields
+  before update on public.profiles
+  for each row execute function public.protect_profile_security_fields();
+
+-- ---------------------------------------------------------------------------
+-- 7. Storage buckets (after schema tables exist)
+-- ---------------------------------------------------------------------------
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values
+  (
+    'assignment-resources',
+    'assignment-resources',
+    false,
+    20971520,
+    array[
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-powerpoint',
+      'image/png',
+      'image/jpeg',
+      'image/webp'
+    ]
+  ),
+  (
+    'student-submissions',
+    'student-submissions',
+    false,
+    20971520,
+    array[
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword'
+    ]
+  )
+on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 8. Row Level Security — enable tables, then create policies last
+-- ---------------------------------------------------------------------------
 alter table public.profiles enable row level security;
-alter table public.lessons enable row level security;
-alter table public.resources enable row level security;
-alter table public.quizzes enable row level security;
-alter table public.essay_submissions enable row level security;
-alter table public.essay_feedback enable row level security;
-alter table public.progress enable row level security;
-alter table public.student_activity enable row level security;
-alter table public.ai_conversations enable row level security;
-alter table public.ai_messages enable row level security;
-alter table public.ai_settings enable row level security;
+alter table public.classes enable row level security;
+alter table public.class_members enable row level security;
+alter table public.assignments enable row level security;
+alter table public.assignment_resources enable row level security;
+alter table public.submissions enable row level security;
+alter table public.feedback enable row level security;
+alter table public.notifications enable row level security;
 
--- Example policies (tighten for production)
-create policy "Profiles are viewable by authenticated users"
-  on public.profiles for select to authenticated using (true);
+-- Profiles
+create policy "Admins manage all profiles"
+  on public.profiles for all
+  using (public.is_admin())
+  with check (public.is_admin());
 
-create policy "Users can update own profile"
-  on public.profiles for update to authenticated using (auth.uid() = id);
+create policy "Users can view own profile"
+  on public.profiles for select
+  using (auth.uid() = id);
 
-create policy "Lessons readable by authenticated users"
-  on public.lessons for select to authenticated using (true);
+create policy "Users can update own safe profile fields"
+  on public.profiles for update
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
 
-create policy "Teachers manage lessons"
-  on public.lessons for all to authenticated
-  using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher'));
-
-create policy "Students read own essays"
-  on public.essay_submissions for select to authenticated
+create policy "Teachers can view students in their classes"
+  on public.profiles for select
   using (
-    student_id = auth.uid()
-    or exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher')
+    public.is_teacher()
+    and (
+      id = auth.uid()
+      or public.teacher_teaches_student(id)
+      or role = 'teacher'
+    )
   );
 
-create policy "Students insert own essays"
-  on public.essay_submissions for insert to authenticated
-  with check (student_id = auth.uid());
+-- Classes
+create policy "Admins manage classes"
+  on public.classes for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers manage own classes"
+  on public.classes for all
+  using (public.is_teacher() and teacher_id = auth.uid())
+  with check (public.is_teacher() and teacher_id = auth.uid());
+
+create policy "Students view classes they belong to"
+  on public.classes for select
+  using (public.student_in_class(id) and archived = false);
+
+-- Class members
+create policy "Admins manage class members"
+  on public.class_members for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers manage members of own classes"
+  on public.class_members for all
+  using (public.teacher_owns_class(class_id))
+  with check (
+    public.teacher_owns_class(class_id)
+    and exists (
+      select 1 from public.profiles p
+      where p.id = student_id and p.role = 'student' and p.is_active = true
+    )
+  );
+
+create policy "Students view own memberships"
+  on public.class_members for select
+  using (student_id = auth.uid());
+
+create policy "Students can join via insert of self"
+  on public.class_members for insert
+  with check (
+    student_id = auth.uid()
+    and public.is_student()
+    and exists (
+      select 1 from public.classes c
+      where c.id = class_id and c.archived = false
+    )
+  );
+
+-- Assignments
+create policy "Admins manage assignments"
+  on public.assignments for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers manage own assignments"
+  on public.assignments for all
+  using (public.is_teacher() and teacher_id = auth.uid())
+  with check (
+    public.is_teacher()
+    and teacher_id = auth.uid()
+    and public.teacher_owns_class(class_id)
+  );
+
+create policy "Students view published assignments for their classes"
+  on public.assignments for select
+  using (
+    status = 'published'
+    and public.student_in_class(class_id)
+  );
+
+-- Assignment resources
+create policy "Admins manage assignment resources"
+  on public.assignment_resources for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers manage resources for own assignments"
+  on public.assignment_resources for all
+  using (
+    exists (
+      select 1 from public.assignments a
+      where a.id = assignment_id and a.teacher_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.assignments a
+      where a.id = assignment_id and a.teacher_id = auth.uid()
+    )
+  );
+
+create policy "Students view resources for published class assignments"
+  on public.assignment_resources for select
+  using (
+    exists (
+      select 1 from public.assignments a
+      where a.id = assignment_id
+        and a.status = 'published'
+        and public.student_in_class(a.class_id)
+    )
+  );
+
+-- Submissions
+create policy "Admins manage submissions"
+  on public.submissions for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers view submissions in their classes"
+  on public.submissions for select
+  using (
+    exists (
+      select 1
+      from public.assignments a
+      join public.classes c on c.id = a.class_id
+      where a.id = assignment_id
+        and c.teacher_id = auth.uid()
+    )
+  );
+
+create policy "Teachers update submissions in their classes"
+  on public.submissions for update
+  using (
+    exists (
+      select 1
+      from public.assignments a
+      join public.classes c on c.id = a.class_id
+      where a.id = assignment_id
+        and c.teacher_id = auth.uid()
+    )
+  );
+
+create policy "Students view own submissions"
+  on public.submissions for select
+  using (student_id = auth.uid());
+
+create policy "Students insert own draft submissions"
+  on public.submissions for insert
+  with check (
+    student_id = auth.uid()
+    and public.is_student()
+    and status = 'draft'
+    and exists (
+      select 1 from public.assignments a
+      where a.id = assignment_id
+        and a.status = 'published'
+        and public.student_in_class(a.class_id)
+    )
+  );
+
+create policy "Students update own draft or reopened submissions"
+  on public.submissions for update
+  using (
+    student_id = auth.uid()
+    and status in ('draft', 'returned')
+  )
+  with check (
+    student_id = auth.uid()
+  );
+
+-- Feedback
+create policy "Admins manage feedback"
+  on public.feedback for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers manage feedback for their class submissions"
+  on public.feedback for all
+  using (
+    exists (
+      select 1
+      from public.submissions s
+      join public.assignments a on a.id = s.assignment_id
+      join public.classes c on c.id = a.class_id
+      where s.id = submission_id
+        and c.teacher_id = auth.uid()
+    )
+  )
+  with check (
+    teacher_id = auth.uid()
+    and exists (
+      select 1
+      from public.submissions s
+      join public.assignments a on a.id = s.assignment_id
+      join public.classes c on c.id = a.class_id
+      where s.id = submission_id
+        and c.teacher_id = auth.uid()
+    )
+  );
+
+create policy "Students view released feedback on own submissions"
+  on public.feedback for select
+  using (
+    status = 'released'
+    and exists (
+      select 1 from public.submissions s
+      where s.id = submission_id and s.student_id = auth.uid()
+    )
+  );
+
+-- Notifications
+create policy "Users manage own notifications"
+  on public.notifications for select
+  using (user_id = auth.uid());
+
+create policy "Users update own notifications"
+  on public.notifications for update
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
+
+create policy "Admins manage notifications"
+  on public.notifications for all
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "Teachers insert notifications for own class students"
+  on public.notifications for insert
+  with check (
+    public.is_admin()
+    or (
+      public.is_teacher()
+      and (
+        user_id = auth.uid()
+        or public.teacher_teaches_student(user_id)
+      )
+    )
+  );
+
+-- Storage object policies (after buckets + helper functions exist)
+create policy "Admins full access assignment resources storage"
+  on storage.objects for all
+  using (bucket_id = 'assignment-resources' and public.is_admin())
+  with check (bucket_id = 'assignment-resources' and public.is_admin());
+
+create policy "Teachers manage own assignment resource files"
+  on storage.objects for all
+  using (
+    bucket_id = 'assignment-resources'
+    and public.is_teacher()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  )
+  with check (
+    bucket_id = 'assignment-resources'
+    and public.is_teacher()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "Students read assignment resource files for their classes"
+  on storage.objects for select
+  using (
+    bucket_id = 'assignment-resources'
+    and exists (
+      select 1
+      from public.assignment_resources ar
+      join public.assignments a on a.id = ar.assignment_id
+      where ar.storage_path = name
+        and a.status = 'published'
+        and public.student_in_class(a.class_id)
+    )
+  );
+
+create policy "Admins full access student submissions storage"
+  on storage.objects for all
+  using (bucket_id = 'student-submissions' and public.is_admin())
+  with check (bucket_id = 'student-submissions' and public.is_admin());
+
+create policy "Students manage own submission files"
+  on storage.objects for all
+  using (
+    bucket_id = 'student-submissions'
+    and public.is_student()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  )
+  with check (
+    bucket_id = 'student-submissions'
+    and public.is_student()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "Teachers read submission files for their classes"
+  on storage.objects for select
+  using (
+    bucket_id = 'student-submissions'
+    and public.is_teacher()
+    and exists (
+      select 1
+      from public.submissions s
+      join public.assignments a on a.id = s.assignment_id
+      join public.classes c on c.id = a.class_id
+      where s.storage_path = name
+        and c.teacher_id = auth.uid()
+    )
+  );

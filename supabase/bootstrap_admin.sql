@@ -1,0 +1,9 @@
+-- Promote an existing auth user to administrator.
+-- 1. Create the user in Supabase Auth (Dashboard → Authentication → Users → Add user)
+--    OR invite them once Auth is configured.
+-- 2. Ensure a row exists in public.profiles (created by the auth trigger).
+-- 3. Run:
+--
+--    select public.promote_user_to_admin('your.email@school.edu');
+--
+-- Never commit a real administrator email into application source code.
