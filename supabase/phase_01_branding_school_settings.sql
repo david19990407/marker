@@ -209,3 +209,6 @@ create policy school_default_comment_banks_admin on public.school_default_commen
   for all to authenticated
   using (public.is_admin())
   with check (public.is_admin());
+
+-- Reload PostgREST schema cache
+notify pgrst, 'reload schema';

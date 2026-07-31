@@ -2,12 +2,18 @@
 -- Run this in the Supabase SQL editor after creating a project.
 -- Public self-registration should remain disabled in Auth settings.
 --
--- After this file, run on the same database (in order):
---   supabase/phase_01_branding_school_settings.sql
---   supabase/phase_02_multi_teacher_classes.sql
---   supabase/phase_03_assignment_templates_and_deployments.sql
--- Existing live projects that already ran schema.sql should run only the
--- phase_*.sql files (do not re-run this full schema).
+-- Fresh install (new empty project), run in order:
+--   1. supabase/schema.sql
+--   2. supabase/repair_phases_01_to_03.sql   -- school settings, class_teachers, templates/RPCs
+--   3. supabase/phase_04_structured_homework_builder.sql  -- if using the homework builder
+--
+-- Existing LIVE project that already ran schema.sql but is missing
+-- school_settings / create_assignment_template_and_deploy:
+--   Run ONLY: supabase/repair_phases_01_to_03.sql
+--   Do NOT re-run this full schema.sql.
+--
+-- Individual phase_01 / phase_02 / phase_03 files remain available but are
+-- superseded for production repair by repair_phases_01_to_03.sql.
 --
 -- Execution order (required for a fresh database):
 --   1. Extensions
