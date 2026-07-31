@@ -17,33 +17,21 @@ export default async function EditUserPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [
-    { data: user },
-    { data: classes },
-    { data: memberships },
-    { data: seededAdmin },
-  ] = await Promise.all([
-    supabase.from("profiles").select("*").eq("id", id).maybeSingle(),
-    supabase
-      .from("classes")
-      .select("id, name")
-      .eq("archived", false)
-      .order("name"),
-    supabase.from("class_members").select("class_id").eq("student_id", id),
-    supabase
-      .from("profiles")
-      .select("id")
-      .eq("role", "admin")
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-  ]);
+  const [{ data: user }, { data: classes }, { data: memberships }] =
+    await Promise.all([
+      supabase.from("profiles").select("*").eq("id", id).maybeSingle(),
+      supabase
+        .from("classes")
+        .select("id, name")
+        .eq("archived", false)
+        .order("name"),
+      supabase.from("class_members").select("class_id").eq("student_id", id),
+    ]);
 
   if (!user) notFound();
 
-  const isSelf = actor.id === user.id;
-  const canEditRole = !isSelf || seededAdmin?.id === actor.id;
+  // Admins can edit other users' roles, but never their own.
+  const canEditRole = actor.id !== user.id;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
