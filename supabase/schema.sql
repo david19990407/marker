@@ -344,9 +344,10 @@ end;
 $$;
 
 -- Protect role / is_active / email:
--- - service role and admins may change other users' roles
--- - users cannot change their own role (except the first seeded admin)
--- - bootstrap SQL can temporarily bypass via app.bypass_profile_security
+-- - admins may change other users' roles
+-- - nobody may change their own role (auth.uid() vs OLD.id / NEW.id)
+-- - teachers/students cannot change roles
+-- - trusted SECURITY DEFINER helpers set app.bypass_profile_security
 create or replace function public.protect_profile_security_fields()
 returns trigger
 language plpgsql
@@ -355,47 +356,99 @@ set search_path = public
 as $$
 declare
   v_actor uuid := auth.uid();
-  v_jwt_role text;
-  v_is_service boolean := false;
 begin
   if current_setting('app.bypass_profile_security', true) = 'on' then
     return new;
   end if;
 
-  begin
-    v_jwt_role := coalesce(
-      nullif(current_setting('request.jwt.claim.role', true), ''),
-      (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role')
-    );
-  exception
-    when others then
-      v_jwt_role := null;
-  end;
-
-  v_is_service := coalesce(v_jwt_role = 'service_role', false);
-
   if new.role is distinct from old.role then
-    if v_actor is not null and v_actor = new.id then
-      if not public.is_seeded_admin(v_actor) then
-        raise exception 'Users cannot change their own role';
-      end if;
-    elsif not (public.is_admin() or v_is_service) then
+    if v_actor is not null and (v_actor = old.id or v_actor = new.id) then
       raise exception 'Users cannot change their own role';
+    end if;
+
+    if v_actor is null or not public.is_admin() then
+      raise exception 'Only administrators can change user roles';
     end if;
   end if;
 
-  if not (public.is_admin() or v_is_service) then
-    if new.is_active is distinct from old.is_active then
-      raise exception 'Users cannot change active status';
-    end if;
-    if new.email is distinct from old.email then
-      raise exception 'Email must be changed via authentication settings';
+  if new.is_active is distinct from old.is_active
+     or new.email is distinct from old.email then
+    if v_actor is null or not public.is_admin() then
+      if new.is_active is distinct from old.is_active then
+        raise exception 'Users cannot change active status';
+      end if;
+      if new.email is distinct from old.email then
+        raise exception 'Email must be changed via authentication settings';
+      end if;
     end if;
   end if;
 
   return new;
 end;
 $$;
+
+-- Authenticated-admin RPC for profile edits (preserves auth.uid() context).
+create or replace function public.admin_update_user_profile(
+  p_user_id uuid,
+  p_first_name text,
+  p_last_name text,
+  p_display_name text,
+  p_role public.user_role,
+  p_year_group text,
+  p_is_active boolean
+)
+returns public.profiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor uuid := auth.uid();
+  v_existing public.profiles;
+  v_updated public.profiles;
+begin
+  if v_actor is null or not public.is_admin() then
+    raise exception 'Not authorized';
+  end if;
+
+  select *
+  into v_existing
+  from public.profiles
+  where id = p_user_id
+  for update;
+
+  if not found then
+    raise exception 'User not found';
+  end if;
+
+  if v_actor = p_user_id and p_role is distinct from v_existing.role then
+    raise exception 'Users cannot change their own role';
+  end if;
+
+  perform set_config('app.bypass_profile_security', 'on', true);
+
+  update public.profiles
+  set
+    first_name = p_first_name,
+    last_name = p_last_name,
+    display_name = p_display_name,
+    role = p_role,
+    year_group = nullif(trim(coalesce(p_year_group, '')), ''),
+    is_active = p_is_active
+  where id = p_user_id
+  returning * into v_updated;
+
+  return v_updated;
+end;
+$$;
+
+revoke all on function public.admin_update_user_profile(
+  uuid, text, text, text, public.user_role, text, boolean
+) from public, anon;
+
+grant execute on function public.admin_update_user_profile(
+  uuid, text, text, text, public.user_role, text, boolean
+) to authenticated;
 
 -- Bootstrap helper: promote an existing auth user to admin by email.
 -- Usage (run as database owner in SQL editor):

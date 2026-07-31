@@ -23,7 +23,7 @@ export function EditUserForm({
   user: Profile;
   classes: { id: string; name: string }[];
   memberClassIds: string[];
-  /** False when editing your own account (unless you are the seeded admin). */
+  /** False when editing your own account — self-role changes are blocked. */
   canEditRole?: boolean;
 }) {
   const boundUpdate = updateUserAction.bind(null, user.id);

@@ -18,21 +18,6 @@ async function assertAdmin() {
   return requireProfile(["admin"]);
 }
 
-/** Earliest admin by created_at — the bootstrap / seed administrator. */
-async function getSeededAdminId(
-  admin: ReturnType<typeof createAdminClient>,
-): Promise<string | null> {
-  const { data } = await admin
-    .from("profiles")
-    .select("id")
-    .eq("role", "admin")
-    .order("created_at", { ascending: true })
-    .order("id", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  return data?.id ?? null;
-}
-
 export async function createUserAction(
   _prev: ActionResult,
   formData: FormData,
@@ -129,42 +114,29 @@ export async function updateUserAction(
   }
 
   const data = parsed.data;
-  const admin = createAdminClient();
   const displayName = `${data.first_name} ${data.last_name}`.trim();
 
-  const { data: existing, error: existingError } = await admin
-    .from("profiles")
-    .select("role")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (existingError || !existing) {
-    return { error: existingError?.message ?? "User not found" };
+  // App-level guard (matches DB RPC): admins cannot change their own role.
+  if (actor.id === userId && data.role !== actor.role) {
+    return { error: "Users cannot change their own role" };
   }
 
-  // Service-role updates bypass auth.uid() in the DB trigger, so enforce
-  // self-role protection here. The first seeded admin is exempt.
-  if (actor.id === userId && data.role !== existing.role) {
-    const seededAdminId = await getSeededAdminId(admin);
-    if (seededAdminId !== actor.id) {
-      return { error: "Users cannot change their own role" };
-    }
-  }
-
-  const { error } = await admin
-    .from("profiles")
-    .update({
-      first_name: data.first_name,
-      last_name: data.last_name,
-      display_name: displayName,
-      role: data.role,
-      year_group: data.year_group ?? null,
-      is_active: data.is_active,
-    })
-    .eq("id", userId);
+  // Use the authenticated admin session so auth.uid() is preserved inside the
+  // SECURITY DEFINER RPC (do not use the service-role client for role edits).
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("admin_update_user_profile", {
+    p_user_id: userId,
+    p_first_name: data.first_name,
+    p_last_name: data.last_name,
+    p_display_name: displayName,
+    p_role: data.role,
+    p_year_group: data.year_group ?? "",
+    p_is_active: data.is_active,
+  });
 
   if (error) return { error: error.message };
 
+  const admin = createAdminClient();
   await admin.auth.admin.updateUserById(userId, {
     user_metadata: {
       first_name: data.first_name,
@@ -193,13 +165,20 @@ export async function updateUserAction(
 }
 
 export async function deactivateUserAction(userId: string): Promise<ActionResult> {
-  await assertAdmin();
-  const admin = createAdminClient();
-  const { error } = await admin
+  const actor = await assertAdmin();
+  if (actor.id === userId) {
+    return { error: "You cannot deactivate your own account" };
+  }
+
+  // Authenticated admin update preserves auth.uid() for the security trigger.
+  const supabase = await createClient();
+  const { error } = await supabase
     .from("profiles")
     .update({ is_active: false })
     .eq("id", userId);
   if (error) return { error: error.message };
+
+  const admin = createAdminClient();
   await admin.auth.admin.updateUserById(userId, { ban_duration: "876000h" });
   revalidatePath("/admin/users");
   return { success: "User deactivated" };
