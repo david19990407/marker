@@ -156,6 +156,163 @@ export interface SchoolClassColour {
   created_at: string;
 }
 
+// ── Phase 5: Structured homework builder ───────────────────────────────────
+
+export type AssignmentBlockType =
+  | "heading"
+  | "subheading"
+  | "instruction"
+  | "rich_text"
+  | "numbered_question"
+  | "short_text"
+  | "extended_writing"
+  | "numeric"
+  | "multiple_choice"
+  | "tick_box"
+  | "teacher_review"
+  | "file_upload"
+  | "image"
+  | "downloadable_resource"
+  | "table"
+  | "vocabulary_table"
+  | "mark_scheme"
+  | "page_break";
+
+/** Block types that generate a student_responses row */
+export const RESPONSE_BLOCK_TYPES: AssignmentBlockType[] = [
+  "numbered_question",
+  "short_text",
+  "extended_writing",
+  "numeric",
+  "multiple_choice",
+  "tick_box",
+  "teacher_review",
+  "file_upload",
+  "table",
+  "vocabulary_table",
+];
+
+export const BLOCK_TYPE_LABELS: Record<AssignmentBlockType, string> = {
+  heading: "Heading",
+  subheading: "Subheading",
+  instruction: "Instruction",
+  rich_text: "Rich text",
+  numbered_question: "Numbered question",
+  short_text: "Short answer",
+  extended_writing: "Extended writing",
+  numeric: "Numeric answer",
+  multiple_choice: "Multiple choice",
+  tick_box: "Tick box",
+  teacher_review: "Teacher review",
+  file_upload: "File upload",
+  image: "Image",
+  downloadable_resource: "Downloadable resource",
+  table: "Table",
+  vocabulary_table: "Vocabulary table",
+  mark_scheme: "Mark scheme",
+  page_break: "Page break",
+};
+
+export type TableCellType =
+  | "student_text"
+  | "student_numeric"
+  | "tick"
+  | "teacher_review"
+  | "readonly";
+
+export interface TableCellDef {
+  row_index: number;
+  col_index: number;
+  cell_type: TableCellType;
+  label?: string | null;
+  marks?: number | null;
+  read_only: boolean;
+}
+
+export interface TableConfig {
+  rows: number;
+  cols: number;
+  header_row: boolean;
+  col_labels: string[];
+}
+
+/** Client-side mutable builder block */
+export interface BuilderBlock {
+  _id: string;
+  block_type: AssignmentBlockType;
+  content: string;
+  teacher_only: boolean;
+  /** For response blocks */
+  prompt?: string;
+  max_marks?: number | null;
+  required?: boolean;
+  choices?: string[];
+  /** For table/vocabulary_table */
+  tableConfig?: TableConfig;
+  cells?: TableCellDef[];
+}
+
+/** Client-side mutable builder section */
+export interface BuilderSection {
+  _id: string;
+  title: string;
+  blocks: BuilderBlock[];
+  subsections: BuilderSection[];
+}
+
+// ── DB row types ─────────────────────────────────────────────────────────────
+
+export interface AssignmentSection {
+  id: string;
+  template_id: string;
+  parent_section_id: string | null;
+  title: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssignmentBlock {
+  id: string;
+  section_id: string;
+  block_type: AssignmentBlockType;
+  sort_order: number;
+  content: string;
+  config: Record<string, unknown>;
+  teacher_only: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssignmentQuestion {
+  id: string;
+  block_id: string;
+  prompt: string;
+  max_marks: number | null;
+  required: boolean;
+  response_type: string;
+  choices: string[];
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StudentResponse {
+  id: string;
+  submission_id: string;
+  question_id: string;
+  text_value: string | null;
+  numeric_value: number | null;
+  boolean_value: boolean | null;
+  json_value: unknown | null;
+  file_name: string | null;
+  storage_path: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const YEAR_GROUPS = [
   "Year 7",
   "Year 8",

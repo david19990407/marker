@@ -206,22 +206,34 @@ export async function submitHomeworkAction(
 
   const hasText = Boolean(result.submission.written_response?.trim());
   const hasFile = Boolean(result.submission.storage_path);
+
+  const { count: structuredCount } = await result.supabase
+    .from("student_responses")
+    .select("id", { count: "exact", head: true })
+    .eq("submission_id", result.submission.id);
+  const hasStructured = (structuredCount ?? 0) > 0;
+
   if (
     result.assignment.allow_text_submission &&
     !result.assignment.allow_file_submission &&
-    !hasText
+    !hasText &&
+    !hasStructured
   ) {
     return { error: "Write your response before submitting" };
   }
   if (
     result.assignment.allow_file_submission &&
     !result.assignment.allow_text_submission &&
-    !hasFile
+    !hasFile &&
+    !hasStructured
   ) {
     return { error: "Upload a file before submitting" };
   }
-  if (!hasText && !hasFile) {
-    return { error: "Add a written response or file before submitting" };
+  if (!hasText && !hasFile && !hasStructured) {
+    return {
+      error:
+        "Add answers, a written response, or a file before submitting",
+    };
   }
 
   const now = new Date();
