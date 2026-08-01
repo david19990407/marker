@@ -365,7 +365,7 @@ export default async function MarkSubmissionPage({
       .annotation_default_visibility ?? "teacher_only";
 
   return (
-    <div className="space-y-4">
+    <div className={isStructured ? "" : "space-y-4"}>
       {isStructured && structuredSections ? (
         <DocumentMarkingWorkspace
           submissionId={submissionId}
