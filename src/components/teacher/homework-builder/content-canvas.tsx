@@ -17,8 +17,11 @@ import {
   createBlock,
   emptySection,
   isResponseType,
+  resolveMcqOptions,
 } from "@/lib/homework/structure";
 import { formatMarks } from "@/lib/homework/marks";
+import { computePassageStartLines } from "@/lib/homework/passage-numbering";
+import { PassageView } from "@/components/shared/passage-view";
 import { BlockSettingsPanel } from "./block-settings-panel";
 
 type CanvasMode = "edit" | "student" | "marking";
@@ -26,7 +29,7 @@ type CommentBankOption = { id: string; name: string };
 
 interface Props {
   sections: BuilderSection[];
-  onChange: (sections: BuilderSection[]) => void;
+  onChange: (updater: (prev: BuilderSection[]) => BuilderSection[]) => void;
   commentBanks?: CommentBankOption[];
 }
 
@@ -89,13 +92,13 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
     [sections, activeBlockId],
   );
 
-  function commit(next: BuilderSection[]) {
-    onChange(next);
+  function commit(updater: (prev: BuilderSection[]) => BuilderSection[]) {
+    onChange(updater);
   }
 
   function addTopSection() {
     const section = emptySection();
-    commit([...sections, section]);
+    commit((prev) => [...prev, section]);
     setSelectedSectionId(section._id);
   }
 
@@ -105,14 +108,14 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
       const section = emptySection();
       const block = createBlock(type);
       section.blocks = [block];
-      commit([section]);
+      commit(() => [section]);
       setSelectedSectionId(section._id);
       setSelectedBlockId(block._id);
       return;
     }
     const block = createBlock(type);
-    commit(
-      updateSection(sections, targetId, (section) => ({
+    commit((prev) =>
+      updateSection(prev, targetId, (section) => ({
         ...section,
         blocks: [...section.blocks, block],
       })),
@@ -123,8 +126,8 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
 
   function insertBlock(sectionId: string, index: number, type: AssignmentBlockType) {
     const block = createBlock(type);
-    commit(
-      updateSection(sections, sectionId, (section) => {
+    commit((prev) =>
+      updateSection(prev, sectionId, (section) => {
         const blocks = [...section.blocks];
         blocks.splice(index, 0, block);
         return { ...section, blocks };
@@ -134,19 +137,24 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
     setSelectedBlockId(block._id);
   }
 
-  function updateBlock(blockId: string, nextBlock: BuilderBlock) {
-    commit(
-      mapSections(sections, (section) => ({
+  function updateBlock(
+    blockId: string,
+    updater: (prev: BuilderBlock) => BuilderBlock,
+  ) {
+    commit((prev) =>
+      mapSections(prev, (section) => ({
         ...section,
-        blocks: section.blocks.map((block) => (block._id === blockId ? nextBlock : block)),
+        blocks: section.blocks.map((block) =>
+          block._id === blockId ? updater(block) : block,
+        ),
       })),
     );
   }
 
   function deleteBlock(sectionId: string, blockId: string) {
     if (!window.confirm("Delete this block?")) return;
-    commit(
-      updateSection(sections, sectionId, (section) => ({
+    commit((prev) =>
+      updateSection(prev, sectionId, (section) => ({
         ...section,
         blocks: section.blocks.filter((block) => block._id !== blockId),
       })),
@@ -155,8 +163,8 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
   }
 
   function moveBlock(sectionId: string, index: number, direction: -1 | 1) {
-    commit(
-      updateSection(sections, sectionId, (section) => {
+    commit((prev) =>
+      updateSection(prev, sectionId, (section) => {
         const target = index + direction;
         if (target < 0 || target >= section.blocks.length) return section;
         const blocks = [...section.blocks];
@@ -168,8 +176,8 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
 
   function duplicateBlock(sectionId: string, block: BuilderBlock, index: number) {
     const copy = cloneBlock(block);
-    commit(
-      updateSection(sections, sectionId, (section) => {
+    commit((prev) =>
+      updateSection(prev, sectionId, (section) => {
         const blocks = [...section.blocks];
         blocks.splice(index + 1, 0, copy);
         return { ...section, blocks };
@@ -237,13 +245,15 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
                 setCollapsed((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }))
               }
               onRenameSection={(sectionId, title) =>
-                commit(updateSection(sections, sectionId, (s) => ({ ...s, title })))
+                commit((prev) =>
+                  updateSection(prev, sectionId, (s) => ({ ...s, title })),
+                )
               }
               onAddSubsection={(sectionId) => {
                 const sub = emptySection();
                 sub.title = "New subsection";
-                commit(
-                  updateSection(sections, sectionId, (s) => ({
+                commit((prev) =>
+                  updateSection(prev, sectionId, (s) => ({
                     ...s,
                     subsections: [...s.subsections, sub],
                   })),
@@ -262,7 +272,10 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
           block={selectedBlock}
           allSections={sections}
           commentBanks={commentBanks}
-          onChange={(block) => updateBlock(block._id, block)}
+          onChange={(updater) => {
+            if (!selectedBlock) return;
+            updateBlock(selectedBlock._id, updater);
+          }}
         />
       </div>
     </div>
@@ -592,6 +605,7 @@ function BlockRow({
 }
 
 export function StudentPreview({ sections }: { sections: BuilderSection[] }) {
+  const passageStarts = computePassageStartLines(sections, { studentFacing: true });
   return (
     <Card className="space-y-6">
       <div>
@@ -599,13 +613,19 @@ export function StudentPreview({ sections }: { sections: BuilderSection[] }) {
         <p className="mt-1 text-sm text-slate-500">Teacher-only blocks are hidden.</p>
       </div>
       {sections.map((section) => (
-        <PreviewSection key={section._id} section={section} mode="student" />
+        <PreviewSection
+          key={section._id}
+          section={section}
+          mode="student"
+          passageStarts={passageStarts}
+        />
       ))}
     </Card>
   );
 }
 
 function TeacherMarkingPreview({ sections }: { sections: BuilderSection[] }) {
+  const passageStarts = computePassageStartLines(sections, { studentFacing: false });
   return (
     <Card className="space-y-6">
       <div>
@@ -615,7 +635,12 @@ function TeacherMarkingPreview({ sections }: { sections: BuilderSection[] }) {
         </p>
       </div>
       {sections.map((section) => (
-        <PreviewSection key={section._id} section={section} mode="marking" />
+        <PreviewSection
+          key={section._id}
+          section={section}
+          mode="marking"
+          passageStarts={passageStarts}
+        />
       ))}
     </Card>
   );
@@ -624,9 +649,11 @@ function TeacherMarkingPreview({ sections }: { sections: BuilderSection[] }) {
 function PreviewSection({
   section,
   mode,
+  passageStarts,
 }: {
   section: BuilderSection;
   mode: "student" | "marking";
+  passageStarts: Map<string, number>;
 }) {
   const blocks =
     mode === "student"
@@ -637,11 +664,20 @@ function PreviewSection({
     <section className="space-y-4">
       <h3 className="text-lg font-semibold text-slate-900">{section.title}</h3>
       {blocks.map((block) => (
-        <PreviewBlock key={block._id} block={block} mode={mode} />
+        <PreviewBlock
+          key={block._id}
+          block={block}
+          mode={mode}
+          startLineNumber={passageStarts.get(block._id)}
+        />
       ))}
       {section.subsections.map((sub) => (
         <div key={sub._id} className="ml-4 border-l-2 border-slate-100 pl-4">
-          <PreviewSection section={sub} mode={mode} />
+          <PreviewSection
+            section={sub}
+            mode={mode}
+            passageStarts={passageStarts}
+          />
         </div>
       ))}
     </section>
@@ -651,9 +687,11 @@ function PreviewSection({
 function PreviewBlock({
   block,
   mode,
+  startLineNumber,
 }: {
   block: BuilderBlock;
   mode: "student" | "marking";
+  startLineNumber?: number;
 }) {
   if (mode === "student" && (block.teacher_only || block.block_type === "mark_scheme")) {
     return null;
@@ -682,12 +720,11 @@ function PreviewBlock({
       );
     case "passage":
       return (
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          {block.passageConfig?.title ? (
-            <p className="mb-2 font-semibold text-slate-800">{block.passageConfig.title}</p>
-          ) : null}
-          <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{block.content}</p>
-        </div>
+        <PassageView
+          text={block.content}
+          config={block.passageConfig}
+          startLineNumber={startLineNumber}
+        />
       );
     case "divider":
       return <hr className="border-slate-200" />;
@@ -737,12 +774,13 @@ function PreviewAnswerField({ block }: { block: BuilderBlock }) {
   if (block.block_type === "numeric") return <Input disabled className="w-40" placeholder="Number" />;
   if (block.block_type === "multiple_choice" || block.block_type === "multiple_select") {
     const multi = block.block_type === "multiple_select";
+    const options = resolveMcqOptions(block);
     return (
       <div className="space-y-1">
-        {(block.choices ?? []).map((choice, index) => (
-          <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm">
+        {options.map((option) => (
+          <label key={option.id} className="flex items-center gap-2 text-sm">
             <input type={multi ? "checkbox" : "radio"} disabled />
-            {choice}
+            {option.label || "Option"}
           </label>
         ))}
       </div>

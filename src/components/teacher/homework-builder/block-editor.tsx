@@ -392,7 +392,10 @@ function BlockFields({
       )}
 
       {(block.block_type === "table" || block.block_type === "vocabulary_table") && (
-        <TableEditor block={block} onChange={onChange} />
+        <TableEditor
+          block={block}
+          onChange={(updater) => onChange(updater(block))}
+        />
       )}
 
       {(block.block_type === "page_break" || block.block_type === "divider") && (

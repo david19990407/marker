@@ -1,82 +1,83 @@
 "use client";
 
 import type { PassageConfig } from "@/lib/types";
+import { buildPassageRows } from "@/lib/homework/passage-numbering";
 
 export function PassageView({
   text,
   config,
+  startLineNumber,
+  className = "",
 }: {
   text: string;
   config?: PassageConfig | null;
+  /** Override resolved start (used when continuing from a previous passage). */
+  startLineNumber?: number;
+  className?: string;
 }) {
-  const showLines = config?.show_line_numbers ?? false;
-  const interval = Math.max(1, config?.line_number_interval ?? 5);
-  const start = Math.max(1, config?.starting_line_number ?? 1);
-  const paragraphs = text.replace(/\r\n/g, "\n").split("\n");
-
-  let lineNo = start;
-  const rows: Array<{ n: number | null; text: string }> = [];
-
-  for (const para of paragraphs) {
-    if (para === "" && rows.length > 0) {
-      rows.push({ n: null, text: "" });
-      continue;
-    }
-    // Wrap long paragraphs by approximate visual lines (~80 chars)
-    const chunks = wrapLine(para, 80);
-    for (const chunk of chunks) {
-      const show = showLines && (lineNo - start) % interval === 0;
-      rows.push({ n: show ? lineNo : showLines ? null : null, text: chunk });
-      if (showLines) lineNo += 1;
-    }
-  }
+  const { rows, showGutter, endingLineNumber } = buildPassageRows(
+    text,
+    config,
+    startLineNumber,
+  );
+  const gutterDigits = Math.max(
+    2,
+    String(Math.max(endingLineNumber, startLineNumber ?? 1)).length,
+  );
 
   return (
-    <figure className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+    <figure
+      className={`overflow-hidden border border-slate-200 bg-[linear-gradient(180deg,#fffdf8_0%,#ffffff_48%,#f8fafc_100%)] ${className}`}
+    >
       {(config?.title || config?.source_reference) && (
-        <figcaption className="border-b border-slate-100 px-4 py-3">
+        <figcaption className="border-b border-slate-200/80 px-4 py-3 sm:px-5">
           {config?.title ? (
-            <p className="text-sm font-semibold text-slate-800">{config.title}</p>
+            <p className="font-[family-name:var(--font-outfit)] text-base font-semibold tracking-tight text-slate-900">
+              {config.title}
+            </p>
           ) : null}
           {config?.source_reference ? (
-            <p className="text-xs text-slate-500">{config.source_reference}</p>
+            <p className="mt-0.5 text-xs italic text-slate-500">{config.source_reference}</p>
           ) : null}
         </figcaption>
       )}
-      <div className="max-h-[28rem] overflow-auto px-2 py-3 font-mono text-sm leading-7 text-slate-800">
-        {rows.map((row, i) => (
-          <div key={i} className="flex gap-3 px-2">
-            {showLines && (
-              <span
-                className="w-8 shrink-0 select-none text-right text-xs text-slate-400"
-                aria-hidden
-              >
-                {row.n ?? ""}
+      <div
+        className="max-h-[32rem] overflow-auto px-3 py-4 text-[1.05rem] leading-8 text-slate-800 sm:px-5 sm:text-[1.1rem] sm:leading-9"
+        style={{ fontFamily: "var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif" }}
+      >
+        {rows.length === 0 ? (
+          <p className="text-sm text-slate-400">No passage text yet.</p>
+        ) : (
+          rows.map((row, i) => (
+            <div key={i} className="flex gap-3 sm:gap-4">
+              {showGutter && (
+                <span
+                  className="shrink-0 select-text text-right text-[0.78em] tabular-nums leading-[inherit] text-slate-400"
+                  style={{ width: `${gutterDigits + 0.75}ch` }}
+                  title={row.showNumber ? `Line ${row.displayNumber}` : undefined}
+                >
+                  {row.showNumber ? row.displayNumber : ""}
+                </span>
+              )}
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                {row.text || "\u00a0"}
               </span>
-            )}
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-              {row.text || "\u00a0"}
-            </span>
-          </div>
-        ))}
+            </div>
+          ))
+        )}
       </div>
     </figure>
   );
 }
 
-function wrapLine(text: string, width: number): string[] {
-  if (!text) return [""];
-  const words = text.split(/(\s+)/);
-  const lines: string[] = [];
-  let current = "";
-  for (const word of words) {
-    if ((current + word).length > width && current.trim()) {
-      lines.push(current);
-      current = word.trimStart();
-    } else {
-      current += word;
-    }
-  }
-  if (current || lines.length === 0) lines.push(current);
-  return lines;
+export function PassageEndingLine({
+  text,
+  config,
+  startLineNumber,
+}: {
+  text: string;
+  config?: PassageConfig | null;
+  startLineNumber?: number;
+}): number {
+  return buildPassageRows(text, config, startLineNumber).endingLineNumber;
 }

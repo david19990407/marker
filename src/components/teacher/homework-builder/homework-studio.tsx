@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -59,6 +59,10 @@ export function HomeworkStudio({
   linkedCommentBankIds = [],
 }: Props) {
   const [sections, setSections] = useState<BuilderSection[]>(initialSections);
+  const sectionsRef = useRef(sections);
+  useEffect(() => {
+    sectionsRef.current = sections;
+  }, [sections]);
   const [activeStage, setActiveStage] = useState<BuilderStage>(
     previewOnly ? "preview" : "content",
   );
@@ -89,9 +93,12 @@ export function HomeworkStudio({
     return ok;
   }
 
-  function updateSections(next: BuilderSection[]) {
+  /** Functional updates prevent stale React closures from wiping nested MCQ edits. */
+  function updateSections(updater: (prev: BuilderSection[]) => BuilderSection[]) {
     if (previewOnly) return;
     if (!confirmIssuedEdit()) return;
+    const next = updater(sectionsRef.current);
+    sectionsRef.current = next;
     setSections(next);
     autosave.markDirty(next);
   }
@@ -108,15 +115,13 @@ export function HomeworkStudio({
     block.content = "Video";
     block.prompt = "Watch this video before answering the questions.";
 
-    const nextSections =
-      sections.length > 0
-        ? sections.map((section, index) =>
+    updateSections((prev) =>
+      prev.length > 0
+        ? prev.map((section, index) =>
             index === 0 ? { ...section, blocks: [...section.blocks, block] } : section,
           )
-        : [{ ...emptySection(), blocks: [block] }];
-
-    setSections(nextSections);
-    autosave.markDirty(nextSections);
+        : [{ ...emptySection(), blocks: [block] }],
+    );
     setActiveStage("content");
   }
 

@@ -3,10 +3,12 @@ import type {
   AssignmentBlockType,
   BuilderBlock,
   BuilderSection,
+  McqOption,
   TableCellDef,
   TableConfig,
 } from "@/lib/types";
 import { RESPONSE_BLOCK_TYPES as RESPONSE_TYPES } from "@/lib/types";
+import { normalizePassageConfig } from "@/lib/homework/passage-numbering";
 
 // ── Identity helpers ─────────────────────────────────────────────────────────
 
@@ -32,7 +34,14 @@ export function cloneBlock(block: BuilderBlock): BuilderBlock {
     linked_comment_bank_ids: block.linked_comment_bank_ids
       ? [...block.linked_comment_bank_ids]
       : undefined,
-    passageConfig: block.passageConfig ? { ...block.passageConfig } : undefined,
+    passageConfig: block.passageConfig
+      ? {
+          ...block.passageConfig,
+          manual_line_numbers: block.passageConfig.manual_line_numbers
+            ? [...block.passageConfig.manual_line_numbers]
+            : undefined,
+        }
+      : undefined,
     tableConfig: block.tableConfig
       ? { ...block.tableConfig, col_labels: [...block.tableConfig.col_labels] }
       : undefined,
@@ -142,13 +151,16 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
   if (type === "passage") {
     base.content = "";
     base.prompt = "";
-    base.passageConfig = {
+    base.passageConfig = normalizePassageConfig({
       title: "",
       source_reference: "",
       show_line_numbers: true,
+      line_number_mode: "every_5",
       line_number_interval: 5,
       starting_line_number: 1,
-    };
+      numbering_continuation: "custom_start",
+      manual_line_numbers: [],
+    });
   }
 
   if (type === "embedded_video") {
@@ -211,6 +223,43 @@ export function emptySection(): BuilderSection {
   };
 }
 
+// ── MCQ helpers ──────────────────────────────────────────────────────────────
+
+export function resolveMcqOptions(block: BuilderBlock): McqOption[] {
+  if (block.mcq_options?.length) {
+    return block.mcq_options.map((o) => ({
+      ...o,
+      label: o.label ?? "",
+      feedback: o.feedback ?? "",
+      correct: !!o.correct,
+    }));
+  }
+  return (block.choices ?? []).map((label, i) => ({
+    id: `opt-${i}`,
+    label,
+    correct: (block.correct_option_indexes ?? []).includes(i),
+    feedback: block.option_feedback?.[i] ?? "",
+  }));
+}
+
+export function applyMcqOptions(block: BuilderBlock, options: McqOption[]): BuilderBlock {
+  const multi = block.block_type === "multiple_select";
+  const correctIndexes = options
+    .map((o, i) => (o.correct ? i : -1))
+    .filter((i) => i >= 0);
+  const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+  return {
+    ...block,
+    mcq_options: options,
+    choices: options.map((o) => o.label),
+    option_feedback: options.map((o) => o.feedback ?? ""),
+    correct_option_indexes: correctIndexes,
+    correct_answer: multi
+      ? correctLabels.join("\n") || null
+      : (correctLabels[0] ?? null),
+  };
+}
+
 // ── Predicate helpers ────────────────────────────────────────────────────────
 
 export function isResponseType(t: AssignmentBlockType): boolean {
@@ -245,7 +294,7 @@ type SectionPayload = {
 function blockToPayload(b: BuilderBlock): BlockPayload {
   const config: Record<string, unknown> = {};
 
-  if (b.passageConfig) config.passage = b.passageConfig;
+  if (b.passageConfig) config.passage = normalizePassageConfig(b.passageConfig);
   if (b.external_url) config.external_url = b.external_url;
   if (b.captions_text) config.captions_text = b.captions_text;
   if (b.allow_download != null) config.allow_download = b.allow_download;
@@ -269,20 +318,28 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
   };
 
   if (isResponseType(b.block_type)) {
-    const options = b.mcq_options?.length
-      ? b.mcq_options
-      : (b.choices ?? []).map((label, i) => ({
-          id: `opt-${i}`,
-          label,
-          correct: (b.correct_option_indexes ?? []).includes(i),
-          feedback: b.option_feedback?.[i] ?? "",
-        }));
+    const options = resolveMcqOptions(b);
+    const correctIndexes = options
+      .map((o, i) => (o.correct ? i : -1))
+      .filter((i) => i >= 0);
+    const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+    const isMulti = b.block_type === "multiple_select";
+    const isMcq =
+      b.block_type === "multiple_choice" || b.block_type === "multiple_select";
 
     payload.question_id = b.question_id ?? null;
     payload.prompt = b.prompt ?? "";
     payload.max_marks = b.max_marks ?? null;
     payload.required = b.required ?? false;
-    payload.choices = options.map((o) => ({ label: o.label }));
+    // Persist full option objects so reopen/publish never drop correctness metadata.
+    payload.choices = isMcq
+      ? options.map((o) => ({
+          id: o.id,
+          label: o.label,
+          feedback: o.feedback ?? "",
+          is_correct: !!o.correct,
+        }))
+      : options.map((o) => ({ label: o.label }));
     payload.response_type = b.block_type;
     payload.teacher_note = b.teacher_note ?? null;
     payload.mark_scheme_note = b.mark_scheme_note ?? null;
@@ -291,9 +348,13 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     payload.allow_attachments = b.allow_attachments ?? false;
     payload.min_value = b.min_value ?? null;
     payload.max_value = b.max_value ?? null;
-    payload.correct_answer = b.correct_answer
-      ? { value: b.correct_answer }
-      : null;
+    payload.correct_answer = isMcq
+      ? isMulti
+        ? { indexes: correctIndexes, labels: correctLabels }
+        : { value: correctLabels[0] ?? b.correct_answer ?? null, indexes: correctIndexes }
+      : b.correct_answer
+        ? { value: b.correct_answer }
+        : null;
     payload.review_only = b.review_only ?? b.block_type === "teacher_review";
     payload.marks_apply = b.marks_apply ?? true;
     payload.marking_mode = b.marking_mode ?? "teacher_reviewed";
@@ -301,9 +362,7 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     payload.suggested_minutes = b.suggested_minutes ?? null;
     payload.passage_block_ids = b.passage_block_ids ?? [];
     payload.option_feedback = options.map((o) => o.feedback ?? "");
-    payload.correct_option_indexes = options
-      .map((o, i) => (o.correct ? i : -1))
-      .filter((i) => i >= 0);
+    payload.correct_option_indexes = correctIndexes;
     payload.table_marks_mode = b.table_marks_mode ?? "none";
     payload.table_total_marks = b.table_total_marks ?? null;
   }
@@ -406,16 +465,9 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
   };
 
   if (cfg.passage && typeof cfg.passage === "object") {
-    const p = cfg.passage as Record<string, unknown>;
-    block.passageConfig = {
-      title: typeof p.title === "string" ? p.title : "",
-      source_reference: typeof p.source_reference === "string" ? p.source_reference : "",
-      show_line_numbers: p.show_line_numbers !== false,
-      line_number_interval:
-        typeof p.line_number_interval === "number" ? p.line_number_interval : 5,
-      starting_line_number:
-        typeof p.starting_line_number === "number" ? p.starting_line_number : 1,
-    };
+    block.passageConfig = normalizePassageConfig(
+      cfg.passage as Record<string, unknown>,
+    );
   }
 
   if (q) {
@@ -459,24 +511,76 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     }
 
     const rawChoices = q.choices;
+    const indexesFromAnswer =
+      q.correct_answer &&
+      typeof q.correct_answer === "object" &&
+      q.correct_answer !== null &&
+      Array.isArray((q.correct_answer as Record<string, unknown>).indexes)
+        ? ((q.correct_answer as Record<string, unknown>).indexes as number[])
+        : [];
+    const correctIndexes =
+      (block.correct_option_indexes?.length
+        ? block.correct_option_indexes
+        : indexesFromAnswer) ?? [];
+
     if (Array.isArray(rawChoices)) {
-      block.choices = rawChoices.map((c) => {
-        if (typeof c === "string") return c;
-        if (c && typeof c === "object" && "label" in c) {
-          return String((c as Record<string, unknown>).label);
+      block.mcq_options = rawChoices.map((c, i) => {
+        if (typeof c === "string") {
+          return {
+            id: `opt-${b.id}-${i}`,
+            label: c,
+            feedback: block.option_feedback?.[i] ?? "",
+            correct: correctIndexes.includes(i),
+          };
         }
-        return String(c);
+        if (c && typeof c === "object") {
+          const obj = c as Record<string, unknown>;
+          const label =
+            obj.label != null
+              ? String(obj.label)
+              : obj.text != null
+                ? String(obj.text)
+                : String(c);
+          const fromFlag =
+            typeof obj.is_correct === "boolean"
+              ? obj.is_correct
+              : typeof obj.correct === "boolean"
+                ? obj.correct
+                : correctIndexes.includes(i);
+          return {
+            id: typeof obj.id === "string" && obj.id ? obj.id : `opt-${b.id}-${i}`,
+            label,
+            feedback:
+              typeof obj.feedback === "string"
+                ? obj.feedback
+                : (block.option_feedback?.[i] ?? ""),
+            correct: fromFlag,
+          };
+        }
+        return {
+          id: `opt-${b.id}-${i}`,
+          label: String(c),
+          feedback: block.option_feedback?.[i] ?? "",
+          correct: correctIndexes.includes(i),
+        };
       });
     } else {
-      block.choices = [];
+      block.mcq_options = [];
     }
 
-    block.mcq_options = (block.choices ?? []).map((label, i) => ({
-      id: newId(),
-      label,
-      feedback: block.option_feedback?.[i] ?? "",
-      correct: (block.correct_option_indexes ?? []).includes(i),
-    }));
+    block.choices = block.mcq_options.map((o) => o.label);
+    block.option_feedback = block.mcq_options.map((o) => o.feedback ?? "");
+    block.correct_option_indexes = block.mcq_options
+      .map((o, i) => (o.correct ? i : -1))
+      .filter((i) => i >= 0);
+    if (
+      (bt === "multiple_choice" || bt === "multiple_select") &&
+      !block.correct_answer
+    ) {
+      const labels = block.mcq_options.filter((o) => o.correct).map((o) => o.label);
+      block.correct_answer =
+        bt === "multiple_choice" ? (labels[0] ?? null) : labels.join("\n") || null;
+    }
   }
 
   if ((bt === "table" || bt === "vocabulary_table") && b.config) {
