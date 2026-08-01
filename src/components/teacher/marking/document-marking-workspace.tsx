@@ -322,7 +322,7 @@ export function DocumentMarkingWorkspace({
     "questions",
   );
   const [leftWidth, setLeftWidth] = useState(260);
-  const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT_WIDTH);
+  const [rightWidth, setRightWidth] = useState(readStoredRightWidth);
   const [centreView, setCentreView] = useState<CentreView>({ kind: "worksheet" });
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState<"none" | "width" | "page">("width");
@@ -474,10 +474,6 @@ export function DocumentMarkingWorkspace({
   useEffect(() => {
     window.localStorage.setItem(TOOLBAR_POS_KEY, JSON.stringify(floatingPos));
   }, [floatingPos]);
-
-  useEffect(() => {
-    setRightWidth(readStoredRightWidth());
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(RIGHT_WIDTH_KEY, String(rightWidth));
@@ -1005,6 +1001,10 @@ export function DocumentMarkingWorkspace({
     fullscreen,
   ]);
 
+  const onSelectQuestion = useCallback((qid: string) => {
+    setSelectedQuestionId(qid);
+  }, []);
+
   const worksheetAnnotations = annotations.filter(
     (a) => a.target_kind === "worksheet" && !a.is_deleted,
   );
@@ -1423,7 +1423,7 @@ export function DocumentMarkingWorkspace({
                   mode="teacher_marking"
                   showTeacherGuidance
                   selectedQuestionId={selectedQuestionId}
-                  onSelectQuestion={(qid) => setSelectedQuestionId(qid)}
+                  onSelectQuestion={onSelectQuestion}
                 />
                 <AnnotationLayer
                   annotations={worksheetAnnotations}

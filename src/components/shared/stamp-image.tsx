@@ -120,31 +120,42 @@ export function StampImage({
   className?: string;
 }) {
   const path = storagePath?.trim() || "";
-  const [url, setUrl] = useState<string | null>(() =>
-    path ? readCache("marking-stamps", path) : null,
-  );
-  const [failed, setFailed] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
+  const [retryToken, setRetryToken] = useState(0);
+  const [resolved, setResolved] = useState<{
+    path: string;
+    url: string | null;
+    failed: boolean;
+    token: number;
+  }>(() => ({
+    path,
+    url: path ? readCache("marking-stamps", path) : null,
+    failed: false,
+    token: 0,
+  }));
 
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
-    setFailed(false);
-    const cached = readCache("marking-stamps", path);
-    if (cached) {
-      setUrl(cached);
-      return;
-    }
+
     void fetchSignedUrl("marking-stamps", path).then((next) => {
-      if (!cancelled) {
-        if (next) setUrl(next);
-        else setFailed(true);
-      }
+      if (cancelled) return;
+      setResolved({
+        path,
+        url: next,
+        failed: !next,
+        token: retryToken,
+      });
     });
+
     return () => {
       cancelled = true;
     };
-  }, [path, retryCount]);
+  }, [path, retryToken]);
+
+  const active =
+    resolved.path === path && resolved.token === retryToken ? resolved : null;
+  const cached = path ? readCache("marking-stamps", path) : null;
+  const url = active?.url ?? cached;
 
   if (!path) {
     return (
@@ -154,20 +165,28 @@ export function StampImage({
     );
   }
 
-  if (failed || !url) {
+  if (active?.failed && !url) {
     return (
       <button
         type="button"
         className={className}
-        aria-label={failed ? `${alt} (failed to load, click to retry)` : alt}
-        title={failed ? "Retry loading stamp" : alt}
+        aria-label={`${alt} (failed to load, click to retry)`}
+        title="Retry loading stamp"
         onClick={(e) => {
           e.stopPropagation();
-          if (failed) setRetryCount((n) => n + 1);
+          setRetryToken((n) => n + 1);
         }}
       >
-        {failed ? "⚠" : "★"}
+        ⚠
       </button>
+    );
+  }
+
+  if (!url) {
+    return (
+      <span className={className} aria-label={alt} title={alt}>
+        ★
+      </span>
     );
   }
 
@@ -178,7 +197,9 @@ export function StampImage({
       alt={alt}
       className={className}
       draggable={false}
-      onError={() => setFailed(true)}
+      onError={() =>
+        setResolved({ path, url: null, failed: true, token: retryToken })
+      }
     />
   );
 }
