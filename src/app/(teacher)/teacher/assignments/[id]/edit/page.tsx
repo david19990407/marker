@@ -1,9 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/ui/page-header";
-import { Card } from "@/components/ui/card";
+import { Card, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AssignmentForm } from "@/components/teacher/assignment-form";
+import { AssignmentStampSelector } from "@/components/teacher/assignment-stamp-selector";
+import {
+  listMarkingStampsAction,
+  loadAssignmentStampSelectionsAction,
+} from "@/lib/actions/marking-annotations";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import type { Assignment } from "@/lib/types";
@@ -61,6 +66,20 @@ export default async function EditAssignmentPage({
 
   if (!assignment) notFound();
 
+  const { data: classRow } = await supabase
+    .from("classes")
+    .select("subject")
+    .eq("id", assignment.class_id)
+    .maybeSingle();
+
+  const [stampsResult, selectionsResult] = await Promise.all([
+    listMarkingStampsAction({
+      subject: classRow?.subject ?? null,
+      assignmentId: id,
+    }),
+    loadAssignmentStampSelectionsAction(id),
+  ]);
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <PageHeader
@@ -80,6 +99,16 @@ export default async function EditAssignmentPage({
         <AssignmentForm
           classes={classes ?? []}
           assignment={assignment as Assignment}
+        />
+      </Card>
+      <Card>
+        <CardTitle className="mb-4">Marking stamps</CardTitle>
+        <AssignmentStampSelector
+          assignmentId={id}
+          stamps={stampsResult.stamps ?? []}
+          selectedStampIds={(selectionsResult.selections ?? [])
+            .filter((s) => s.enabled)
+            .map((s) => s.stamp_id)}
         />
       </Card>
     </div>
