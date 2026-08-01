@@ -158,6 +158,7 @@ export default async function StudentAssignmentPage({
             </p>
           ) : null}
           <StructuredHomework
+            key={`${assignmentId}-${submission?.status ?? "none"}-${editable ? "edit" : "ro"}`}
             assignmentId={assignmentId}
             sections={structuredSections}
             existingResponses={existingResponses}

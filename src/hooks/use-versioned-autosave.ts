@@ -97,5 +97,6 @@ export function useVersionedAutosave<T>(options: {
     flush,
     hasUnsavedChanges: () =>
       controllerHolder.current?.hasUnsavedChanges() ?? false,
+    getVersion: () => controllerHolder.current?.version ?? 0,
   };
 }

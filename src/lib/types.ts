@@ -491,6 +491,8 @@ export interface StudentResponse {
   json_value: unknown | null;
   file_name: string | null;
   storage_path: string | null;
+  /** Client autosave version used to reject stale overwrites. */
+  client_version?: number | null;
   created_at: string;
   updated_at: string;
 }

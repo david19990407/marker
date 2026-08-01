@@ -66,4 +66,21 @@ describe("autosave versioning", () => {
     expect(controller.version).toBeGreaterThan(0);
     controller.dispose();
   });
+
+  it("flush returns true only after the current version is saved", async () => {
+    const saved: string[] = [];
+    const controller = createAutosaveController<string>({
+      delayMs: 50,
+      save: async (value) => {
+        saved.push(value);
+        return { ok: true };
+      },
+    });
+    controller.markDirty("v1");
+    const ok = await controller.flush();
+    expect(ok).toBe(true);
+    expect(saved.at(-1)).toBe("v1");
+    expect(controller.getStatus()).toBe("saved");
+    controller.dispose();
+  });
 });

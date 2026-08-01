@@ -456,7 +456,7 @@ function BlockView({
           </>
         ) : (
           <p className="whitespace-pre-wrap text-[1.02rem] leading-7 text-slate-700">
-            {text || "—"}
+            {text.trim() ? text : "Not answered"}
           </p>
         )}
       </QuestionShell>
@@ -488,7 +488,7 @@ function BlockView({
           />
         ) : (
           <p className="text-[1.02rem] leading-7 text-slate-700">
-            {text || "—"}
+            {text.trim() ? text : "Not answered"}
           </p>
         )}
       </QuestionShell>
@@ -504,7 +504,7 @@ function BlockView({
     const display =
       numeric != null
         ? `${numeric}${numericCfg.unit ? ` ${numericCfg.unit}` : ""}`
-        : "—";
+        : "Not answered";
     const reference =
       block.correct_answer ||
       (numericCfg.correct_min != null || numericCfg.correct_max != null
@@ -607,7 +607,7 @@ function BlockView({
         </div>
         {mode === "teacher_marking" ? (
           <MarkingAnswerMeta
-            selected={selectedLabels[0] || "—"}
+            selected={selectedLabels[0] || "Not answered"}
             reference={correctLabels[0] ?? block.correct_answer ?? "—"}
             automatic={block.marking_mode === "automatic"}
           />
@@ -663,7 +663,7 @@ function BlockView({
         </div>
         {mode === "teacher_marking" ? (
           <MarkingAnswerMeta
-            selected={selectedLabels.join(", ") || "—"}
+            selected={selectedLabels.join(", ") || "Not answered"}
             reference={correctLabels.join(", ") || block.correct_answer || "—"}
             automatic={block.marking_mode === "automatic"}
           />
@@ -1272,7 +1272,7 @@ function TableView({
                           )
                         ) : (
                           <span className="text-sm text-slate-700">
-                            {value || "—"}
+                            {value.trim() ? value : "Not answered"}
                           </span>
                         )}
                       </td>
