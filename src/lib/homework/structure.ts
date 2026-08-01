@@ -12,6 +12,7 @@ import type {
 import { RESPONSE_BLOCK_TYPES as RESPONSE_TYPES } from "@/lib/types";
 import {
   linesToContent,
+  migrateLegacyPassageLabels,
   normalizePassageConfig,
 } from "@/lib/homework/passage-numbering";
 
@@ -36,9 +37,8 @@ export function cloneBlock(block: BuilderBlock): BuilderBlock {
       ? [...block.correct_option_indexes]
       : undefined,
     passage_block_ids: block.passage_block_ids ? [...block.passage_block_ids] : undefined,
-    linked_comment_bank_ids: block.linked_comment_bank_ids
-      ? [...block.linked_comment_bank_ids]
-      : undefined,
+    // Do not silently copy comment-bank links onto duplicates.
+    linked_comment_bank_ids: [],
     passageConfig: block.passageConfig
       ? {
           ...block.passageConfig,
@@ -612,15 +612,20 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
   };
 
   if (cfg.passage && typeof cfg.passage === "object") {
-    block.passageConfig = normalizePassageConfig(
-      cfg.passage as Record<string, unknown>,
-      b.content,
+    // One-time: copy legacy index maps into editable row labels if none exist.
+    block.passageConfig = migrateLegacyPassageLabels(
+      normalizePassageConfig(
+        cfg.passage as Record<string, unknown>,
+        b.content,
+      ),
     );
     if (block.passageConfig.lines?.length) {
       block.content = linesToContent(block.passageConfig.lines);
     }
   } else if (bt === "passage") {
-    block.passageConfig = normalizePassageConfig(null, b.content);
+    block.passageConfig = migrateLegacyPassageLabels(
+      normalizePassageConfig(null, b.content),
+    );
   }
 
   if (cfg.media && typeof cfg.media === "object") {

@@ -6,11 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  saveAssignmentCommentsAction,
-  saveCommentBankLinksAction,
-} from "@/lib/actions/homework-builder";
-import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
+import { saveCommentBankLinksAction } from "@/lib/actions/homework-builder";
 import { newId } from "@/lib/homework/structure";
 import { BLOCK_TYPE_LABELS, RESPONSE_BLOCK_TYPES } from "@/lib/types";
 import type { AssignmentCommentDraft, BuilderSection } from "@/lib/types";
@@ -20,7 +16,12 @@ export type CommentBankOption = { id: string; name: string };
 interface Props {
   templateId: string;
   sections: BuilderSection[];
-  initialComments?: AssignmentCommentDraft[];
+  /** Controlled assignment comments shared with Content stage. */
+  comments: AssignmentCommentDraft[];
+  onCommentsChange: (next: AssignmentCommentDraft[]) => void;
+  commentAutosaveLabel?: string;
+  commentAutosaveError?: string | null;
+  onFlushComments?: () => void;
   commentBanks?: CommentBankOption[];
   linkedCommentBankIds?: string[];
 }
@@ -30,13 +31,14 @@ type BankView = "assignment" | string;
 export function FeedbackStage({
   templateId,
   sections,
-  initialComments = [],
+  comments,
+  onCommentsChange,
+  commentAutosaveLabel = "Saved",
+  commentAutosaveError = null,
+  onFlushComments,
   commentBanks = [],
   linkedCommentBankIds = [],
 }: Props) {
-  const [comments, setComments] = useState<AssignmentCommentDraft[]>(() =>
-    normaliseComments(initialComments),
-  );
   const [bankIds, setBankIds] = useState<string[]>(linkedCommentBankIds);
   const [selectedBank, setSelectedBank] = useState<BankView>("assignment");
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(
@@ -56,18 +58,8 @@ export function FeedbackStage({
     [sections],
   );
 
-  const autosave = useVersionedAutosave<AssignmentCommentDraft[]>({
-    delayMs: 1200,
-    save: async (value) => {
-      const result = await saveAssignmentCommentsAction(templateId, value);
-      return result.error ? { ok: false, error: result.error } : { ok: true };
-    },
-  });
-
   function updateComments(next: AssignmentCommentDraft[]) {
-    const ordered = normaliseComments(next);
-    setComments(ordered);
-    autosave.markDirty(ordered);
+    onCommentsChange(normaliseComments(next));
   }
 
   const filtered = useMemo(() => {
@@ -289,13 +281,15 @@ export function FeedbackStage({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={autosave.status === "error" ? "danger" : "neutral"}>
-              {autosave.label}
+            <Badge
+              tone={commentAutosaveError ? "danger" : "neutral"}
+            >
+              {commentAutosaveLabel}
             </Badge>
             <Button
               type="button"
               variant="secondary"
-              onClick={() => void autosave.flush()}
+              onClick={() => onFlushComments?.()}
             >
               Save now
             </Button>
@@ -312,9 +306,9 @@ export function FeedbackStage({
           </div>
         </Card>
 
-        {autosave.lastError ? (
+        {commentAutosaveError ? (
           <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-            {autosave.lastError}
+            {commentAutosaveError}
           </div>
         ) : null}
 
@@ -712,7 +706,7 @@ function Checkbox({
   );
 }
 
-function normaliseComments(comments: AssignmentCommentDraft[]) {
+export function normaliseComments(comments: AssignmentCommentDraft[]) {
   return comments.map((comment, index) => ({
     ...comment,
     sort_order: index,
@@ -723,6 +717,14 @@ function normaliseComments(comments: AssignmentCommentDraft[]) {
           ? [comment.linked_question_id]
           : [],
   }));
+}
+
+export function commentLinkedQuestionIds(
+  comment: AssignmentCommentDraft,
+): string[] {
+  if (comment.linked_question_ids?.length) return [...comment.linked_question_ids];
+  if (comment.linked_question_id) return [comment.linked_question_id];
+  return [];
 }
 
 function collectQuestionOptions(sections: BuilderSection[]) {

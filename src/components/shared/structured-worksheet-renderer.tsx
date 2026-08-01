@@ -29,6 +29,7 @@ import {
   isEmbeddableVideo,
   parseVideoUrl,
 } from "@/lib/homework/video-embed";
+import { formatMarkLabelBracketed } from "@/lib/homework/marks";
 import { formatFileSize } from "@/lib/utils/files";
 import type {
   BuilderBlock,
@@ -799,7 +800,7 @@ function QuestionShell({
           {block.required && <span className="ml-1 text-rose-500">*</span>}
           {block.max_marks != null && (
             <span className="ml-2 align-middle text-xs font-normal tracking-normal text-slate-400">
-              [{block.max_marks} marks]
+              {formatMarkLabelBracketed(block.max_marks)}
             </span>
           )}
         </label>

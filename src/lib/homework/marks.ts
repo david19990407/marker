@@ -58,3 +58,22 @@ export function normalizeCalculatedTotal(
 export function formatMarks(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, "");
 }
+
+/**
+ * Grammatically correct mark labels.
+ * 0 → "0 marks", 1 / 1.0 → "1 mark", anything else → "N marks".
+ */
+export function formatMarkLabel(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(Number(value))) return "0 marks";
+  const n = Number(value);
+  const display = formatMarks(n);
+  const isExactlyOne = Math.abs(n - 1) < 1e-9;
+  return `${display} ${isExactlyOne ? "mark" : "marks"}`;
+}
+
+/** Bracketed variant used next to question titles: "[1 mark]". */
+export function formatMarkLabelBracketed(
+  value: number | null | undefined,
+): string {
+  return `[${formatMarkLabel(value)}]`;
+}

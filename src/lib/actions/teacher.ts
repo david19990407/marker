@@ -484,17 +484,18 @@ export async function publishHomeworkAction(
   if (existing.template_id) {
     try {
       const { loadTemplateStructure } = await import("@/lib/homework/structure");
-      const { hasBlockingPublishIssues } = await import(
-        "@/lib/homework/publish-readiness"
-      );
+      const {
+        collectPublishWarnings,
+        formatPublishIssueList,
+      } = await import("@/lib/homework/publish-readiness");
       const sections = await loadTemplateStructure(
         supabase,
         existing.template_id,
       );
-      if (hasBlockingPublishIssues(sections)) {
+      const blocking = collectPublishWarnings(sections).filter((w) => w.blocking);
+      if (blocking.length > 0) {
         return {
-          error:
-            "Fix invalid multiple-choice questions (options and correct answers) before publishing.",
+          error: `Cannot publish until these issues are fixed:\n${formatPublishIssueList(blocking)}`,
         };
       }
     } catch {
