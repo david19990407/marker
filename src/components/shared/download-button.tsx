@@ -8,7 +8,7 @@ export function DownloadButton({
   path,
   label = "Download",
 }: {
-  bucket: "assignment-resources" | "student-submissions";
+  bucket: "assignment-resources" | "student-submissions" | "marking-stamps";
   path: string;
   label?: string;
 }) {

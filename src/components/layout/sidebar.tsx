@@ -10,6 +10,7 @@ import {
   School,
   Settings,
   SlidersHorizontal,
+  Stamp,
   Upload,
   Users,
   X,
@@ -30,6 +31,11 @@ function navForRole(role: Profile["role"]): NavItem[] {
         href: "/admin/settings",
         label: "School settings",
         icon: SlidersHorizontal,
+      },
+      {
+        href: "/admin/marking-stamps",
+        label: "Marking stamps",
+        icon: Stamp,
       },
       { href: "/settings", label: "Settings", icon: Settings },
     ];

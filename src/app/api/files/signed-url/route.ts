@@ -3,7 +3,11 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 
 const bodySchema = z.object({
-  bucket: z.enum(["assignment-resources", "student-submissions"]),
+  bucket: z.enum([
+    "assignment-resources",
+    "student-submissions",
+    "marking-stamps",
+  ]),
   path: z.string().min(1),
 });
 

@@ -5,6 +5,7 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmissionPanel } from "@/components/student/submission-panel";
+import { ReleasedAnnotationsPanel } from "@/components/student/released-annotations-panel";
 import {
   StructuredHomework,
   type ResponseWithCells,
@@ -15,6 +16,11 @@ import { createClient } from "@/lib/supabase/server";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
 import { pickAuthoritativeResponsesByQuestion } from "@/lib/homework/response-protect";
 import { loadTemplateStructure } from "@/lib/homework/structure";
+import type {
+  MarkingStamp,
+  QuestionMarkRecord,
+  SubmissionAnnotation,
+} from "@/lib/marking/annotation-types";
 
 export const dynamic = "force-dynamic";
 
@@ -175,6 +181,116 @@ export default async function StudentAssignmentPage({
         text: releasedFeedback.next_steps || "—",
       },
     ];
+  }
+
+  let releasedAnnotations: SubmissionAnnotation[] = [];
+  let releasedQuestionMarks: QuestionMarkRecord[] = [];
+  let annotationStamps: MarkingStamp[] = [];
+  if (releasedFeedback && submission) {
+    const [annotationQuery, markQuery] = await Promise.all([
+      supabase
+        .from("submission_annotations")
+        .select("*")
+        .eq("submission_id", submission.id)
+        .eq("is_deleted", false)
+        .eq("visibility", "student_visible"),
+      supabase
+        .from("question_marks")
+        .select("*")
+        .eq("submission_id", submission.id),
+    ]);
+    const annotationRows = annotationQuery.error ? [] : annotationQuery.data;
+    const markRows = markQuery.error ? [] : markQuery.data;
+    releasedAnnotations = (annotationRows ?? []).map((row) => ({
+      id: String(row.id),
+      submission_id: String(row.submission_id),
+      assignment_id: String(row.assignment_id),
+      question_id: (row.question_id as string | null) ?? null,
+      block_id: (row.block_id as string | null) ?? null,
+      page_number: row.page_number == null ? null : Number(row.page_number),
+      target_kind:
+        (row.target_kind as SubmissionAnnotation["target_kind"]) ?? "worksheet",
+      target_path: (row.target_path as string | null) ?? null,
+      annotation_type:
+        row.annotation_type as SubmissionAnnotation["annotation_type"],
+      x_norm: Number(row.x_norm ?? 0),
+      y_norm: Number(row.y_norm ?? 0),
+      w_norm: Number(row.w_norm ?? 0),
+      h_norm: Number(row.h_norm ?? 0),
+      geometry: (row.geometry as Record<string, unknown>) ?? {},
+      text_content: (row.text_content as string | null) ?? null,
+      colour: String(row.colour ?? "#ef4444"),
+      opacity: Number(row.opacity ?? 0.35),
+      stroke_width: Number(row.stroke_width ?? 2),
+      stamp_id: (row.stamp_id as string | null) ?? null,
+      visibility:
+        (row.visibility as SubmissionAnnotation["visibility"]) ??
+        "student_visible",
+      client_version: Number(row.client_version ?? 1),
+      is_deleted: Boolean(row.is_deleted),
+      created_by: String(row.created_by),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+    }));
+    releasedQuestionMarks = (markRows ?? []).map((row) => ({
+      id: String(row.id),
+      submission_id: String(row.submission_id),
+      question_id: String(row.question_id),
+      marking_mode:
+        (row.marking_mode as QuestionMarkRecord["marking_mode"]) ?? "numeric",
+      awarded_mark: row.awarded_mark == null ? null : Number(row.awarded_mark),
+      maximum_mark: Number(row.maximum_mark ?? 0),
+      review_state:
+        (row.review_state as QuestionMarkRecord["review_state"]) ?? null,
+      marking_status:
+        (row.marking_status as QuestionMarkRecord["marking_status"]) ??
+        "unmarked",
+      question_feedback: (row.question_feedback as string | null) ?? null,
+      teacher_only_note: null,
+      automatic_mark:
+        row.automatic_mark == null ? null : Number(row.automatic_mark),
+      override_mark:
+        row.override_mark == null ? null : Number(row.override_mark),
+      override_reason: null,
+      flagged: Boolean(row.flagged),
+      client_version: Number(row.client_version ?? 1),
+    }));
+    const stampIds = Array.from(
+      new Set(
+        releasedAnnotations
+          .map((a) => a.stamp_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    if (stampIds.length) {
+      const { data: stampRows } = await supabase
+        .from("school_marking_symbols")
+        .select("*")
+        .in("id", stampIds);
+      annotationStamps = (stampRows ?? []).map((row) => ({
+        id: String(row.id),
+        name: String(row.name ?? ""),
+        symbol_key: String(row.symbol_key ?? ""),
+        description: (row.description as string | null) ?? null,
+        category: String(row.category ?? "general"),
+        accessible_label: String(row.accessible_label ?? row.name ?? "Stamp"),
+        storage_path: (row.storage_path as string | null) ?? null,
+        mime_type: (row.mime_type as string | null) ?? null,
+        default_size_pct: Number(row.default_size_pct ?? 8),
+        subject_restriction: (row.subject_restriction as string | null) ?? null,
+        teacher_restriction_ids: Array.isArray(row.teacher_restriction_ids)
+          ? (row.teacher_restriction_ids as string[])
+          : [],
+        assignment_restriction_ids: Array.isArray(
+          row.assignment_restriction_ids,
+        )
+          ? (row.assignment_restriction_ids as string[])
+          : [],
+        is_active: Boolean(row.is_active),
+        sort_order: Number(row.sort_order ?? 0),
+        archived_at: (row.archived_at as string | null) ?? null,
+      }));
+    }
   }
 
   // Load structured content if template exists
@@ -350,9 +466,37 @@ export default async function StudentAssignmentPage({
                 <p className="whitespace-pre-wrap text-slate-600">{field.text}</p>
               </div>
             ))}
+            {releasedQuestionMarks.length ? (
+              <div className="space-y-2 border-t border-slate-100 pt-3">
+                <p className="font-medium">Question marks</p>
+                <ul className="space-y-1 text-slate-600">
+                  {releasedQuestionMarks.map((mark) => (
+                    <li key={mark.question_id}>
+                      Question {mark.question_id.slice(0, 8)}…:{" "}
+                      {mark.awarded_mark ?? "—"} / {mark.maximum_mark}
+                      {mark.question_feedback ? (
+                        <span className="mt-1 block whitespace-pre-wrap text-xs text-slate-500">
+                          {mark.question_feedback}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         )}
       </Card>
+
+      {releasedFeedback ? (
+        <Card>
+          <CardTitle className="mb-4">Released annotations</CardTitle>
+          <ReleasedAnnotationsPanel
+            annotations={releasedAnnotations}
+            stamps={annotationStamps}
+          />
+        </Card>
+      ) : null}
     </div>
   );
 }
