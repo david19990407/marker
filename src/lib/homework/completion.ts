@@ -24,6 +24,13 @@ export type ResponseSnapshot = {
   }>;
 };
 
+/** Per-question completion classification for UI and marking. */
+export type QuestionAnswerState =
+  | "answered"
+  | "unanswered"
+  | "not_applicable"
+  | "review_only";
+
 export type QuestionCompletion = {
   block: BuilderBlock;
   questionId: string;
@@ -31,6 +38,7 @@ export type QuestionCompletion = {
   required: boolean;
   answered: boolean;
   assessable: boolean;
+  state: QuestionAnswerState;
 };
 
 export type CompletionResult = {
@@ -41,6 +49,10 @@ export type CompletionResult = {
   assessableCount: number;
   missingRequired: QuestionCompletion[];
   isComplete: boolean;
+  /** Sum of max_marks for assessable questions. */
+  totalMarks: number;
+  /** Sum of max_marks for answered assessable questions. */
+  answeredMarks: number;
 };
 
 const SUBMITTED_STATUSES = new Set([
@@ -191,6 +203,24 @@ export function isStructuredResponseAnswered(
   }
 }
 
+function classifyQuestionState(
+  block: BuilderBlock,
+  answered: boolean,
+): QuestionAnswerState {
+  if (!isResponseType(block.block_type)) return "not_applicable";
+  if (block.teacher_only || block.student_visible === false) {
+    return "not_applicable";
+  }
+  if (block.block_type === "teacher_review" || block.review_only) {
+    return "review_only";
+  }
+  return answered ? "answered" : "unanswered";
+}
+
+/**
+ * Shared completion service for student UI, submit validation, and marking.
+ * Counts assessable student-answerable questions only for completion totals.
+ */
 export function evaluateStructuredCompletion(
   sections: BuilderSection[],
   responses: ResponseSnapshot[] | Record<string, ResponseSnapshot | undefined>,
@@ -204,27 +234,41 @@ export function evaluateStructuredCompletion(
         ]),
       );
 
-  const blocks = flattenStudentBlocks(sections).filter(isAssessableStudentBlock);
-  const questions: QuestionCompletion[] = blocks.map((block, index) => {
+  const allBlocks = flattenStudentBlocks(sections);
+  const classified: QuestionCompletion[] = allBlocks.map((block, index) => {
     const questionId = block.question_id || responseKey(block);
     const response =
       byQuestion.get(questionId) ??
       byQuestion.get(responseKey(block)) ??
       null;
+    const assessable = isAssessableStudentBlock(block);
+    const answered = assessable
+      ? isStructuredResponseAnswered(block, response)
+      : false;
     return {
       block,
       questionId,
       label: block.content || block.prompt || `Question ${index + 1}`,
-      required: Boolean(block.required),
-      answered: isStructuredResponseAnswered(block, response),
-      assessable: true,
+      required: Boolean(block.required) && assessable,
+      answered,
+      assessable,
+      state: classifyQuestionState(block, answered),
     };
   });
 
+  // Completion totals use assessable student-answerable questions only.
+  const questions = classified.filter((q) => q.assessable);
   const required = questions.filter((q) => q.required);
   const missingRequired = required.filter((q) => !q.answered);
   const answeredRequiredCount = required.length - missingRequired.length;
   const answeredAssessableCount = questions.filter((q) => q.answered).length;
+  const totalMarks = questions.reduce(
+    (sum, q) => sum + Math.max(0, Number(q.block.max_marks ?? 0)),
+    0,
+  );
+  const answeredMarks = questions
+    .filter((q) => q.answered)
+    .reduce((sum, q) => sum + Math.max(0, Number(q.block.max_marks ?? 0)), 0);
 
   return {
     questions,
@@ -234,6 +278,8 @@ export function evaluateStructuredCompletion(
     assessableCount: questions.length,
     missingRequired,
     isComplete: missingRequired.length === 0,
+    totalMarks,
+    answeredMarks,
   };
 }
 

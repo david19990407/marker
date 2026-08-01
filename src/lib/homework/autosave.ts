@@ -21,7 +21,7 @@ export interface AutosaveController<T> {
   lastError: string | null;
   /** Call whenever local state changes. Schedules a debounced save. */
   markDirty: (value: T) => void;
-  /** Flush immediately (manual Save). */
+  /** Flush immediately (manual Save / submit). Waits for in-flight saves. */
   flush: () => Promise<boolean>;
   /** Cancel pending debounce (does not abort in-flight). */
   cancelPending: () => void;
@@ -64,16 +64,13 @@ export function createAutosaveController<T>(
   let lastSavedAt: Date | null = null;
   let lastError: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight: Promise<boolean> | null = null;
   let inFlightVersion: number | null = null;
   let latestStartedVersion = 0;
   let disposed = false;
 
   async function runSave(triggerVersion: number): Promise<boolean> {
     if (disposed || latestValue === undefined) return false;
-    if (inFlightVersion != null) {
-      // Wait for in-flight to finish; a follow-up will be scheduled if still dirty
-      return false;
-    }
 
     const snapshot = latestValue;
     const saveVersion = triggerVersion;
@@ -86,7 +83,7 @@ export function createAutosaveController<T>(
       if (disposed) return false;
 
       if (isStaleSave(saveVersion, latestStartedVersion)) {
-        // A newer save was started; ignore this completion for status
+        // A newer save was started; this completion is not authoritative.
         return false;
       }
 
@@ -105,12 +102,13 @@ export function createAutosaveController<T>(
           if (patched !== undefined) latestValue = patched;
         }
         status = "saved";
-      } else {
-        // Newer local edits exist — keep dirty and schedule another save
-        status = "dirty";
-        schedule();
+        return true;
       }
-      return result.ok;
+
+      // Newer local edits exist — keep dirty and schedule another save.
+      status = "dirty";
+      schedule();
+      return false;
     } catch (e) {
       if (!disposed) {
         status = "error";
@@ -119,7 +117,6 @@ export function createAutosaveController<T>(
       return false;
     } finally {
       if (inFlightVersion === saveVersion) inFlightVersion = null;
-      // If edits arrived during the save, ensure we persist them
       if (!disposed && version > saveVersion && status !== "error") {
         status = "dirty";
         schedule();
@@ -131,8 +128,23 @@ export function createAutosaveController<T>(
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      void runSave(version);
+      void enqueueSave(version);
     }, delayMs);
+  }
+
+  async function enqueueSave(triggerVersion: number): Promise<boolean> {
+    // Serialise saves so flush can wait for in-flight work, then persist latest.
+    while (inFlight) {
+      await inFlight;
+    }
+    if (disposed) return false;
+    const promise = runSave(triggerVersion);
+    // Track the save promise itself (not a .finally wrapper) so clearance works.
+    inFlight = promise;
+    void promise.finally(() => {
+      if (inFlight === promise) inFlight = null;
+    });
+    return promise;
   }
 
   return {
@@ -160,13 +172,28 @@ export function createAutosaveController<T>(
         timer = null;
       }
       if (latestValue === undefined) return true;
-      // If already saving this exact version, wait by re-running after
-      if (inFlightVersion != null) {
-        // Bump so we save current snapshot after in-flight completes
-        version += 1;
-        status = "dirty";
+
+      // Wait for any in-flight save, then persist the latest snapshot.
+      while (inFlight) {
+        await inFlight;
       }
-      return runSave(version);
+      if (disposed) return false;
+
+      // Already clean for the current version.
+      // Read via helper so TS does not permanently narrow the mutable status.
+      if (readStatus() === "saved" || readStatus() === "idle") {
+        return !hasDirtyStatus();
+      }
+
+      let ok = await enqueueSave(version);
+      // If edits arrived mid-save, keep flushing until current version is saved.
+      let guard = 0;
+      while (!ok && readStatus() === "dirty" && !disposed && guard < 5) {
+        guard += 1;
+        while (inFlight) await inFlight;
+        ok = await enqueueSave(version);
+      }
+      return ok && readStatus() === "saved";
     },
     cancelPending() {
       if (timer) {
@@ -175,26 +202,14 @@ export function createAutosaveController<T>(
       }
     },
     dispose() {
-      // Flush any debounced work before teardown so client navigations do not
-      // silently drop the latest answers. Fire-and-forget; callers that need
-      // confirmed persistence should await flush() before navigating.
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
-      if (
-        latestValue !== undefined &&
-        (status === "dirty" || status === "error")
-      ) {
-        void runSave(version).finally(() => {
-          disposed = true;
-        });
-        return;
-      }
       disposed = true;
     },
     hasUnsavedChanges() {
-      return status === "dirty" || status === "saving" || status === "error";
+      return hasDirtyStatus();
     },
     getStatus() {
       return status;
@@ -203,6 +218,14 @@ export function createAutosaveController<T>(
       return lastSavedAt;
     },
   };
+
+  function hasDirtyStatus() {
+    return status === "dirty" || status === "saving" || status === "error";
+  }
+
+  function readStatus(): AutosaveStatus {
+    return status;
+  }
 }
 
 export function formatAutosaveLabel(

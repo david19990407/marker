@@ -6,6 +6,8 @@ export const structuredResponseSchema = z.object({
   numeric_value: z.number().finite().nullable().optional(),
   boolean_value: z.boolean().nullable().optional(),
   json_value: z.unknown().optional(),
+  /** Autosave / client version; older writes must not overwrite newer answers. */
+  client_version: z.number().int().nonnegative().optional(),
   cells: z
     .array(
       z.object({

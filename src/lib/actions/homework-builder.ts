@@ -11,6 +11,7 @@ import {
   loadTemplateStructure,
   structureToPayload,
 } from "@/lib/homework/structure";
+import { shouldSkipStructuredUpsert } from "@/lib/homework/response-protect";
 import { structuredResponsesSchema } from "@/lib/validations/homework";
 import type { ActionResult } from "@/lib/actions/auth";
 import {
@@ -454,6 +455,7 @@ export interface StructuredResponseInput {
   numeric_value?: number | null;
   boolean_value?: boolean | null;
   json_value?: unknown;
+  client_version?: number;
   cells?: Array<{
     row_index: number;
     col_index: number;
@@ -529,18 +531,31 @@ export async function saveStudentStructuredResponsesAction(
   }
 
   const questionIds = parsed.data.map((r) => r.question_id);
-  const { data: existingRows } = questionIds.length
-    ? await supabase
+  let existingRows: Array<Record<string, unknown>> | null = null;
+  if (questionIds.length) {
+    const withVersion = await supabase
+      .from("student_responses")
+      .select(
+        "id, question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path, client_version, response_cells(text_value, numeric_value, boolean_value)",
+      )
+      .eq("submission_id", submission.id)
+      .in("question_id", questionIds);
+    if (withVersion.error && /client_version/i.test(withVersion.error.message)) {
+      const fallback = await supabase
         .from("student_responses")
         .select(
-          "id, question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path",
+          "id, question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path, response_cells(text_value, numeric_value, boolean_value)",
         )
         .eq("submission_id", submission.id)
-        .in("question_id", questionIds)
-    : { data: [] as Array<Record<string, unknown>> };
+        .in("question_id", questionIds);
+      existingRows = (fallback.data ?? []) as Array<Record<string, unknown>>;
+    } else {
+      existingRows = (withVersion.data ?? []) as Array<Record<string, unknown>>;
+    }
+  }
 
   const existingByQuestion = new Map(
-    (existingRows ?? []).map((row) => [row.question_id as string, row]),
+    (existingRows ?? []).map((row) => [String(row.question_id), row]),
   );
 
   const errors: string[] = [];
@@ -551,16 +566,22 @@ export async function saveStudentStructuredResponsesAction(
     const existingPopulated = existing
       ? hasPopulatedStructuredRow(existing)
       : false;
+    const existingVersion = Number(existing?.client_version ?? 0);
+    const incomingVersion =
+      typeof resp.client_version === "number" ? resp.client_version : null;
 
-    // Never let a stale/empty client snapshot wipe a populated answer.
-    if (incomingEmpty && existingPopulated) {
+    if (
+      shouldSkipStructuredUpsert({
+        incomingEmpty,
+        existingPopulated,
+        incomingVersion,
+        existingVersion,
+      })
+    ) {
       continue;
     }
 
-    const upsertRow: Omit<
-      StudentResponse,
-      "id" | "file_name" | "storage_path" | "created_at" | "updated_at"
-    > = {
+    const upsertRow: Record<string, unknown> = {
       submission_id: submission.id,
       question_id: resp.question_id,
       text_value: resp.text_value ?? null,
@@ -568,12 +589,29 @@ export async function saveStudentStructuredResponsesAction(
       boolean_value: resp.boolean_value ?? null,
       json_value: resp.json_value ?? null,
     };
+    if (incomingVersion != null) {
+      upsertRow.client_version = incomingVersion;
+    }
 
-    const { data: upserted, error: upsertError } = await supabase
+    let { data: upserted, error: upsertError } = await supabase
       .from("student_responses")
       .upsert(upsertRow, { onConflict: "submission_id,question_id" })
       .select("id")
       .single();
+
+    // Pre-migration compatibility: retry without client_version column.
+    if (
+      upsertError &&
+      /client_version/i.test(upsertError.message) &&
+      "client_version" in upsertRow
+    ) {
+      delete upsertRow.client_version;
+      ({ data: upserted, error: upsertError } = await supabase
+        .from("student_responses")
+        .upsert(upsertRow, { onConflict: "submission_id,question_id" })
+        .select("id")
+        .single());
+    }
 
     if (upsertError) {
       errors.push(upsertError.message);
@@ -609,9 +647,8 @@ export async function saveStudentStructuredResponsesAction(
 export async function submitStructuredHomeworkAction(
   assignmentId: string,
   responses: StructuredResponseInput[] = [],
-): Promise<ActionResult> {
-  // Optional final sync. Prefer calling after client autosave flush; empty
-  // payloads must never wipe existing answers (guarded in save action).
+): Promise<ActionResult & { submissionId?: string }> {
+  // Final sync of flushed answers. Empty payloads never wipe existing rows.
   if (responses.length > 0) {
     const saveResult = await saveStudentStructuredResponsesAction(
       assignmentId,
@@ -639,6 +676,20 @@ export async function submitStructuredHomeworkAction(
 
   if (!submission || !["draft", "returned"].includes(submission.status)) {
     return { error: "Submission is locked" };
+  }
+
+  const { count: responseCountBefore } = await supabase
+    .from("student_responses")
+    .select("id", { count: "exact", head: true })
+    .eq("submission_id", submission.id);
+
+  if (process.env.NODE_ENV !== "production") {
+    console.info("[submit] before", {
+      submissionId: submission.id,
+      status: submission.status,
+      responseCount: responseCountBefore ?? 0,
+      incomingResponseCount: responses.length,
+    });
   }
 
   // Completion is calculated from structured responses, never legacy written_response.
@@ -696,47 +747,88 @@ export async function submitStructuredHomeworkAction(
   const nextStatus = late ? "late" : "submitted";
   const submittedAt = new Date().toISOString();
 
-  // Prefer transactional RPC when available; fall back if migration not applied yet.
-  const { error: rpcError } = await supabase.rpc("submit_student_homework", {
-    p_assignment_id: assignmentId,
-    p_status: nextStatus,
-    p_submitted_at: submittedAt,
-  });
+  // Prefer transactional RPC (status-only; never touches response rows).
+  const { data: rpcRow, error: rpcError } = await supabase.rpc(
+    "submit_structured_homework",
+    {
+      p_assignment_id: assignmentId,
+      p_status: nextStatus,
+      p_submitted_at: submittedAt,
+    },
+  );
 
   if (rpcError) {
     const rpcMissing = /could not find the function|schema cache/i.test(
       rpcError.message ?? "",
     );
-    const enumCastBug =
-      /submission_status|expression is of type text/i.test(
-        rpcError.message ?? "",
+    if (!rpcMissing) return { error: rpcError.message };
+
+    // Legacy fallback: older submit_student_homework RPC / direct update.
+    const { error: legacyRpcError } = await supabase.rpc(
+      "submit_student_homework",
+      {
+        p_assignment_id: assignmentId,
+        p_status: nextStatus,
+        p_submitted_at: submittedAt,
+      },
+    );
+    if (legacyRpcError) {
+      const legacyMissing = /could not find the function|schema cache/i.test(
+        legacyRpcError.message ?? "",
       );
-    // Fall back when RPC is missing OR an older uncased RPC is still deployed.
-    if (!rpcMissing && !enumCastBug) {
-      return { error: rpcError.message };
+      const enumCastBug =
+        /submission_status|expression is of type text/i.test(
+          legacyRpcError.message ?? "",
+        );
+      if (!legacyMissing && !enumCastBug) {
+        return { error: legacyRpcError.message };
+      }
+
+      const { error } = await supabase
+        .from("submissions")
+        .update({
+          status: nextStatus,
+          submitted_at: submittedAt,
+        })
+        .eq("id", submission.id)
+        .eq("student_id", profile.id)
+        .in("status", ["draft", "returned"]);
+      if (error) return { error: error.message };
     }
+  }
 
-    const { error } = await supabase
-      .from("submissions")
-      .update({
-        status: nextStatus,
-        submitted_at: submittedAt,
-      })
-      .eq("id", submission.id)
-      .eq("student_id", profile.id)
-      .in("status", ["draft", "returned"]);
+  const { data: confirmed } = await supabase
+    .from("submissions")
+    .select("id, status")
+    .eq("id", submission.id)
+    .maybeSingle();
+  if (!confirmed || !["submitted", "late"].includes(confirmed.status)) {
+    return { error: "Could not finalise submission status" };
+  }
+  if (confirmed.id !== submission.id) {
+    return { error: "Submission ID changed unexpectedly during submit" };
+  }
 
-    if (error) return { error: error.message };
+  const { count: responseCountAfter } = await supabase
+    .from("student_responses")
+    .select("id", { count: "exact", head: true })
+    .eq("submission_id", submission.id);
 
-    // Confirm the row actually flipped — RLS/with-check failures can no-op.
-    const { data: confirmed } = await supabase
-      .from("submissions")
-      .select("status")
-      .eq("id", submission.id)
-      .maybeSingle();
-    if (!confirmed || !["submitted", "late"].includes(confirmed.status)) {
-      return { error: "Could not finalise submission status" };
-    }
+  if ((responseCountAfter ?? 0) < (responseCountBefore ?? 0)) {
+    return {
+      error:
+        "Submit aborted: response rows decreased unexpectedly. Contact support.",
+    };
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.info("[submit] after", {
+      submissionId: confirmed.id,
+      status: confirmed.status,
+      responseCountBefore: responseCountBefore ?? 0,
+      responseCountAfter: responseCountAfter ?? 0,
+      rpcReturnedId: rpcRow?.id ?? null,
+    });
   }
 
   const { data: classTeachers } = await supabase
@@ -781,13 +873,14 @@ export async function submitStructuredHomeworkAction(
     success: late
       ? "Submitted (marked late). Your teacher can now review it."
       : "Homework submitted successfully.",
+    submissionId: submission.id,
   };
 }
 
 /** Restore editing without deleting any structured answers. */
 export async function unsubmitStructuredHomeworkAction(
   assignmentId: string,
-): Promise<ActionResult> {
+): Promise<ActionResult & { submissionId?: string }> {
   const profile = await requireProfile(["student"]);
   const supabase = await createClient();
 
@@ -800,12 +893,29 @@ export async function unsubmitStructuredHomeworkAction(
 
   if (!submission) return { error: "Submission not found" };
   if (!["submitted", "late"].includes(submission.status)) {
-    return { error: "Only submitted homework can be unsubmitted" };
+    return {
+      error:
+        "Only submitted homework can be unsubmitted. Marked or returned work cannot be reopened here.",
+    };
   }
 
-  const { error: rpcError } = await supabase.rpc("unsubmit_student_homework", {
-    p_assignment_id: assignmentId,
-  });
+  const { count: responseCountBefore } = await supabase
+    .from("student_responses")
+    .select("id", { count: "exact", head: true })
+    .eq("submission_id", submission.id);
+
+  if (process.env.NODE_ENV !== "production") {
+    console.info("[unsubmit] before", {
+      submissionId: submission.id,
+      status: submission.status,
+      responseCount: responseCountBefore ?? 0,
+    });
+  }
+
+  const { data: rpcRow, error: rpcError } = await supabase.rpc(
+    "unsubmit_structured_homework",
+    { p_assignment_id: assignmentId },
+  );
 
   if (rpcError) {
     const rpcMissing = /could not find the function|schema cache/i.test(
@@ -813,20 +923,68 @@ export async function unsubmitStructuredHomeworkAction(
     );
     if (!rpcMissing) return { error: rpcError.message };
 
-    const { error } = await supabase
-      .from("submissions")
-      .update({ status: "draft" })
-      .eq("id", submission.id)
-      .eq("student_id", profile.id)
-      .in("status", ["submitted", "late"]);
-    if (error) return { error: error.message };
+    // Legacy RPC name (must be security definer after migration).
+    const { error: legacyError } = await supabase.rpc(
+      "unsubmit_student_homework",
+      { p_assignment_id: assignmentId },
+    );
+    if (legacyError) {
+      const legacyMissing = /could not find the function|schema cache/i.test(
+        legacyError.message ?? "",
+      );
+      if (!legacyMissing) return { error: legacyError.message };
+      return {
+        error:
+          "Unsubmit is not available yet. Ask your administrator to run the latest Phase 6 submission migration.",
+      };
+    }
+  }
+
+  const { data: confirmed } = await supabase
+    .from("submissions")
+    .select("id, status")
+    .eq("id", submission.id)
+    .maybeSingle();
+  if (!confirmed || confirmed.status !== "draft") {
+    return {
+      error:
+        "Could not unsubmit this homework. It may already be marked, or unsubmit is not permitted.",
+    };
+  }
+  if (confirmed.id !== submission.id) {
+    return { error: "Submission ID changed unexpectedly during unsubmit" };
+  }
+
+  const { count: responseCountAfter } = await supabase
+    .from("student_responses")
+    .select("id", { count: "exact", head: true })
+    .eq("submission_id", submission.id);
+
+  if ((responseCountAfter ?? 0) < (responseCountBefore ?? 0)) {
+    return {
+      error:
+        "Unsubmit aborted: response rows decreased unexpectedly. Contact support.",
+    };
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.info("[unsubmit] after", {
+      submissionId: confirmed.id,
+      status: confirmed.status,
+      responseCountBefore: responseCountBefore ?? 0,
+      responseCountAfter: responseCountAfter ?? 0,
+      rpcReturnedId: rpcRow?.id ?? null,
+    });
   }
 
   revalidatePath(`/student/homework/${assignmentId}`);
   revalidatePath("/student/homework");
   revalidatePath("/student/dashboard");
   revalidatePath("/teacher/marking");
-  return { success: "Homework unsubmitted. You can continue editing." };
+  return {
+    success: "Homework unsubmitted. You can continue editing.",
+    submissionId: submission.id,
+  };
 }
 
 // ── Load student's existing responses ────────────────────────────────────────
@@ -917,6 +1075,26 @@ function hasPopulatedStructuredRow(row: Record<string, unknown>): boolean {
       return true;
     }
     if (typeof row.json_value === "object") return true;
+  }
+  const cells = row.response_cells;
+  if (Array.isArray(cells)) {
+    if (
+      cells.some((c) => {
+        const cell = c as Record<string, unknown>;
+        if (typeof cell.text_value === "string" && cell.text_value.trim()) {
+          return true;
+        }
+        if (
+          cell.numeric_value != null &&
+          !Number.isNaN(Number(cell.numeric_value))
+        ) {
+          return true;
+        }
+        return cell.boolean_value != null;
+      })
+    ) {
+      return true;
+    }
   }
   return false;
 }

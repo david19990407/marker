@@ -14,11 +14,13 @@ import {
   unsubmitStructuredHomeworkAction,
 } from "@/lib/actions/homework-builder";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
+import { evaluateStructuredCompletion } from "@/lib/homework/completion";
+import { formatMarkLabel } from "@/lib/homework/marks";
 import {
-  evaluateStructuredCompletion,
-  type ResponseSnapshot,
-} from "@/lib/homework/completion";
-import { collectResponses } from "@/lib/homework/response-collect";
+  collectResponses,
+  collectUnpersistableAnswerLabels,
+  valuesToCompletionSnapshots,
+} from "@/lib/homework/response-collect";
 import {
   flattenStudentBlocks,
   isResponseType,
@@ -75,11 +77,29 @@ export function StructuredHomework({
     valuesRef.current = values;
   }, [values]);
 
+  // Submit/unsubmit use a full navigation reload so values rehydrate from
+  // existingResponses via useState initialiser (no effect setState).
+
   const autosave = useVersionedAutosave<Record<string, ResponseValue>>({
     delayMs: 1200,
     enabled: editable,
-    save: async (current) => {
-      const responses = collectResponses(current, sectionsRef.current);
+    save: async (current, version) => {
+      const responses = collectResponses(
+        current,
+        sectionsRef.current,
+        version,
+      );
+      const unpersistable = collectUnpersistableAnswerLabels(
+        current,
+        sectionsRef.current,
+      );
+      if (unpersistable.length > 0 && responses.length === 0) {
+        return {
+          ok: false,
+          error:
+            "Some answers could not be saved because questions are missing database IDs. Ask your teacher to re-open and save the homework.",
+        };
+      }
       const result = await saveStudentStructuredResponsesAction(
         assignmentId,
         responses,
@@ -103,28 +123,25 @@ export function StructuredHomework({
     });
   }
 
-  function valuesToSnapshots(
-    current: Record<string, ResponseValue>,
-    sectionTree: BuilderSection[] = sections,
-  ): ResponseSnapshot[] {
-    return collectResponses(current, sectionTree).map((resp) => ({
-      question_id: resp.question_id,
-      text_value: resp.text_value ?? null,
-      numeric_value: resp.numeric_value ?? null,
-      boolean_value: resp.boolean_value ?? null,
-      json_value: resp.json_value ?? null,
-      cells: resp.cells,
-    }));
-  }
-
   function validate(): boolean {
     const nextErrors: Record<string, string> = {};
     const completion = evaluateStructuredCompletion(
       sections,
-      valuesToSnapshots(values, sections),
+      valuesToCompletionSnapshots(values, sections),
     );
     for (const missing of completion.missingRequired) {
       nextErrors[responseKey(missing.block)] = "This question is required";
+    }
+
+    const unpersistable = collectUnpersistableAnswerLabels(values, sections);
+    if (unpersistable.length) {
+      setFlash({
+        type: "error",
+        msg: `Cannot submit: answers are not linked to saved questions (${unpersistable.slice(0, 2).join("; ")}). Ask your teacher to re-save the homework.`,
+      });
+      setConfirmSubmit(false);
+      setErrors(nextErrors);
+      return false;
     }
 
     const blocks = flattenStudentBlocks(sections).filter(
@@ -170,15 +187,24 @@ export function StructuredHomework({
     }
     startTransition(async () => {
       const ok = await autosave.flush();
-      if (!ok && autosave.hasUnsavedChanges()) {
+      if (!ok || autosave.hasUnsavedChanges()) {
         setFlash({
           type: "error",
           msg: autosave.lastError ?? "Save your answers before submitting",
         });
         return;
       }
-      // Status-only after flush — do not rewrite answer rows on submit.
-      const result = await submitStructuredHomeworkAction(assignmentId);
+
+      // Final sync of the same flushed snapshot, then status-only submit.
+      const responses = collectResponses(
+        valuesRef.current,
+        sectionsRef.current,
+        Math.max(autosave.getVersion(), 1),
+      );
+      const result = await submitStructuredHomeworkAction(
+        assignmentId,
+        responses,
+      );
       if (result.error) {
         setFlash({ type: "error", msg: result.error });
         setConfirmSubmit(false);
@@ -208,7 +234,7 @@ export function StructuredHomework({
 
   const completion = evaluateStructuredCompletion(
     sections,
-    valuesToSnapshots(values, sections),
+    valuesToCompletionSnapshots(values, sections),
   );
   const worksheetMode = editable ? "student_editable" : "student_readonly";
   const canUnsubmit =
@@ -230,12 +256,27 @@ export function StructuredHomework({
             {autosave.label}
           </Badge>
           <span className="text-xs text-slate-500">
-            Required {completion.answeredRequiredCount}/{completion.requiredCount}
-            {" · "}
-            Answered {completion.answeredAssessableCount}/{completion.assessableCount}
+            Questions {completion.answeredAssessableCount}/
+            {completion.assessableCount}
+            {completion.requiredCount > 0
+              ? ` · Required ${completion.answeredRequiredCount}/${completion.requiredCount}`
+              : ""}
+            {completion.totalMarks > 0
+              ? ` · ${formatMarkLabel(completion.answeredMarks)} of ${formatMarkLabel(completion.totalMarks)} attempted`
+              : ""}
           </span>
         </div>
-      ) : null}
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-slate-500">
+            Questions answered {completion.answeredAssessableCount}/
+            {completion.assessableCount}
+            {completion.totalMarks > 0
+              ? ` · ${formatMarkLabel(completion.answeredMarks)} of ${formatMarkLabel(completion.totalMarks)} attempted`
+              : ""}
+          </span>
+        </div>
+      )}
 
       {flash ? (
         <div
