@@ -276,6 +276,36 @@ export type PassageConfig = {
   manual_line_numbers?: number[];
 };
 
+export type MediaAlignment = "left" | "center" | "right";
+export type MediaDisplaySize = "small" | "medium" | "large" | "full";
+
+/** Shared config for image / video / downloadable_resource blocks */
+export type MediaConfig = {
+  storage_path?: string | null;
+  file_name?: string | null;
+  mime_type?: string | null;
+  file_size?: number | null;
+  external_url?: string | null;
+  alt_text?: string | null;
+  caption?: string | null;
+  title?: string | null;
+  description?: string | null;
+  transcript?: string | null;
+  alignment?: MediaAlignment;
+  display_size?: MediaDisplaySize;
+  allow_download?: boolean;
+  resource_id?: string | null;
+};
+
+export type NumericConfig = {
+  allow_decimals: boolean;
+  decimal_places: number | null;
+  unit: string | null;
+  /** Inclusive accepted range for automatic marking */
+  correct_min?: number | null;
+  correct_max?: number | null;
+};
+
 export type TableCellType =
   | "student_text"
   | "student_numeric"
@@ -333,10 +363,12 @@ export interface BuilderBlock {
   min_value?: number | null;
   max_value?: number | null;
   correct_answer?: string | null;
+  numericConfig?: NumericConfig;
   /** Linked passage block ids */
   passage_block_ids?: string[];
   linked_comment_bank_ids?: string[];
   passageConfig?: PassageConfig;
+  mediaConfig?: MediaConfig;
   /** Video / resource URL stored in content or here */
   external_url?: string | null;
   captions_text?: string | null;

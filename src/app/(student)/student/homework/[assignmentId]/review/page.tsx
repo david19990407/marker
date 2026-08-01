@@ -116,6 +116,8 @@ export default async function StudentHomeworkReviewPage({
           existingResponses={existingResponses}
           editable={editable}
           reviewMode
+          submissionStatus={submission?.status ?? null}
+          submittedAt={submission?.submitted_at ?? null}
         />
       </Card>
     </div>

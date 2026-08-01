@@ -147,12 +147,23 @@ export default async function StudentAssignmentPage({
       {/* Structured homework content */}
       {hasStructuredBlocks && structuredSections ? (
         <Card>
-          <CardTitle className="mb-4">Homework questions</CardTitle>
+          <CardTitle className="mb-4">
+            {editable ? "Homework worksheet" : "Submitted worksheet"}
+          </CardTitle>
+          {!editable && submission?.submitted_at ? (
+            <p className="mb-4 text-sm text-slate-600">
+              Submitted{" "}
+              {new Date(submission.submitted_at).toLocaleString("en-GB")} · status{" "}
+              {submission.status}. This view is read-only.
+            </p>
+          ) : null}
           <StructuredHomework
             assignmentId={assignmentId}
             sections={structuredSections}
             existingResponses={existingResponses}
             editable={editable}
+            submissionStatus={submission?.status ?? null}
+            submittedAt={submission?.submitted_at ?? null}
           />
         </Card>
       ) : (
@@ -165,53 +176,35 @@ export default async function StudentAssignmentPage({
         </Card>
       )}
 
-      <Card>
-        <CardTitle className="mb-4">Resources</CardTitle>
-        {!resources?.length ? (
-          <p className="text-sm text-slate-500">No resources for this assignment</p>
-        ) : (
-          <ul className="space-y-2">
-            {resources.map((r) => (
-              <li
-                key={r.id}
-                className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 px-4 py-3 text-sm"
-              >
-                <span>{r.file_name}</span>
-                <DownloadButton
-                  bucket="assignment-resources"
-                  path={r.storage_path}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      {!hasStructuredBlocks ? (
+        <Card>
+          <CardTitle className="mb-4">Resources</CardTitle>
+          {!resources?.length ? (
+            <p className="text-sm text-slate-500">No resources for this assignment</p>
+          ) : (
+            <ul className="space-y-2">
+              {resources.map((r) => (
+                <li
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 px-4 py-3 text-sm"
+                >
+                  <span>{r.file_name}</span>
+                  <DownloadButton
+                    bucket="assignment-resources"
+                    path={r.storage_path}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      ) : null}
 
-      {/* Legacy text/file panel only for non-structured assignments (or optional extras). */}
+      {/* Legacy text/file panel ONLY for legacy assignments. */}
       {!hasStructuredBlocks &&
         (assignment.allow_text_submission || assignment.allow_file_submission) && (
           <Card>
             <CardTitle className="mb-4">Submit work</CardTitle>
-            <SubmissionPanel
-              assignmentId={assignmentId}
-              allowText={assignment.allow_text_submission}
-              allowFile={assignment.allow_file_submission}
-              editable={editable}
-              writtenResponse={submission?.written_response ?? null}
-              fileName={submission?.file_name ?? null}
-              storagePath={submission?.storage_path ?? null}
-            />
-          </Card>
-        )}
-
-      {hasStructuredBlocks &&
-        (assignment.allow_text_submission || assignment.allow_file_submission) && (
-          <Card>
-            <CardTitle className="mb-2">Additional submission</CardTitle>
-            <p className="mb-4 text-sm text-slate-600">
-              Optional extra written response or file for this assignment. Your
-              structured answers above are submitted from Review &amp; submit.
-            </p>
             <SubmissionPanel
               assignmentId={assignmentId}
               allowText={assignment.allow_text_submission}

@@ -18,7 +18,8 @@ import {
 import {
   filterSectionsForStudents,
   getMediaConfig,
-  isStudentVisibleBlock,
+  isVisibleBlock,
+  type VisibilityMode,
 } from "@/lib/homework/visibility";
 import {
   isEmbeddableVideo,
@@ -55,7 +56,7 @@ type ResponseWithCells = StudentResponse & {
     col_index: number;
     text_value: string | null;
     numeric_value: number | null;
-    boolean_value: boolean | null;
+    boolean_value: boolean | string | null;
   }>;
 };
 
@@ -76,9 +77,12 @@ export function StructuredWorksheetRenderer({
   showTeacherGuidance?: boolean;
   submissionMeta?: { status?: string | null; submittedAt?: string | null } | null;
 }) {
+  const visibilityMode: VisibilityMode =
+    mode === "teacher_marking" ? "teacher_marking" : "student";
+
   const visibleSections = useMemo(
-    () => filterSectionsForStudents(sections),
-    [sections],
+    () => filterSectionsForStudents(sections, visibilityMode),
+    [sections, visibilityMode],
   );
 
   const passageStarts = useMemo(
@@ -240,12 +244,15 @@ function SectionView({
   passageStarts: Map<string, number>;
   depth?: number;
 }) {
-  const blocks = section.blocks.filter(isStudentVisibleBlock);
+  const visibilityMode: VisibilityMode =
+    mode === "teacher_marking" ? "teacher_marking" : "student";
+  const blocks = section.blocks.filter((b) => isVisibleBlock(b, visibilityMode));
   const HeadingTag = depth > 0 ? "h4" : "h3";
+  const showTitle = !isDefaultTitle(section.title);
 
   return (
     <section className="space-y-7" aria-labelledby={`section-${section._id}`}>
-      {!isDefaultTitle(section.title) || blocks.length > 0 ? (
+      {showTitle ? (
         <HeadingTag
           id={`section-${section._id}`}
           className={
@@ -480,6 +487,15 @@ function BlockView({
       (current as { type: "numeric"; numeric: number | null } | undefined)
         ?.numeric ?? null;
     const step = numericStep(numericCfg.allow_decimals, numericCfg.decimal_places);
+    const display =
+      numeric != null
+        ? `${numeric}${numericCfg.unit ? ` ${numericCfg.unit}` : ""}`
+        : "—";
+    const reference =
+      block.correct_answer ||
+      (numericCfg.correct_min != null || numericCfg.correct_max != null
+        ? `${numericCfg.correct_min ?? "…"}–${numericCfg.correct_max ?? "…"}`
+        : null);
 
     return (
       <QuestionShell
@@ -493,13 +509,19 @@ function BlockView({
             <Input
               id={fieldId}
               type="number"
+              inputMode={numericCfg.allow_decimals ? "decimal" : "numeric"}
               value={numeric ?? ""}
-              onChange={(e) =>
-                onValueChange(qid, {
-                  type: "numeric",
-                  numeric: e.target.value !== "" ? Number(e.target.value) : null,
-                })
-              }
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === "") {
+                  onValueChange(qid, { type: "numeric", numeric: null });
+                  return;
+                }
+                const next = Number(raw);
+                if (!Number.isFinite(next)) return;
+                if (!numericCfg.allow_decimals && !Number.isInteger(next)) return;
+                onValueChange(qid, { type: "numeric", numeric: next });
+              }}
               disabled={!editable}
               className="w-40 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 disabled:opacity-100"
               min={block.min_value ?? undefined}
@@ -514,12 +536,15 @@ function BlockView({
             ) : null}
           </div>
         ) : (
-          <p className="text-[1.02rem] leading-7 text-slate-700">
-            {numeric != null
-              ? `${numeric}${numericCfg.unit ? ` ${numericCfg.unit}` : ""}`
-              : "—"}
-          </p>
+          <p className="text-[1.02rem] leading-7 text-slate-700">{display}</p>
         )}
+        {mode === "teacher_marking" ? (
+          <MarkingAnswerMeta
+            selected={display}
+            reference={reference ?? "—"}
+            automatic={block.marking_mode === "automatic"}
+          />
+        ) : null}
       </QuestionShell>
     );
   }
@@ -533,6 +558,7 @@ function BlockView({
     );
     const selected =
       (current as { type: "text"; text: string } | undefined)?.text ?? "";
+    const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
 
     return (
       <QuestionShell
@@ -562,6 +588,13 @@ function BlockView({
             </label>
           ))}
         </div>
+        {mode === "teacher_marking" ? (
+          <MarkingAnswerMeta
+            selected={selected || "—"}
+            reference={correctLabels[0] ?? block.correct_answer ?? "—"}
+            automatic={block.marking_mode === "automatic"}
+          />
+        ) : null}
       </QuestionShell>
     );
   }
@@ -579,6 +612,7 @@ function BlockView({
         .map((s) => s.trim())
         .filter(Boolean),
     );
+    const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
 
     return (
       <QuestionShell
@@ -611,6 +645,13 @@ function BlockView({
             </label>
           ))}
         </div>
+        {mode === "teacher_marking" ? (
+          <MarkingAnswerMeta
+            selected={Array.from(selected).join(", ") || "—"}
+            reference={correctLabels.join(", ") || block.correct_answer || "—"}
+            automatic={block.marking_mode === "automatic"}
+          />
+        ) : null}
       </QuestionShell>
     );
   }
@@ -794,6 +835,31 @@ function TeacherGuidancePanel({ block }: { block: BuilderBlock }) {
   );
 }
 
+function MarkingAnswerMeta({
+  selected,
+  reference,
+  automatic,
+}: {
+  selected: string;
+  reference: string;
+  automatic: boolean;
+}) {
+  return (
+    <div className="mt-2 space-y-1 border-t border-slate-100 pt-2 text-xs text-slate-600">
+      <p>
+        <span className="font-medium text-slate-700">Selected:</span> {selected}
+      </p>
+      <p>
+        <span className="font-medium text-slate-700">Reference:</span> {reference}
+      </p>
+      <p>
+        <span className="font-medium text-slate-700">Marking:</span>{" "}
+        {automatic ? "Automatic (teacher override available)" : "Teacher reviewed"}
+      </p>
+    </div>
+  );
+}
+
 function ImageBlock({
   block,
   mode,
@@ -955,6 +1021,7 @@ function ResourceBlock({ block }: { block: BuilderBlock }) {
     "Downloadable resource";
   const description = media.description || block.prompt || "";
   const allowDownload = media.allow_download !== false;
+  const typeLabel = resourceTypeLabel(media.mime_type, media.file_name);
 
   if (!storagePath && !external) {
     return null;
@@ -962,22 +1029,30 @@ function ResourceBlock({ block }: { block: BuilderBlock }) {
 
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 border border-slate-200 bg-white px-4 py-3">
-      <div className="min-w-0 space-y-1">
-        <p className="font-[family-name:var(--font-outfit)] font-semibold text-slate-900">
-          {title}
-        </p>
-        {description ? (
-          <p className="text-sm text-slate-600">{description}</p>
-        ) : null}
-        <p className="text-xs text-slate-400">
-          {[
-            media.mime_type,
-            media.file_size != null ? formatFileSize(media.file_size) : null,
-            media.file_name && media.file_name !== title ? media.file_name : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
+      <div className="flex min-w-0 items-start gap-3">
+        <div
+          className="flex h-10 w-10 shrink-0 items-center justify-center border border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600"
+          aria-hidden
+        >
+          {typeLabel.slice(0, 4)}
+        </div>
+        <div className="min-w-0 space-y-1">
+          <p className="font-[family-name:var(--font-outfit)] font-semibold text-slate-900">
+            {title}
+          </p>
+          {description ? (
+            <p className="text-sm text-slate-600">{description}</p>
+          ) : null}
+          <p className="text-xs text-slate-400">
+            {[
+              typeLabel,
+              media.file_size != null ? formatFileSize(media.file_size) : null,
+              media.file_name && media.file_name !== title ? media.file_name : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
       </div>
       <div className="shrink-0">
         {storagePath && allowDownload ? (
@@ -993,12 +1068,33 @@ function ResourceBlock({ block }: { block: BuilderBlock }) {
             rel="noreferrer"
             className="text-sm font-medium text-brand-700 underline"
           >
-            Open resource
+            Open / preview
           </a>
-        ) : null}
+        ) : (
+          <span className="text-xs text-slate-400">Preview only</span>
+        )}
       </div>
     </div>
   );
+}
+
+function resourceTypeLabel(
+  mime?: string | null,
+  fileName?: string | null,
+): string {
+  const fromName = (fileName ?? "").split(".").pop()?.toUpperCase();
+  if (fromName && fromName.length <= 5) return fromName;
+  if (!mime) return "FILE";
+  if (mime.includes("pdf")) return "PDF";
+  if (mime.includes("word") || mime.includes("document")) return "DOCX";
+  if (mime.includes("sheet") || mime.includes("excel")) return "XLSX";
+  if (mime.includes("presentation") || mime.includes("powerpoint")) return "PPTX";
+  if (mime.startsWith("image/")) return "IMG";
+  if (mime.startsWith("audio/")) return "MP3";
+  if (mime.startsWith("video/")) return "MP4";
+  if (mime.includes("csv")) return "CSV";
+  if (mime.includes("text")) return "TXT";
+  return "FILE";
 }
 
 function TableView({
@@ -1227,7 +1323,9 @@ function maybeShuffleOptions(
   block: BuilderBlock,
   questionId: string,
 ): McqOption[] {
-  if (mode !== "student_editable" || !block.shuffle_options) {
+  const studentFacing =
+    mode === "student_editable" || mode === "student_readonly";
+  if (!studentFacing || !block.shuffle_options) {
     return options;
   }
   return [...options].sort((a, b) => {
