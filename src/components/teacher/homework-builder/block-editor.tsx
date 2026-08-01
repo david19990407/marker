@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableEditor } from "./table-editor";
+import { formatMarkLabelBracketed } from "@/lib/homework/marks";
 import { BLOCK_TYPE_LABELS, RESPONSE_BLOCK_TYPES } from "@/lib/types";
 import type { AssignmentBlockType, BuilderBlock } from "@/lib/types";
 
@@ -518,7 +519,9 @@ function BlockPreview({ block }: { block: BuilderBlock }) {
             className="min-h-28 opacity-60"
           />
           {block.max_marks != null && (
-            <p className="mt-1 text-xs text-slate-400">[{block.max_marks} marks]</p>
+            <p className="mt-1 text-xs text-slate-400">
+              {formatMarkLabelBracketed(block.max_marks)}
+            </p>
           )}
         </div>
       );

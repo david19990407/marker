@@ -108,8 +108,10 @@ export function normalizePassageConfig(
     else mode = "custom_interval";
   }
 
-  let lines = normalizePassageLines(raw?.lines, contentFallback);
-  const provisional: PassageConfig = {
+  const lines = normalizePassageLines(raw?.lines, contentFallback);
+  // Renderer and editor use only stored per-row labels. Legacy index/number
+  // fields are kept for one-time migration helpers but never invent labels here.
+  return {
     title: typeof raw?.title === "string" ? raw.title : "",
     source_reference:
       typeof raw?.source_reference === "string" ? raw.source_reference : "",
@@ -136,13 +138,21 @@ export function normalizePassageConfig(
         : {},
     lines,
   };
+}
 
-  // Only migrate legacy labels when rows have no labels yet.
-  if (!lines.some((l) => l.label != null && String(l.label).trim() !== "")) {
-    lines = migrateLegacyLabels(lines, provisional);
+/** One-time helper: copy legacy index/number maps into editable row labels. */
+export function migrateLegacyPassageLabels(
+  config: PassageConfig,
+): PassageConfig {
+  const lines = config.lines ?? [];
+  if (lines.some((l) => l.label != null && String(l.label).trim() !== "")) {
+    return config;
   }
-
-  return { ...provisional, lines };
+  return {
+    ...config,
+    line_number_mode: "manual",
+    lines: migrateLegacyLabels(lines, config),
+  };
 }
 
 /**

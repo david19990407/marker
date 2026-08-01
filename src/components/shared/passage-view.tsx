@@ -3,6 +3,9 @@
 import type { PassageConfig } from "@/lib/types";
 import { buildPassageRows } from "@/lib/homework/passage-numbering";
 
+const PASSAGE_FONT =
+  "var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif";
+
 export function PassageView({
   text,
   config,
@@ -11,15 +14,15 @@ export function PassageView({
 }: {
   text: string;
   config?: PassageConfig | null;
-  /** Kept for API compatibility; labels come from row.label. */
+  /** Deprecated — labels come only from stored row.label values. */
   startLineNumber?: number;
   className?: string;
 }) {
-  const { rows, showGutter } = buildPassageRows(text, config, startLineNumber);
-  const gutterDigits = Math.max(
-    2,
-    ...rows.map((r) => (r.label ? String(r.label).length : 0)),
-    2,
+  void startLineNumber;
+  const { rows, showGutter } = buildPassageRows(text, config);
+  const gutterDigits = Math.min(
+    4,
+    Math.max(1, ...rows.map((r) => (r.label ? String(r.label).length : 0)), 1),
   );
 
   return (
@@ -42,29 +45,37 @@ export function PassageView({
       )}
       <div
         className="max-h-[32rem] overflow-auto px-3 py-4 text-[1.05rem] leading-8 text-slate-800 sm:px-5 sm:text-[1.1rem] sm:leading-9"
-        style={{
-          fontFamily:
-            "var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif",
-        }}
+        style={{ fontFamily: PASSAGE_FONT }}
       >
         {rows.length === 0 ? (
           <p className="text-sm text-slate-400">No passage text yet.</p>
         ) : (
           rows.map((row) => (
-            <div
-              key={row.id}
-              className="flex items-start gap-3 sm:gap-4"
-            >
-              {showGutter && (
+            <div key={row.id} className="flex items-baseline gap-2 sm:gap-2.5">
+              {showGutter ? (
                 <span
-                  className="shrink-0 select-text pt-[0.15em] text-right text-[0.85em] tabular-nums leading-[inherit] text-slate-400"
-                  style={{ width: `${gutterDigits + 0.9}ch` }}
-                  title={row.showNumber ? `Line ${row.label}` : undefined}
+                  className="shrink-0 select-text text-right font-normal tabular-nums text-slate-600"
+                  style={{
+                    fontFamily: PASSAGE_FONT,
+                    fontSize: "inherit",
+                    fontWeight: "inherit",
+                    lineHeight: "inherit",
+                    width: `${gutterDigits + 0.5}ch`,
+                  }}
+                  aria-label={row.label ? `Line ${row.label}` : undefined}
                 >
-                  {row.showNumber ? row.label : ""}
+                  {row.label ?? ""}
                 </span>
-              )}
-              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+              ) : null}
+              <span
+                className="min-w-0 flex-1 whitespace-pre-wrap break-words font-normal"
+                style={{
+                  fontFamily: PASSAGE_FONT,
+                  fontSize: "inherit",
+                  fontWeight: "inherit",
+                  lineHeight: "inherit",
+                }}
+              >
                 {row.text || "\u00a0"}
               </span>
             </div>

@@ -19,6 +19,7 @@ import {
   labelsForOptionIds,
   selectedMcqOptionIds,
 } from "@/lib/homework/mcq-answers";
+import { formatMarkLabel } from "@/lib/homework/marks";
 import {
   flattenStudentBlocks,
   resolveMcqOptions,
@@ -348,7 +349,9 @@ export function StructuredMarkingWorkspace({
               </p>
               <div className="flex flex-wrap gap-2">
                 {selectedBlock.max_marks != null ? (
-                  <Badge tone="brand">{selectedBlock.max_marks} marks</Badge>
+                  <Badge tone="brand">
+                    {formatMarkLabel(selectedBlock.max_marks)}
+                  </Badge>
                 ) : (
                   <Badge tone="neutral">No marks</Badge>
                 )}

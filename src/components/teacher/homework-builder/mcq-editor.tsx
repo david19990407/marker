@@ -164,7 +164,9 @@ export function McqEditor({
           {options.map((o) => (
             <label key={o.id} className="flex items-center gap-2 text-sm text-slate-700">
               <input type={multi ? "checkbox" : "radio"} disabled />
-              {o.label || "Option"}
+              {o.label.trim() ? o.label : (
+                <span className="italic text-slate-400">(empty option)</span>
+              )}
             </label>
           ))}
         </div>

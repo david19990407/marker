@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { saveAssignmentAction } from "@/lib/actions/teacher";
 import type { ActionResult } from "@/lib/actions/auth";
+import { formatMarkLabel } from "@/lib/homework/marks";
 import type { Assignment } from "@/lib/types";
 
 const initial: ActionResult = {};
@@ -260,7 +261,7 @@ export function AssignmentForm({
         <p className="text-xs text-slate-500">
           Maximum mark is calculated from questions in the homework builder
           {assignment?.maximum_mark != null
-            ? ` (currently ${assignment.maximum_mark}).`
+            ? ` (currently ${formatMarkLabel(Number(assignment.maximum_mark))}).`
             : "."}
         </p>
       ) : (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import {
   BLOCK_TYPE_LABELS,
   type AssignmentBlockType,
+  type AssignmentCommentDraft,
   type BuilderBlock,
   type BuilderSection,
 } from "@/lib/types";
@@ -17,19 +18,23 @@ import {
   emptySection,
   isResponseType,
 } from "@/lib/homework/structure";
-import { formatMarks } from "@/lib/homework/marks";
+import { formatMarkLabel } from "@/lib/homework/marks";
 import { collectPublishWarnings } from "@/lib/homework/publish-readiness";
 import { StructuredWorksheetRenderer } from "@/components/shared/structured-worksheet-renderer";
 import { BlockSettingsPanel } from "./block-settings-panel";
+import type { CommentBankOption } from "./feedback-stage";
 
 type CanvasMode = "edit" | "student" | "marking";
-type CommentBankOption = { id: string; name: string };
 
 interface Props {
   sections: BuilderSection[];
   onChange: (updater: (prev: BuilderSection[]) => BuilderSection[]) => void;
   commentBanks?: CommentBankOption[];
+  assignmentComments?: AssignmentCommentDraft[];
+  onAssignmentCommentsChange?: (next: AssignmentCommentDraft[]) => void;
   assignmentId?: string;
+  focusBlockId?: string | null;
+  onFocusBlockConsumed?: () => void;
 }
 
 const LIBRARY_GROUPS: Array<{ label: string; types: AssignmentBlockType[] }> = [
@@ -73,7 +78,11 @@ export function ContentCanvas({
   sections,
   onChange,
   commentBanks = [],
+  assignmentComments = [],
+  onAssignmentCommentsChange,
   assignmentId = "",
+  focusBlockId = null,
+  onFocusBlockConsumed,
 }: Props) {
   const [mode, setMode] = useState<CanvasMode>("edit");
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(
@@ -81,6 +90,31 @@ export function ContentCanvas({
   );
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [seenFocusBlockId, setSeenFocusBlockId] = useState<string | null>(null);
+
+  // Apply publish-validation "Go to question" focus during render (not in an effect).
+  if (focusBlockId && focusBlockId !== seenFocusBlockId) {
+    setSeenFocusBlockId(focusBlockId);
+    if (findBlock(sections, focusBlockId)) {
+      setSelectedBlockId(focusBlockId);
+      const sectionId = findSectionIdForBlock(sections, focusBlockId);
+      if (sectionId) setSelectedSectionId(sectionId);
+      setMode("edit");
+    }
+  }
+
+  useEffect(() => {
+    if (!focusBlockId) return;
+    if (!findBlock(sections, focusBlockId)) return;
+    const id = focusBlockId;
+    const frame = window.requestAnimationFrame(() => {
+      document
+        .getElementById(`builder-block-${id}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      onFocusBlockConsumed?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusBlockId, sections, onFocusBlockConsumed]);
 
   const activeSectionId =
     selectedSectionId && findSection(sections, selectedSectionId)
@@ -308,6 +342,8 @@ export function ContentCanvas({
           block={selectedBlock}
           allSections={sections}
           commentBanks={commentBanks}
+          assignmentComments={assignmentComments}
+          onAssignmentCommentsChange={onAssignmentCommentsChange}
           assignmentId={assignmentId}
           onChange={(updater) => {
             if (!selectedBlock) return;
@@ -479,7 +515,7 @@ function SectionCanvas({
             label="Add block at start"
           />
           {section.blocks.map((block, index) => (
-            <div key={block._id} className="space-y-2">
+            <div key={block._id} id={`builder-block-${block._id}`} className="space-y-2">
               <BlockRow
                 block={block}
                 index={index}
@@ -629,7 +665,7 @@ function BlockRow({
           {BLOCK_TYPE_LABELS[block.block_type]}
         </Badge>
         {response && block.max_marks != null ? (
-          <Badge tone="brand">{formatMarks(block.max_marks)} marks</Badge>
+          <Badge tone="brand">{formatMarkLabel(block.max_marks)}</Badge>
         ) : null}
         <div className="ml-auto flex flex-wrap gap-1">
           <Button type="button" variant="ghost" size="sm" disabled={index === 0} onClick={onMoveUp}>
@@ -728,6 +764,18 @@ function findBlock(sections: BuilderSection[], blockId: string): BuilderBlock | 
     const found = section.blocks.find((block) => block._id === blockId);
     if (found) return found;
     const nested = findBlock(section.subsections, blockId);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findSectionIdForBlock(
+  sections: BuilderSection[],
+  blockId: string,
+): string | null {
+  for (const section of sections) {
+    if (section.blocks.some((block) => block._id === blockId)) return section._id;
+    const nested = findSectionIdForBlock(section.subsections, blockId);
     if (nested) return nested;
   }
   return null;

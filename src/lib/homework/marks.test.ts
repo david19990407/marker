@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { calculateTotalMarks } from "./marks";
+import {
+  calculateTotalMarks,
+  formatMarkLabel,
+  formatMarkLabelBracketed,
+} from "./marks";
 import type { BuilderSection } from "@/lib/types";
+
+describe("formatMarkLabel", () => {
+  it("uses singular for exactly one mark", () => {
+    expect(formatMarkLabel(1)).toBe("1 mark");
+    expect(formatMarkLabel(1.0)).toBe("1 mark");
+    expect(formatMarkLabelBracketed(1)).toBe("[1 mark]");
+  });
+
+  it("uses plural for zero, decimals, and values greater than one", () => {
+    expect(formatMarkLabel(0)).toBe("0 marks");
+    expect(formatMarkLabel(2)).toBe("2 marks");
+    expect(formatMarkLabel(1.5)).toBe("1.5 marks");
+    expect(formatMarkLabelBracketed(2)).toBe("[2 marks]");
+  });
+});
 
 describe("calculateTotalMarks", () => {
   it("sums assessable question marks and ignores review-only", () => {

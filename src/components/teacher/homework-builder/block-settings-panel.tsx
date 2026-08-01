@@ -21,17 +21,21 @@ import {
 import {
   BLOCK_TYPE_LABELS,
   RESPONSE_BLOCK_TYPES,
+  type AssignmentCommentDraft,
   type BuilderBlock,
   type BuilderSection,
   type PassageConfig,
   type PassageLine,
 } from "@/lib/types";
 import { normalizeNumericConfig } from "@/lib/homework/structure";
+import {
+  commentLinkedQuestionIds,
+  type CommentBankOption,
+} from "./feedback-stage";
 import { McqEditor } from "./mcq-editor";
 import { MediaBlockFields } from "./media-block-fields";
 import { TableEditor } from "./table-editor";
 
-type CommentBankOption = { id: string; name: string };
 type BlockUpdater = (prev: BuilderBlock) => BuilderBlock;
 
 interface Props {
@@ -39,6 +43,8 @@ interface Props {
   allSections: BuilderSection[];
   onChange: (updater: BlockUpdater) => void;
   commentBanks?: CommentBankOption[];
+  assignmentComments?: AssignmentCommentDraft[];
+  onAssignmentCommentsChange?: (next: AssignmentCommentDraft[]) => void;
   assignmentId?: string;
 }
 
@@ -47,6 +53,8 @@ export function BlockSettingsPanel({
   allSections,
   onChange,
   commentBanks = [],
+  assignmentComments = [],
+  onAssignmentCommentsChange,
   assignmentId = "",
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -249,8 +257,10 @@ export function BlockSettingsPanel({
           )}
 
           <LinkedFeedbackComments
-            ids={block.linked_comment_bank_ids ?? []}
+            block={block}
+            comments={assignmentComments}
             commentBanks={commentBanks}
+            onCommentsChange={onAssignmentCommentsChange}
           />
         </div>
       ) : null}
@@ -753,33 +763,207 @@ function NumericFields({
 }
 
 function LinkedFeedbackComments({
-  ids,
+  block,
+  comments,
   commentBanks,
+  onCommentsChange,
 }: {
-  ids: string[];
+  block: BuilderBlock;
+  comments: AssignmentCommentDraft[];
   commentBanks: CommentBankOption[];
+  onCommentsChange?: (next: AssignmentCommentDraft[]) => void;
 }) {
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-medium text-slate-500">
-        Linked feedback comments (set up in Feedback stage)
-      </p>
-      {ids.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {ids.map((id) => {
-            const label = commentBanks.find((bank) => bank.id === id)?.name ?? id;
-            return (
-              <Badge key={id} tone="neutral">
-                {label}
-              </Badge>
-            );
-          })}
+  const [search, setSearch] = useState("");
+  const questionId = block.question_id ?? null;
+
+  const linked = useMemo(() => {
+    if (!questionId) return [];
+    return comments.filter((comment) =>
+      commentLinkedQuestionIds(comment).includes(questionId),
+    );
+  }, [comments, questionId]);
+
+  const bankName = "Assignment comments";
+
+  const searchable = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return comments.filter((comment) => {
+      if (!comment.is_active) return false;
+      if (questionId && commentLinkedQuestionIds(comment).includes(questionId)) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        comment.short_label.toLowerCase().includes(q) ||
+        comment.full_comment.toLowerCase().includes(q) ||
+        comment.category.toLowerCase().includes(q)
+      );
+    });
+  }, [comments, questionId, search]);
+
+  function usageLabel(comment: AssignmentCommentDraft) {
+    const parts: string[] = [];
+    if (comment.available_for_question) parts.push("Question feedback");
+    if (comment.available_for_overall) parts.push("Overall feedback");
+    if (comment.available_for_annotation) parts.push("Annotation");
+    if (comment.available_for_drag_drop) parts.push("Drag & drop");
+    return parts.length ? parts.join(" · ") : "No usage flags";
+  }
+
+  function linkComment(commentId: string) {
+    if (!questionId || !onCommentsChange) return;
+    onCommentsChange(
+      comments.map((comment) => {
+        if (comment._id !== commentId) return comment;
+        const ids = new Set(commentLinkedQuestionIds(comment));
+        ids.add(questionId);
+        const nextIds = [...ids];
+        return {
+          ...comment,
+          linked_question_ids: nextIds,
+          linked_question_id: nextIds[0] ?? null,
+        };
+      }),
+    );
+  }
+
+  function unlinkComment(commentId: string) {
+    if (!questionId || !onCommentsChange) return;
+    onCommentsChange(
+      comments.map((comment) => {
+        if (comment._id !== commentId) return comment;
+        const nextIds = commentLinkedQuestionIds(comment).filter(
+          (id) => id !== questionId,
+        );
+        return {
+          ...comment,
+          linked_question_ids: nextIds,
+          linked_question_id: nextIds[0] ?? null,
+        };
+      }),
+    );
+  }
+
+  if (!questionId) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-slate-500">
+          Linked feedback comments
+        </p>
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400">
+          Save this question first so it has a stable question ID, then link
+          comments.
         </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-xs font-medium text-slate-500">
+          Linked feedback comments
+        </p>
+        <p className="mt-0.5 text-[11px] text-slate-400">
+          Links use the question ID (not the title). Same comments appear in
+          marking.
+        </p>
+      </div>
+
+      {linked.length > 0 ? (
+        <ul className="space-y-2">
+          {linked.map((comment) => (
+            <li
+              key={comment._id}
+              className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    {comment.category?.trim() || bankName}
+                  </p>
+                  <p className="font-medium text-slate-900">
+                    {comment.short_label || "Untitled comment"}
+                  </p>
+                  {comment.full_comment ? (
+                    <p className="line-clamp-3 whitespace-pre-wrap text-xs text-slate-600">
+                      {comment.full_comment}
+                    </p>
+                  ) : null}
+                  <p className="text-[11px] text-slate-400">
+                    {usageLabel(comment)}
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    Linked question ID: {questionId.slice(0, 8)}…
+                  </p>
+                </div>
+                {onCommentsChange ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => unlinkComment(comment._id)}
+                  >
+                    Remove
+                  </Button>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
       ) : (
         <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400">
           No linked comments yet.
         </div>
       )}
+
+      {onCommentsChange ? (
+        <div className="space-y-2 border-t border-slate-100 pt-3">
+          <p className="text-xs font-medium text-slate-500">
+            Link feedback comments
+          </p>
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search assignment comments…"
+          />
+          {commentBanks.length > 0 ? (
+            <p className="text-[11px] text-slate-400">
+              School banks available in Feedback stage:{" "}
+              {commentBanks.map((b) => b.name).join(", ")}. Link individual
+              assignment comments below.
+            </p>
+          ) : null}
+          <div className="max-h-48 space-y-1 overflow-auto">
+            {searchable.length === 0 ? (
+              <p className="text-xs text-slate-400">
+                {comments.length === 0
+                  ? "Create comments in the Feedback stage first."
+                  : "No matching unlinked comments."}
+              </p>
+            ) : (
+              searchable.slice(0, 20).map((comment) => (
+                <button
+                  key={comment._id}
+                  type="button"
+                  onClick={() => linkComment(comment._id)}
+                  className="flex w-full items-start justify-between gap-2 rounded-xl border border-slate-100 px-2 py-1.5 text-left text-sm hover:bg-brand-50"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium text-slate-800">
+                      {comment.short_label || "Untitled"}
+                    </span>
+                    <span className="block truncate text-[11px] text-slate-400">
+                      {comment.full_comment || "No full comment"}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs text-brand-700">Link</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

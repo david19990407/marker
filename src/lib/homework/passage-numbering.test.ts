@@ -3,6 +3,7 @@ import {
   applyAutomaticLabels,
   buildPassageRows,
   createPassageLine,
+  migrateLegacyPassageLabels,
   normalizePassageConfig,
   normalizePassageLines,
   resolvePassageStart,
@@ -53,7 +54,7 @@ describe("passage line labels", () => {
     expect(showGutter).toBe(false);
   });
 
-  it("migrates legacy numbered indexes into editable labels once", () => {
+  it("does not invent labels during normalize — only explicit migrate helper", () => {
     const config = normalizePassageConfig({
       show_line_numbers: true,
       line_number_mode: "manual",
@@ -61,7 +62,10 @@ describe("passage line labels", () => {
       numbered_line_indexes: [0, 2],
       manual_line_labels: { "0": "1", "2": "15" },
     }, "A\nB\nC");
-    expect(config.lines?.map((l) => l.label)).toEqual(["1", null, "15"]);
+    expect(config.lines?.every((l) => l.label == null)).toBe(true);
+
+    const migrated = migrateLegacyPassageLabels(config);
+    expect(migrated.lines?.map((l) => l.label)).toEqual(["1", null, "15"]);
   });
 
   it("automatic helpers only populate editable label fields", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,9 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
 import type { ActionResult } from "@/lib/actions/auth";
-import { saveHomeworkStructureAction } from "@/lib/actions/homework-builder";
+import {
+  saveAssignmentCommentsAction,
+  saveHomeworkStructureAction,
+} from "@/lib/actions/homework-builder";
 import { publishHomeworkAction } from "@/lib/actions/teacher";
-import { calculateTotalMarks, formatMarks } from "@/lib/homework/marks";
+import { calculateTotalMarks, formatMarkLabel } from "@/lib/homework/marks";
 import { collectPublishWarnings } from "@/lib/homework/publish-readiness";
 import { createBlock, emptySection } from "@/lib/homework/structure";
 import type {
@@ -26,7 +29,11 @@ import {
   type AssignmentResourceSummary,
   type MarkSchemeSummary,
 } from "./resource-stage";
-import { FeedbackStage, type CommentBankOption } from "./feedback-stage";
+import {
+  FeedbackStage,
+  normaliseComments,
+  type CommentBankOption,
+} from "./feedback-stage";
 
 interface Props {
   assignment: Assignment & { template_id: string };
@@ -66,9 +73,13 @@ export function HomeworkStudio({
   useEffect(() => {
     sectionsRef.current = sections;
   }, [sections]);
+  const [comments, setComments] = useState<AssignmentCommentDraft[]>(() =>
+    normaliseComments(initialComments),
+  );
   const [activeStage, setActiveStage] = useState<BuilderStage>(
     previewOnly ? "preview" : "content",
   );
+  const [focusBlockId, setFocusBlockId] = useState<string | null>(null);
   const [issuedAcknowledged, setIssuedAcknowledged] = useState(
     assignment.status !== "published",
   );
@@ -86,6 +97,25 @@ export function HomeworkStudio({
       return result.error ? { ok: false, error: result.error } : { ok: true };
     },
   });
+  const commentAutosave = useVersionedAutosave<AssignmentCommentDraft[]>({
+    delayMs: 1200,
+    enabled: !previewOnly,
+    save: async (value) => {
+      const result = await saveAssignmentCommentsAction(
+        assignment.template_id,
+        value,
+      );
+      return result.error ? { ok: false, error: result.error } : { ok: true };
+    },
+  });
+
+  function updateComments(next: AssignmentCommentDraft[]) {
+    if (previewOnly) return;
+    if (!confirmIssuedEdit()) return;
+    const ordered = normaliseComments(next);
+    setComments(ordered);
+    commentAutosave.markDirty(ordered);
+  }
 
   function confirmIssuedEdit() {
     if (assignment.status !== "published" || issuedAcknowledged) return true;
@@ -141,7 +171,7 @@ export function HomeworkStudio({
                 {details.title || assignment.title}
               </h1>
               <Badge tone={statusTone}>{assignment.status}</Badge>
-              <Badge tone="brand">{formatMarks(totalMarks)} marks</Badge>
+              <Badge tone="brand">{formatMarkLabel(totalMarks)}</Badge>
             </div>
             <p className="text-sm text-slate-500">{classSummary}</p>
             <div className="flex flex-wrap items-center gap-2">
@@ -217,14 +247,19 @@ export function HomeworkStudio({
 
       {activeStage === "classes" ? <ClassesStage classNames={classNames} /> : null}
 
-      {activeStage === "content" ? (
+      {/* Keep Content mounted when focusing a block from Publish validation. */}
+      <div className={activeStage === "content" ? "contents" : "hidden"}>
         <ContentCanvas
           sections={sections}
           onChange={updateSections}
           commentBanks={commentBanks}
+          assignmentComments={comments}
+          onAssignmentCommentsChange={updateComments}
           assignmentId={assignment.id}
+          focusBlockId={focusBlockId}
+          onFocusBlockConsumed={() => setFocusBlockId(null)}
         />
-      ) : null}
+      </div>
 
       {activeStage === "resources" ? (
         <ResourceStage
@@ -241,7 +276,11 @@ export function HomeworkStudio({
         <FeedbackStage
           templateId={assignment.template_id}
           sections={sections}
-          initialComments={initialComments}
+          comments={comments}
+          onCommentsChange={updateComments}
+          commentAutosaveLabel={commentAutosave.label}
+          commentAutosaveError={commentAutosave.lastError}
+          onFlushComments={() => void commentAutosave.flush()}
           commentBanks={commentBanks}
           linkedCommentBankIds={linkedCommentBankIds}
         />
@@ -252,7 +291,17 @@ export function HomeworkStudio({
       ) : null}
 
       {activeStage === "publish" ? (
-        <PublishStage assignment={assignment} sections={sections} />
+        <PublishStage
+          assignment={assignment}
+          sections={sections}
+          flushStructure={() => autosave.flush()}
+          flushComments={() => commentAutosave.flush()}
+          structureDirty={autosave.hasUnsavedChanges()}
+          onGoToBlock={(blockId) => {
+            setFocusBlockId(blockId);
+            setActiveStage("content");
+          }}
+        />
       ) : null}
     </div>
   );
@@ -332,14 +381,49 @@ function toLocalInput(value: string | null | undefined) {
 function PublishStage({
   assignment,
   sections,
+  flushStructure,
+  flushComments,
+  structureDirty,
+  onGoToBlock,
 }: {
   assignment: Assignment;
   sections: BuilderSection[];
+  flushStructure: () => Promise<boolean>;
+  flushComments: () => Promise<boolean>;
+  structureDirty: boolean;
+  onGoToBlock: (blockId: string) => void;
 }) {
   const bound = publishHomeworkAction.bind(null, assignment.id);
   const [state, action, pending] = useActionState(bound, {} as ActionResult);
+  const [flushPending, startFlush] = useTransition();
+  const [flushError, setFlushError] = useState<string | null>(null);
   const warnings = collectPublishWarnings(sections);
+  const blocking = warnings.filter((w) => w.blocking);
   const isPublished = assignment.status === "published";
+  const ready = blocking.length === 0;
+
+  function handleSubmit(formData: FormData) {
+    startFlush(async () => {
+      setFlushError(null);
+      const structureOk = await flushStructure();
+      const commentsOk = await flushComments();
+      if (!structureOk || !commentsOk) {
+        setFlushError(
+          "Save your latest edits before publishing. Autosave did not finish.",
+        );
+        return;
+      }
+      // Re-check client structure after flush; server also validates persisted data.
+      const latest = collectPublishWarnings(sections);
+      if (latest.some((w) => w.blocking)) {
+        setFlushError(
+          "Fix the blocking issues listed above, then try publishing again.",
+        );
+        return;
+      }
+      await action(formData);
+    });
+  }
 
   return (
     <Card className="space-y-4">
@@ -349,8 +433,7 @@ function PublishStage({
         </CardTitle>
         <p className="mt-1 text-sm text-slate-500">
           Homework is created as a draft automatically. Publish when the worksheet is
-          ready. A future release date schedules visibility; otherwise students see it
-          immediately.
+          ready. Pending autosaves are flushed before publishing.
         </p>
       </div>
 
@@ -358,29 +441,62 @@ function PublishStage({
         <Badge tone={isPublished ? "success" : "neutral"}>
           {isPublished ? "Published" : "Draft"}
         </Badge>
+        {structureDirty ? <Badge tone="warning">Unsaved content</Badge> : null}
       </div>
 
-      {warnings.length > 0 ? (
+      {ready ? (
+        <div className="border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-sm text-emerald-900">
+          Homework is ready to publish.
+        </div>
+      ) : (
         <div className="border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-950">
-          <p className="mb-1 font-medium">Before publishing</p>
-          <ul className="list-disc space-y-1 pl-5">
-            {warnings.slice(0, 8).map((w) => (
-              <li key={`${w.blockId}-${w.message}`}>{w.message}</li>
+          <p className="mb-2 font-medium">Validation summary</p>
+          <ul className="space-y-3">
+            {blocking.map((w) => (
+              <li
+                key={`${w.blockId}-${w.message}`}
+                className="rounded-xl border border-amber-200/80 bg-white/70 px-3 py-2"
+              >
+                <p className="font-medium">
+                  {w.questionNumber != null
+                    ? `Question ${w.questionNumber}`
+                    : "Block"}
+                  {w.questionTitle ? `, "${w.questionTitle}"` : ""}
+                </p>
+                <p className="mt-0.5 text-amber-900/90">{w.message}</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-2"
+                  onClick={() => onGoToBlock(w.blockId)}
+                >
+                  Go to question
+                </Button>
+              </li>
             ))}
           </ul>
-          {warnings.some((w) => w.blocking) ? (
-            <p className="mt-2 text-xs font-medium text-amber-900">
-              Fix blocking issues (especially multiple-choice options) before
-              publishing.
-            </p>
-          ) : null}
+        </div>
+      )}
+
+      {warnings.some((w) => !w.blocking) ? (
+        <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          <p className="mb-1 font-medium">Non-blocking notes</p>
+          <ul className="list-disc space-y-1 pl-5">
+            {warnings
+              .filter((w) => !w.blocking)
+              .slice(0, 6)
+              .map((w) => (
+                <li key={`${w.blockId}-${w.message}`}>{w.message}</li>
+              ))}
+          </ul>
         </div>
       ) : null}
 
-      <form action={action} className="space-y-4">
-        {state.error ? (
-          <div className="border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {state.error}
+      <form action={handleSubmit} className="space-y-4">
+        {flushError || state.error ? (
+          <div className="whitespace-pre-wrap border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {flushError || state.error}
           </div>
         ) : null}
         {state.success ? (
@@ -430,10 +546,10 @@ function PublishStage({
         <div className="flex flex-wrap gap-3">
           <Button
             type="submit"
-            disabled={pending || warnings.some((w) => w.blocking)}
+            disabled={pending || flushPending || !ready}
           >
-            {pending
-              ? "Publishing…"
+            {pending || flushPending
+              ? "Saving & publishing…"
               : isPublished
                 ? "Update published homework"
                 : "Publish homework"}
