@@ -31,6 +31,11 @@ import {
   responseKey,
 } from "@/lib/homework/structure";
 import type {
+  AssignmentFeedbackField,
+  CommentBankItem,
+  FeedbackFieldValue,
+} from "@/lib/feedback/types";
+import type {
   AssignmentCommentDraft,
   BuilderBlock,
   BuilderSection,
@@ -103,6 +108,11 @@ export function StructuredMarkingWorkspace({
   markSchemes = [],
   commentBanks = [],
   assignmentComments = [],
+  feedbackFields = [],
+  feedbackFieldValues = [],
+  commentBankItems = [],
+  studentName = "",
+  assignmentTitle = "",
   legacyWrittenResponse = null,
   legacyFileName = null,
   legacyStoragePath = null,
@@ -116,6 +126,11 @@ export function StructuredMarkingWorkspace({
   markSchemes?: MarkSchemeFile[];
   commentBanks?: CommentBankSummary[];
   assignmentComments?: MarkingComment[];
+  feedbackFields?: AssignmentFeedbackField[];
+  feedbackFieldValues?: FeedbackFieldValue[];
+  commentBankItems?: CommentBankItem[];
+  studentName?: string;
+  assignmentTitle?: string;
   legacyWrittenResponse?: string | null;
   legacyFileName?: string | null;
   legacyStoragePath?: string | null;
@@ -410,6 +425,11 @@ export function StructuredMarkingWorkspace({
             submissionId={submissionId}
             maximumMark={maximumMark}
             feedback={feedback}
+            fields={feedbackFields}
+            fieldValues={feedbackFieldValues}
+            commentItems={commentBankItems}
+            studentName={studentName}
+            assignmentTitle={assignmentTitle}
           />
         </Card>
       </aside>

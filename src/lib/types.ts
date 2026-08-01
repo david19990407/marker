@@ -115,11 +115,23 @@ export interface Feedback {
   improvements: string | null;
   next_steps: string | null;
   private_notes: string | null;
+  /** Flexible field values keyed by field_key (Phase 5 / plan Phase 7). */
+  field_values_json?: Record<string, unknown> | null;
   status: FeedbackStatus;
   released_at: string | null;
   created_at: string;
   updated_at: string;
 }
+
+export type {
+  AssignmentFeedbackField,
+  CommentBank,
+  CommentBankItem,
+  CommentBankScope,
+  CommentTone,
+  FeedbackFieldType,
+  FeedbackFieldValue,
+} from "@/lib/feedback/types";
 
 export interface SchoolSettings {
   id: string;

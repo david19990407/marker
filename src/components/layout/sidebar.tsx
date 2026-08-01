@@ -6,6 +6,7 @@ import {
   BookOpen,
   ClipboardList,
   LayoutDashboard,
+  MessageSquareText,
   School,
   Settings,
   SlidersHorizontal,
@@ -39,6 +40,11 @@ function navForRole(role: Profile["role"]): NavItem[] {
       { href: "/teacher/classes", label: "My Classes", icon: School },
       { href: "/teacher/assignments", label: "Assignments", icon: BookOpen },
       { href: "/teacher/marking", label: "Marking", icon: ClipboardList },
+      {
+        href: "/teacher/comment-banks",
+        label: "Comment banks",
+        icon: MessageSquareText,
+      },
       { href: "/settings", label: "Settings", icon: Settings },
     ];
   }

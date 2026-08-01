@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { HomeworkBuilder } from "@/components/teacher/homework-builder/homework-builder";
+import { loadFeedbackFieldsAction } from "@/lib/actions/feedback-fields";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import { loadTemplateStructure } from "@/lib/homework/structure";
@@ -97,6 +98,7 @@ export default async function HomeworkBuilderPage({
   }
   const commentBanks = banksRes.data ?? [];
   const commentBankLinks = linksRes.data ?? [];
+  const fieldsResult = await loadFeedbackFieldsAction(assignment.template_id);
 
   const className = Array.isArray(assignment.classes)
     ? assignment.classes[0]?.name
@@ -170,6 +172,7 @@ export default async function HomeworkBuilderPage({
           name: bank.name,
         }))}
         linkedCommentBankIds={commentBankLinks.map((link) => link.comment_bank_id)}
+        feedbackFields={fieldsResult.fields ?? []}
       />
     </div>
   );

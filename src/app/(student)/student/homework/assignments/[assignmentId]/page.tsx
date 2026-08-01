@@ -66,15 +66,116 @@ export default async function StudentAssignmentPage({
       .maybeSingle(),
   ]);
 
-  const { data: feedback } =
-    submission && ["marked", "returned"].includes(submission.status)
-      ? await supabase
-          .from("feedback")
-          .select("mark, strengths, improvements, next_steps, status, released_at")
-          .eq("submission_id", submission.id)
-          .eq("status", "released")
-          .maybeSingle()
-      : { data: null };
+  type ReleasedFeedback = {
+    id?: string;
+    mark: number | null;
+    strengths: string | null;
+    improvements: string | null;
+    next_steps: string | null;
+    field_values_json?: Record<string, unknown> | null;
+    status: string;
+    released_at: string | null;
+  };
+  let releasedFeedback: ReleasedFeedback | null = null;
+
+  if (submission && ["marked", "returned"].includes(submission.status)) {
+    const withFlexible = await supabase
+      .from("feedback")
+      .select(
+        "id, mark, strengths, improvements, next_steps, field_values_json, status, released_at",
+      )
+      .eq("submission_id", submission.id)
+      .eq("status", "released")
+      .maybeSingle();
+    if (withFlexible.data) {
+      releasedFeedback = withFlexible.data as unknown as ReleasedFeedback;
+    } else {
+      const legacy = await supabase
+        .from("feedback")
+        .select(
+          "id, mark, strengths, improvements, next_steps, status, released_at",
+        )
+        .eq("submission_id", submission.id)
+        .eq("status", "released")
+        .maybeSingle();
+      releasedFeedback = (legacy.data as unknown as ReleasedFeedback) ?? null;
+    }
+  }
+
+  let studentFeedbackFields: Array<{
+    label: string;
+    description: string | null;
+    text: string;
+  }> = [];
+  if (releasedFeedback && assignment.template_id) {
+    const [{ data: fieldDefs }, { data: valueRows }] = await Promise.all([
+      supabase
+        .from("assignment_feedback_fields")
+        .select("id, field_key, label, description, sort_order, student_visible, teacher_only")
+        .eq("template_id", assignment.template_id)
+        .eq("student_visible", true)
+        .eq("teacher_only", false)
+        .order("sort_order", { ascending: true }),
+      releasedFeedback.id
+        ? supabase
+            .from("feedback_field_values")
+            .select("field_key, text_value, numeric_value, boolean_value, json_value")
+            .eq("feedback_id", releasedFeedback.id)
+        : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
+    ]);
+
+    const valuesByKey = new Map(
+      (valueRows ?? []).map((row) => [String(row.field_key), row]),
+    );
+    const jsonBlob =
+      (releasedFeedback as { field_values_json?: Record<string, unknown> })
+        .field_values_json ?? {};
+
+    if (fieldDefs?.length) {
+      studentFeedbackFields = fieldDefs.map((field) => {
+        const row = valuesByKey.get(String(field.field_key));
+        const fromJson = jsonBlob[String(field.field_key)];
+        const legacyKey = String(field.field_key) as
+          | "strengths"
+          | "improvements"
+          | "next_steps";
+        const legacyText =
+          legacyKey in releasedFeedback
+            ? String(
+                (releasedFeedback as Record<string, unknown>)[legacyKey] ?? "",
+              )
+            : "";
+        const text =
+          (row?.text_value as string | null) ||
+          (row?.numeric_value != null ? String(row.numeric_value) : "") ||
+          (row?.boolean_value != null ? (row.boolean_value ? "Yes" : "No") : "") ||
+          (typeof fromJson === "string" ? fromJson : "") ||
+          legacyText ||
+          "—";
+        return {
+          label: String(field.label),
+          description: (field.description as string | null) ?? null,
+          text,
+        };
+      });
+    }
+  }
+
+  if (!studentFeedbackFields.length && releasedFeedback) {
+    studentFeedbackFields = [
+      { label: "Strengths", description: null, text: releasedFeedback.strengths || "—" },
+      {
+        label: "Improvements",
+        description: null,
+        text: releasedFeedback.improvements || "—",
+      },
+      {
+        label: "Next steps",
+        description: null,
+        text: releasedFeedback.next_steps || "—",
+      },
+    ];
+  }
 
   // Load structured content if template exists
   let structuredSections = null;
@@ -226,32 +327,29 @@ export default async function StudentAssignmentPage({
 
       <Card>
         <CardTitle className="mb-2">Teacher feedback</CardTitle>
-        {!feedback ? (
+        {!releasedFeedback ? (
           <p className="text-sm text-slate-500">No feedback released yet</p>
         ) : (
           <div className="space-y-3 text-sm">
             <p>
               <span className="font-medium">Mark:</span>{" "}
-              {feedback.mark ?? "—"} / {assignment.maximum_mark}
+              {releasedFeedback.mark ?? "—"} / {assignment.maximum_mark}
             </p>
-            {feedback.released_at ? (
+            {releasedFeedback.released_at ? (
               <p className="text-slate-500">
                 Returned{" "}
-                {new Date(feedback.released_at).toLocaleString("en-GB")}
+                {new Date(releasedFeedback.released_at).toLocaleString("en-GB")}
               </p>
             ) : null}
-            <div>
-              <p className="font-medium">Strengths</p>
-              <p className="text-slate-600">{feedback.strengths || "—"}</p>
-            </div>
-            <div>
-              <p className="font-medium">Improvements</p>
-              <p className="text-slate-600">{feedback.improvements || "—"}</p>
-            </div>
-            <div>
-              <p className="font-medium">Next steps</p>
-              <p className="text-slate-600">{feedback.next_steps || "—"}</p>
-            </div>
+            {studentFeedbackFields.map((field) => (
+              <div key={field.label}>
+                <p className="font-medium">{field.label}</p>
+                {field.description ? (
+                  <p className="text-xs text-slate-400">{field.description}</p>
+                ) : null}
+                <p className="whitespace-pre-wrap text-slate-600">{field.text}</p>
+              </div>
+            ))}
           </div>
         )}
       </Card>

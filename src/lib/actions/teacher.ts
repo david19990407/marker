@@ -764,8 +764,23 @@ export async function saveFeedbackAction(
   formData: FormData,
 ): Promise<ActionResult> {
   const profile = await assertTeacher();
-  const parsed = feedbackSchema.safeParse({
+
+  let fieldValuesRaw: unknown[] = [];
+  const fieldValuesJsonRaw = formData.get("field_values_json");
+  if (typeof fieldValuesJsonRaw === "string" && fieldValuesJsonRaw.trim()) {
+    try {
+      fieldValuesRaw = JSON.parse(fieldValuesJsonRaw) as unknown[];
+    } catch {
+      return { error: "Invalid feedback field payload" };
+    }
+  }
+
+  const { flexibleFeedbackSaveSchema } = await import(
+    "@/lib/validations/feedback"
+  );
+  const parsed = flexibleFeedbackSaveSchema.safeParse({
     mark: formData.get("mark"),
+    field_values: fieldValuesRaw,
     strengths: formData.get("strengths"),
     improvements: formData.get("improvements"),
     next_steps: formData.get("next_steps"),
@@ -775,11 +790,23 @@ export async function saveFeedbackAction(
     return { error: parsed.error.issues[0]?.message ?? "Invalid feedback" };
   }
 
+  // Keep classic schema validation as a soft fallback for legacy clients.
+  const legacy = feedbackSchema.safeParse({
+    mark: parsed.data.mark,
+    strengths: parsed.data.strengths,
+    improvements: parsed.data.improvements,
+    next_steps: parsed.data.next_steps,
+    private_notes: parsed.data.private_notes,
+  });
+  if (!legacy.success && parsed.data.field_values.length === 0) {
+    return { error: legacy.error.issues[0]?.message ?? "Invalid feedback" };
+  }
+
   const supabase = await createClient();
   const { data: submission } = await supabase
     .from("submissions")
     .select(
-      "id, student_id, assignment_id, status, assignments!inner(id, teacher_id, maximum_mark, title, class_id)",
+      "id, student_id, assignment_id, status, assignments!inner(id, teacher_id, maximum_mark, title, class_id, template_id)",
     )
     .eq("id", submissionId)
     .maybeSingle();
@@ -820,24 +847,149 @@ export async function saveFeedbackAction(
     return { error: "Enter a mark before releasing feedback" };
   }
 
+  // Map flexible values onto legacy columns for compatibility.
+  const byKey = new Map(
+    parsed.data.field_values.map((v) => [v.field_key, v]),
+  );
+  const strengths =
+    byKey.get("strengths")?.text_value ?? parsed.data.strengths ?? null;
+  const improvements =
+    byKey.get("improvements")?.text_value ?? parsed.data.improvements ?? null;
+  const nextSteps =
+    byKey.get("next_steps")?.text_value ?? parsed.data.next_steps ?? null;
+  const privateNotes =
+    byKey.get("private_notes")?.text_value ?? parsed.data.private_notes ?? null;
+
+  if (mode === "release" && assignment.template_id) {
+    const { evaluateFeedbackCompletion } = await import(
+      "@/lib/feedback/completion"
+    );
+    const { data: fieldDefs } = await supabase
+      .from("assignment_feedback_fields")
+      .select("*")
+      .eq("template_id", assignment.template_id);
+    if (fieldDefs?.length) {
+      const completion = evaluateFeedbackCompletion(
+        fieldDefs.map((row) => ({
+          id: String(row.id),
+          template_id: String(row.template_id),
+          field_key: String(row.field_key),
+          label: String(row.label),
+          description: (row.description as string | null) ?? null,
+          field_type: row.field_type,
+          sort_order: Number(row.sort_order ?? 0),
+          is_required: Boolean(row.is_required),
+          student_visible: Boolean(row.student_visible),
+          teacher_only: Boolean(row.teacher_only),
+          max_length: row.max_length == null ? null : Number(row.max_length),
+          tracks_completion: Boolean(row.tracks_completion),
+          allow_comment_bank: Boolean(row.allow_comment_bank),
+          config: (row.config as Record<string, unknown>) ?? {},
+        })),
+        parsed.data.field_values,
+      );
+      if (!completion.isComplete) {
+        return {
+          error: `Complete required feedback fields before releasing (${completion.missingLabels.slice(0, 3).join("; ")})`,
+        };
+      }
+    }
+  }
+
   const feedbackStatus = mode === "draft" ? "draft" : "released";
   const now = new Date().toISOString();
 
-  const { error: feedbackError } = await supabase.from("feedback").upsert(
-    {
-      submission_id: submissionId,
-      teacher_id: profile.id,
-      mark: mode === "return_unmarked" ? null : parsed.data.mark,
-      strengths: parsed.data.strengths || null,
-      improvements: parsed.data.improvements || null,
-      next_steps: parsed.data.next_steps || null,
-      private_notes: parsed.data.private_notes || null,
-      status: feedbackStatus,
-      released_at: mode === "draft" ? null : now,
-    },
-    { onConflict: "submission_id" },
+  const fieldValuesBlob = Object.fromEntries(
+    parsed.data.field_values.map((v) => [
+      v.field_key,
+      v.json_value ?? v.text_value ?? v.numeric_value ?? v.boolean_value,
+    ]),
   );
-  if (feedbackError) return { error: feedbackError.message };
+
+  const { data: upserted, error: feedbackError } = await supabase
+    .from("feedback")
+    .upsert(
+      {
+        submission_id: submissionId,
+        teacher_id: profile.id,
+        mark: mode === "return_unmarked" ? null : parsed.data.mark,
+        strengths: strengths || null,
+        improvements: improvements || null,
+        next_steps: nextSteps || null,
+        private_notes: privateNotes || null,
+        field_values_json: fieldValuesBlob,
+        status: feedbackStatus,
+        released_at: mode === "draft" ? null : now,
+      },
+      { onConflict: "submission_id" },
+    )
+    .select("id")
+    .single();
+
+  // Pre-migration fallback without field_values_json.
+  if (
+    feedbackError &&
+    /field_values_json/i.test(feedbackError.message)
+  ) {
+    const { data: legacyUpsert, error: legacyError } = await supabase
+      .from("feedback")
+      .upsert(
+        {
+          submission_id: submissionId,
+          teacher_id: profile.id,
+          mark: mode === "return_unmarked" ? null : parsed.data.mark,
+          strengths: strengths || null,
+          improvements: improvements || null,
+          next_steps: nextSteps || null,
+          private_notes: privateNotes || null,
+          status: feedbackStatus,
+          released_at: mode === "draft" ? null : now,
+        },
+        { onConflict: "submission_id" },
+      )
+      .select("id")
+      .single();
+    if (legacyError) return { error: legacyError.message };
+    if (legacyUpsert && parsed.data.field_values.length) {
+      await supabase.rpc("save_feedback_field_values", {
+        p_feedback_id: legacyUpsert.id,
+        p_values: parsed.data.field_values,
+      });
+    }
+  } else if (feedbackError) {
+    return { error: feedbackError.message };
+  } else if (upserted && parsed.data.field_values.length) {
+    const { error: valuesError } = await supabase.rpc(
+      "save_feedback_field_values",
+      {
+        p_feedback_id: upserted.id,
+        p_values: parsed.data.field_values,
+      },
+    );
+    if (
+      valuesError &&
+      !/could not find the function|schema cache|does not exist/i.test(
+        valuesError.message,
+      )
+    ) {
+      // Fall back to direct upserts.
+      for (const value of parsed.data.field_values) {
+        if (value.field_id.startsWith("legacy-")) continue;
+        await supabase.from("feedback_field_values").upsert(
+          {
+            feedback_id: upserted.id,
+            field_id: value.field_id,
+            field_key: value.field_key,
+            text_value: value.text_value ?? null,
+            numeric_value: value.numeric_value ?? null,
+            boolean_value: value.boolean_value ?? null,
+            json_value: value.json_value ?? null,
+          },
+          { onConflict: "feedback_id,field_id" },
+        );
+      }
+    }
+  }
 
   if (mode !== "draft") {
     const submissionStatus = mode === "return_unmarked" ? "returned" : "marked";
@@ -862,6 +1014,8 @@ export async function saveFeedbackAction(
 
   revalidatePath("/teacher/marking");
   revalidatePath(`/teacher/marking/${submissionId}`);
+  revalidatePath(`/teacher/marking/submissions/${submissionId}`);
+  revalidatePath(`/student/homework/assignments/${submission.assignment_id}`);
   revalidatePath("/teacher/dashboard");
   return {
     success:
