@@ -3,7 +3,9 @@ import type {
   AssignmentBlockType,
   BuilderBlock,
   BuilderSection,
+  MediaConfig,
   McqOption,
+  NumericConfig,
   TableCellDef,
   TableConfig,
 } from "@/lib/types";
@@ -42,6 +44,8 @@ export function cloneBlock(block: BuilderBlock): BuilderBlock {
             : undefined,
         }
       : undefined,
+    mediaConfig: block.mediaConfig ? { ...block.mediaConfig } : undefined,
+    numericConfig: block.numericConfig ? { ...block.numericConfig } : undefined,
     tableConfig: block.tableConfig
       ? { ...block.tableConfig, col_labels: [...block.tableConfig.col_labels] }
       : undefined,
@@ -167,6 +171,35 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     base.external_url = "";
     base.captions_text = "";
     base.allow_download = false;
+    base.mediaConfig = {
+      external_url: "",
+      title: "",
+      description: "",
+      transcript: "",
+      allow_download: false,
+      alignment: "center",
+      display_size: "full",
+    };
+  }
+
+  if (type === "image") {
+    base.mediaConfig = {
+      alt_text: "",
+      caption: "",
+      alignment: "center",
+      display_size: "large",
+      allow_download: true,
+    };
+  }
+
+  if (type === "downloadable_resource") {
+    base.mediaConfig = {
+      title: "",
+      description: "",
+      allow_download: true,
+      alignment: "left",
+      display_size: "full",
+    };
   }
 
   if (isResponseType(type)) {
@@ -184,6 +217,16 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     base.passage_block_ids = [];
     base.linked_comment_bank_ids = [];
     base.marking_mode = "teacher_reviewed";
+
+    if (type === "numeric") {
+      base.numericConfig = {
+        allow_decimals: true,
+        decimal_places: null,
+        unit: null,
+        correct_min: null,
+        correct_max: null,
+      };
+    }
 
     if (type === "multiple_choice" || type === "multiple_select") {
       base.mcq_options = [
@@ -242,6 +285,62 @@ export function resolveMcqOptions(block: BuilderBlock): McqOption[] {
   }));
 }
 
+export function normalizeNumericConfig(
+  raw?: Partial<NumericConfig> | null,
+): NumericConfig {
+  return {
+    allow_decimals: raw?.allow_decimals !== false,
+    decimal_places:
+      raw?.decimal_places != null && Number.isFinite(Number(raw.decimal_places))
+        ? Math.max(0, Math.floor(Number(raw.decimal_places)))
+        : null,
+    unit: typeof raw?.unit === "string" && raw.unit.trim() ? raw.unit.trim() : null,
+    correct_min:
+      raw?.correct_min != null && Number.isFinite(Number(raw.correct_min))
+        ? Number(raw.correct_min)
+        : null,
+    correct_max:
+      raw?.correct_max != null && Number.isFinite(Number(raw.correct_max))
+        ? Number(raw.correct_max)
+        : null,
+  };
+}
+
+export function normalizeMediaConfig(
+  raw?: Partial<MediaConfig> | null,
+  fallback?: Partial<MediaConfig>,
+): MediaConfig {
+  const src = { ...fallback, ...raw };
+  return {
+    storage_path: typeof src.storage_path === "string" ? src.storage_path : null,
+    file_name: typeof src.file_name === "string" ? src.file_name : null,
+    mime_type: typeof src.mime_type === "string" ? src.mime_type : null,
+    file_size:
+      src.file_size != null && Number.isFinite(Number(src.file_size))
+        ? Number(src.file_size)
+        : null,
+    external_url: typeof src.external_url === "string" ? src.external_url : null,
+    alt_text: typeof src.alt_text === "string" ? src.alt_text : null,
+    caption: typeof src.caption === "string" ? src.caption : null,
+    title: typeof src.title === "string" ? src.title : null,
+    description: typeof src.description === "string" ? src.description : null,
+    transcript: typeof src.transcript === "string" ? src.transcript : null,
+    alignment:
+      src.alignment === "left" || src.alignment === "right" || src.alignment === "center"
+        ? src.alignment
+        : "center",
+    display_size:
+      src.display_size === "small" ||
+      src.display_size === "medium" ||
+      src.display_size === "large" ||
+      src.display_size === "full"
+        ? src.display_size
+        : "large",
+    allow_download: src.allow_download !== false,
+    resource_id: typeof src.resource_id === "string" ? src.resource_id : null,
+  };
+}
+
 export function applyMcqOptions(block: BuilderBlock, options: McqOption[]): BuilderBlock {
   const multi = block.block_type === "multiple_select";
   const correctIndexes = options
@@ -295,9 +394,17 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
   const config: Record<string, unknown> = {};
 
   if (b.passageConfig) config.passage = normalizePassageConfig(b.passageConfig);
-  if (b.external_url) config.external_url = b.external_url;
-  if (b.captions_text) config.captions_text = b.captions_text;
-  if (b.allow_download != null) config.allow_download = b.allow_download;
+  if (b.mediaConfig) config.media = b.mediaConfig;
+  if (b.numericConfig) config.numeric = b.numericConfig;
+  const mediaUrl = b.mediaConfig?.external_url ?? b.external_url;
+  if (mediaUrl) config.external_url = mediaUrl;
+  const transcript = b.mediaConfig?.transcript ?? b.captions_text;
+  if (transcript) config.captions_text = transcript;
+  if (b.mediaConfig?.allow_download != null) {
+    config.allow_download = b.mediaConfig.allow_download;
+  } else if (b.allow_download != null) {
+    config.allow_download = b.allow_download;
+  }
   if (b.linked_comment_bank_ids) {
     config.linked_comment_bank_ids = b.linked_comment_bank_ids;
   }
@@ -348,13 +455,30 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     payload.allow_attachments = b.allow_attachments ?? false;
     payload.min_value = b.min_value ?? null;
     payload.max_value = b.max_value ?? null;
-    payload.correct_answer = isMcq
-      ? isMulti
+    if (isMcq) {
+      payload.correct_answer = isMulti
         ? { indexes: correctIndexes, labels: correctLabels }
-        : { value: correctLabels[0] ?? b.correct_answer ?? null, indexes: correctIndexes }
-      : b.correct_answer
-        ? { value: b.correct_answer }
-        : null;
+        : {
+            value: correctLabels[0] ?? b.correct_answer ?? null,
+            indexes: correctIndexes,
+          };
+    } else if (b.block_type === "numeric") {
+      const numeric = normalizeNumericConfig(b.numericConfig);
+      payload.correct_answer = {
+        value: b.correct_answer,
+        min: numeric.correct_min,
+        max: numeric.correct_max,
+        allow_decimals: numeric.allow_decimals,
+        decimal_places: numeric.decimal_places,
+        unit: numeric.unit,
+      };
+      payload.min_value = b.min_value ?? null;
+      payload.max_value = b.max_value ?? null;
+    } else if (b.correct_answer) {
+      payload.correct_answer = { value: b.correct_answer };
+    } else {
+      payload.correct_answer = null;
+    }
     payload.review_only = b.review_only ?? b.block_type === "teacher_review";
     payload.marks_apply = b.marks_apply ?? true;
     payload.marking_mode = b.marking_mode ?? "teacher_reviewed";
@@ -425,6 +549,9 @@ type DbBlock = {
     correct_option_indexes?: unknown;
     table_marks_mode?: string | null;
     table_total_marks?: number | null;
+    unit?: string | null;
+    decimal_places?: number | null;
+    allow_decimals?: boolean | null;
   }> | null;
   assignment_table_cells: Array<{
     row_index: number;
@@ -470,6 +597,42 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     );
   }
 
+  if (cfg.media && typeof cfg.media === "object") {
+    block.mediaConfig = normalizeMediaConfig(cfg.media as MediaConfig, {
+      external_url: block.external_url,
+      transcript: block.captions_text,
+      allow_download: block.allow_download,
+      title: block.content,
+      description: block.prompt ?? null,
+    });
+  } else if (
+    bt === "image" ||
+    bt === "embedded_video" ||
+    bt === "downloadable_resource"
+  ) {
+    block.mediaConfig = normalizeMediaConfig(null, {
+      external_url: block.external_url,
+      transcript: block.captions_text,
+      allow_download: block.allow_download,
+      title: block.content,
+      description: block.prompt ?? null,
+      storage_path:
+        typeof cfg.storage_path === "string" ? cfg.storage_path : null,
+      file_name: typeof cfg.file_name === "string" ? cfg.file_name : null,
+      mime_type: typeof cfg.mime_type === "string" ? cfg.mime_type : null,
+    });
+  }
+
+  if (cfg.numeric && typeof cfg.numeric === "object") {
+    block.numericConfig = normalizeNumericConfig(cfg.numeric as NumericConfig);
+  } else if (q && (q.unit != null || q.decimal_places != null || q.allow_decimals != null)) {
+    block.numericConfig = normalizeNumericConfig({
+      unit: q.unit,
+      decimal_places: q.decimal_places,
+      allow_decimals: q.allow_decimals ?? true,
+    });
+  }
+
   if (q) {
     block.prompt = q.prompt;
     block.max_marks = q.max_marks;
@@ -504,10 +667,33 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     if (q.correct_answer && typeof q.correct_answer === "object" && q.correct_answer !== null) {
       const ca = q.correct_answer as Record<string, unknown>;
       block.correct_answer = ca.value != null ? String(ca.value) : null;
+      if (bt === "numeric") {
+        block.numericConfig = normalizeNumericConfig({
+          ...block.numericConfig,
+          allow_decimals:
+            typeof ca.allow_decimals === "boolean"
+              ? ca.allow_decimals
+              : block.numericConfig?.allow_decimals,
+          decimal_places:
+            ca.decimal_places != null
+              ? Number(ca.decimal_places)
+              : block.numericConfig?.decimal_places,
+          unit:
+            typeof ca.unit === "string" ? ca.unit : block.numericConfig?.unit,
+          correct_min:
+            ca.min != null ? Number(ca.min) : block.numericConfig?.correct_min,
+          correct_max:
+            ca.max != null ? Number(ca.max) : block.numericConfig?.correct_max,
+        });
+      }
     } else if (typeof q.correct_answer === "string") {
       block.correct_answer = q.correct_answer;
     } else {
       block.correct_answer = null;
+    }
+
+    if (bt === "numeric" && !block.numericConfig) {
+      block.numericConfig = normalizeNumericConfig(null);
     }
 
     const rawChoices = q.choices;

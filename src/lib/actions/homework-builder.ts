@@ -13,7 +13,12 @@ import {
 } from "@/lib/homework/structure";
 import { structuredResponsesSchema } from "@/lib/validations/homework";
 import type { ActionResult } from "@/lib/actions/auth";
-import { assertSafeUpload, buildStoragePath } from "@/lib/utils/files";
+import {
+  assertSafeSvg,
+  assertSafeUpload,
+  buildStoragePath,
+  type UploadKind,
+} from "@/lib/utils/files";
 
 async function assertTeacher() {
   return requireProfile(["teacher", "admin"]);
@@ -45,6 +50,131 @@ export async function saveHomeworkStructureAction(
   }
 
   return { success: "Structure saved", savedAt: new Date().toISOString() };
+}
+
+// ── Block media uploads (image / video / downloadable) ───────────────────────
+
+export type BlockMediaUploadResult = ActionResult & {
+  media?: {
+    storage_path: string;
+    file_name: string;
+    mime_type: string;
+    file_size: number;
+    resource_id: string | null;
+    external_url?: string | null;
+  };
+};
+
+export async function uploadBlockMediaAction(
+  assignmentId: string,
+  kind: "image" | "video" | "download",
+  formData: FormData,
+): Promise<BlockMediaUploadResult> {
+  const profile = await assertTeacher();
+  const supabase = await createClient();
+
+  const { data: assignment } = await supabase
+    .from("assignments")
+    .select("id, teacher_id, class_id, template_id")
+    .eq("id", assignmentId)
+    .maybeSingle();
+  if (!assignment) return { error: "Assignment not found" };
+
+  const canEdit =
+    profile.role === "admin" ||
+    assignment.teacher_id === profile.id ||
+    Boolean(
+      (
+        await supabase
+          .from("class_teachers")
+          .select("id")
+          .eq("class_id", assignment.class_id)
+          .eq("teacher_id", profile.id)
+          .eq("can_create_assignments", true)
+          .maybeSingle()
+      ).data,
+    );
+  if (!canEdit) return { error: "Assignment not found" };
+
+  const file = formData.get("file");
+  if (!(file instanceof File)) return { error: "Choose a file to upload" };
+
+  const uploadKind: UploadKind =
+    kind === "image"
+      ? "block-image"
+      : kind === "video"
+        ? "block-video"
+        : "block-download";
+
+  try {
+    const { mime, safeName } = assertSafeUpload(file, uploadKind);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    if (mime === "image/svg+xml" || safeName.toLowerCase().endsWith(".svg")) {
+      assertSafeSvg(buffer);
+    }
+
+    const path = buildStoragePath(
+      profile.id,
+      assignmentId,
+      "blocks",
+      kind,
+      `${crypto.randomUUID()}-${safeName}`,
+    );
+
+    const { error: uploadError } = await supabase.storage
+      .from("assignment-resources")
+      .upload(path, buffer, { contentType: mime, upsert: false });
+    if (uploadError) return { error: uploadError.message };
+
+    const resourceKind =
+      kind === "image" ? "image" : kind === "video" ? "video" : "other";
+
+    const { data: resource, error } = await supabase
+      .from("assignment_resources")
+      .insert({
+        assignment_id: assignmentId,
+        file_name: safeName,
+        storage_path: path,
+        file_type: mime,
+        file_size: file.size,
+        mime_type: mime,
+        file_size_bytes: file.size,
+        title: safeName,
+        resource_kind: resourceKind,
+        allow_download: true,
+        visibility: "student",
+      })
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      // Storage succeeded; still return media even if resource row insert fails
+      // (older DBs may lack optional columns).
+      return {
+        success: "File uploaded",
+        media: {
+          storage_path: path,
+          file_name: safeName,
+          mime_type: mime,
+          file_size: file.size,
+          resource_id: null,
+        },
+      };
+    }
+
+    return {
+      success: "File uploaded",
+      media: {
+        storage_path: path,
+        file_name: safeName,
+        mime_type: mime,
+        file_size: file.size,
+        resource_id: resource?.id ?? null,
+      },
+    };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Upload failed" };
+  }
 }
 
 // ── Resources and mark schemes ───────────────────────────────────────────────

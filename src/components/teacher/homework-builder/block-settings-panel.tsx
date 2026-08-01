@@ -17,7 +17,9 @@ import {
   type PassageLineNumberMode,
   type PassageNumberingContinuation,
 } from "@/lib/types";
+import { normalizeNumericConfig } from "@/lib/homework/structure";
 import { McqEditor } from "./mcq-editor";
+import { MediaBlockFields } from "./media-block-fields";
 import { TableEditor } from "./table-editor";
 
 type CommentBankOption = { id: string; name: string };
@@ -28,6 +30,7 @@ interface Props {
   allSections: BuilderSection[];
   onChange: (updater: BlockUpdater) => void;
   commentBanks?: CommentBankOption[];
+  assignmentId?: string;
 }
 
 export function BlockSettingsPanel({
@@ -35,6 +38,7 @@ export function BlockSettingsPanel({
   allSections,
   onChange,
   commentBanks = [],
+  assignmentId = "",
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const passageBlocks = useMemo(() => collectPassageBlocks(allSections), [allSections]);
@@ -84,6 +88,14 @@ export function BlockSettingsPanel({
 
         {block.block_type === "passage" ? (
           <PassageFields block={block} onChange={onChange} />
+        ) : block.block_type === "image" ||
+          block.block_type === "embedded_video" ||
+          block.block_type === "downloadable_resource" ? (
+          <MediaBlockFields
+            block={block}
+            assignmentId={assignmentId}
+            onChange={onChange}
+          />
         ) : (
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-medium text-slate-500">
@@ -522,29 +534,147 @@ function NumericFields({
   block: BuilderBlock;
   onChange: (updater: BlockUpdater) => void;
 }) {
+  const numeric = normalizeNumericConfig(block.numericConfig);
   const set = <K extends keyof BuilderBlock>(key: K, value: BuilderBlock[K]) =>
     onChange((prev) => ({ ...prev, [key]: value }));
+  const patchNumeric = (patch: Partial<typeof numeric>) =>
+    onChange((prev) => ({
+      ...prev,
+      numericConfig: normalizeNumericConfig({
+        ...normalizeNumericConfig(prev.numericConfig),
+        ...patch,
+      }),
+    }));
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      <label className="block text-sm">
-        <span className="mb-1 block text-xs font-medium text-slate-500">Minimum value</span>
-        <Input
-          type="number"
-          value={block.min_value ?? ""}
-          onChange={(e) => set("min_value", e.target.value ? Number(e.target.value) : null)}
-          placeholder="No minimum"
-        />
-      </label>
-      <label className="block text-sm">
-        <span className="mb-1 block text-xs font-medium text-slate-500">Maximum value</span>
-        <Input
-          type="number"
-          value={block.max_value ?? ""}
-          onChange={(e) => set("max_value", e.target.value ? Number(e.target.value) : null)}
-          placeholder="No maximum"
-        />
-      </label>
+    <div className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Numeric response
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Minimum value
+          </span>
+          <Input
+            type="number"
+            value={block.min_value ?? ""}
+            onChange={(e) =>
+              set("min_value", e.target.value !== "" ? Number(e.target.value) : null)
+            }
+            placeholder="No minimum"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Maximum value
+          </span>
+          <Input
+            type="number"
+            value={block.max_value ?? ""}
+            onChange={(e) =>
+              set("max_value", e.target.value !== "" ? Number(e.target.value) : null)
+            }
+            placeholder="No maximum"
+          />
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            className="rounded border-slate-300"
+            checked={numeric.allow_decimals}
+            onChange={(e) => patchNumeric({ allow_decimals: e.target.checked })}
+          />
+          Allow decimal values
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Decimal places
+          </span>
+          <Input
+            type="number"
+            min={0}
+            max={8}
+            disabled={!numeric.allow_decimals}
+            value={numeric.decimal_places ?? ""}
+            onChange={(e) =>
+              patchNumeric({
+                decimal_places: e.target.value !== "" ? Number(e.target.value) : null,
+              })
+            }
+            placeholder="Any"
+          />
+        </label>
+        <label className="block text-sm sm:col-span-2">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Unit (optional)
+          </span>
+          <Input
+            value={numeric.unit ?? ""}
+            onChange={(e) => patchNumeric({ unit: e.target.value || null })}
+            placeholder="cm, kg, %"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Marking mode
+          </span>
+          <select
+            className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
+            value={block.marking_mode ?? "teacher_reviewed"}
+            onChange={(e) =>
+              set(
+                "marking_mode",
+                e.target.value as "automatic" | "teacher_reviewed",
+              )
+            }
+          >
+            <option value="teacher_reviewed">Teacher reviewed</option>
+            <option value="automatic">Automatic</option>
+          </select>
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Correct answer
+          </span>
+          <Input
+            type="number"
+            value={block.correct_answer ?? ""}
+            onChange={(e) => set("correct_answer", e.target.value || null)}
+            placeholder="Exact value (optional)"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Accepted minimum
+          </span>
+          <Input
+            type="number"
+            value={numeric.correct_min ?? ""}
+            onChange={(e) =>
+              patchNumeric({
+                correct_min: e.target.value !== "" ? Number(e.target.value) : null,
+              })
+            }
+            placeholder="Range min"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Accepted maximum
+          </span>
+          <Input
+            type="number"
+            value={numeric.correct_max ?? ""}
+            onChange={(e) =>
+              patchNumeric({
+                correct_max: e.target.value !== "" ? Number(e.target.value) : null,
+              })
+            }
+            placeholder="Range max"
+          />
+        </label>
+      </div>
     </div>
   );
 }

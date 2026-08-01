@@ -5,7 +5,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   BLOCK_TYPE_LABELS,
   type AssignmentBlockType,
@@ -17,11 +16,10 @@ import {
   createBlock,
   emptySection,
   isResponseType,
-  resolveMcqOptions,
 } from "@/lib/homework/structure";
 import { formatMarks } from "@/lib/homework/marks";
-import { computePassageStartLines } from "@/lib/homework/passage-numbering";
-import { PassageView } from "@/components/shared/passage-view";
+import { collectPublishWarnings } from "@/lib/homework/publish-readiness";
+import { StructuredWorksheetRenderer } from "@/components/shared/structured-worksheet-renderer";
 import { BlockSettingsPanel } from "./block-settings-panel";
 
 type CanvasMode = "edit" | "student" | "marking";
@@ -31,6 +29,7 @@ interface Props {
   sections: BuilderSection[];
   onChange: (updater: (prev: BuilderSection[]) => BuilderSection[]) => void;
   commentBanks?: CommentBankOption[];
+  assignmentId?: string;
 }
 
 const LIBRARY_GROUPS: Array<{ label: string; types: AssignmentBlockType[] }> = [
@@ -70,7 +69,12 @@ const LIBRARY_GROUPS: Array<{ label: string; types: AssignmentBlockType[] }> = [
   },
 ];
 
-export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) {
+export function ContentCanvas({
+  sections,
+  onChange,
+  commentBanks = [],
+  assignmentId = "",
+}: Props) {
   const [mode, setMode] = useState<CanvasMode>("edit");
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(
     sections[0]?._id ?? null,
@@ -162,6 +166,18 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
     if (activeBlockId === blockId) setSelectedBlockId(null);
   }
 
+  function deleteSection(sectionId: string) {
+    if (!window.confirm("Delete this section and everything inside it?")) return;
+    commit((prev) => {
+      const next = removeSection(prev, sectionId);
+      if (activeBlockId && !findBlock(next, activeBlockId)) {
+        setSelectedBlockId(null);
+      }
+      return next;
+    });
+    if (activeSectionId === sectionId) setSelectedSectionId(null);
+  }
+
   function moveBlock(sectionId: string, index: number, direction: -1 | 1) {
     commit((prev) =>
       updateSection(prev, sectionId, (section) => {
@@ -231,6 +247,25 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
             </Card>
           ) : null}
 
+          {(() => {
+            const warnings = collectPublishWarnings(sections);
+            return warnings.length > 0 ? (
+              <Card className="border-amber-200 bg-amber-50/60">
+                <CardTitle className="mb-2 text-amber-950">
+                  Before publishing
+                </CardTitle>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-amber-950">
+                  {warnings.slice(0, 8).map((w) => (
+                    <li key={`${w.blockId}-${w.message}`}>{w.message}</li>
+                  ))}
+                  {warnings.length > 8 ? (
+                    <li>…and {warnings.length - 8} more incomplete blocks</li>
+                  ) : null}
+                </ul>
+              </Card>
+            ) : null;
+          })()}
+
           {sections.map((section) => (
             <SectionCanvas
               key={section._id}
@@ -260,6 +295,7 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
                 );
                 setSelectedSectionId(sub._id);
               }}
+              onDeleteSection={deleteSection}
               onInsertBlock={insertBlock}
               onDeleteBlock={deleteBlock}
               onMoveBlock={moveBlock}
@@ -272,6 +308,7 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
           block={selectedBlock}
           allSections={sections}
           commentBanks={commentBanks}
+          assignmentId={assignmentId}
           onChange={(updater) => {
             if (!selectedBlock) return;
             updateBlock(selectedBlock._id, updater);
@@ -354,6 +391,7 @@ function SectionCanvas({
   onToggleCollapse,
   onRenameSection,
   onAddSubsection,
+  onDeleteSection,
   onInsertBlock,
   onDeleteBlock,
   onMoveBlock,
@@ -369,6 +407,7 @@ function SectionCanvas({
   onToggleCollapse: (id: string) => void;
   onRenameSection: (id: string, title: string) => void;
   onAddSubsection: (id: string) => void;
+  onDeleteSection: (id: string) => void;
   onInsertBlock: (sectionId: string, index: number, type: AssignmentBlockType) => void;
   onDeleteBlock: (sectionId: string, blockId: string) => void;
   onMoveBlock: (sectionId: string, index: number, direction: -1 | 1) => void;
@@ -414,6 +453,23 @@ function SectionCanvas({
         >
           + Add subsection
         </Button>
+        <details
+          className="relative"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <summary className="cursor-pointer list-none rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50">
+            Actions
+          </summary>
+          <div className="absolute right-0 z-10 mt-1 min-w-36 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+            <button
+              type="button"
+              className="block w-full rounded-lg px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
+              onClick={() => onDeleteSection(section._id)}
+            >
+              Delete
+            </button>
+          </div>
+        </details>
       </div>
 
       {!isCollapsed ? (
@@ -455,6 +511,7 @@ function SectionCanvas({
               onToggleCollapse={onToggleCollapse}
               onRenameSection={onRenameSection}
               onAddSubsection={onAddSubsection}
+              onDeleteSection={onDeleteSection}
               onInsertBlock={onInsertBlock}
               onDeleteBlock={onDeleteBlock}
               onMoveBlock={onMoveBlock}
@@ -605,230 +662,36 @@ function BlockRow({
 }
 
 export function StudentPreview({ sections }: { sections: BuilderSection[] }) {
-  const passageStarts = computePassageStartLines(sections, { studentFacing: true });
   return (
-    <Card className="space-y-6">
+    <Card className="space-y-4">
       <div>
         <CardTitle>Student preview</CardTitle>
-        <p className="mt-1 text-sm text-slate-500">Teacher-only blocks are hidden.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Same renderer students use. Empty draft placeholders are hidden.
+        </p>
       </div>
-      {sections.map((section) => (
-        <PreviewSection
-          key={section._id}
-          section={section}
-          mode="student"
-          passageStarts={passageStarts}
-        />
-      ))}
+      <StructuredWorksheetRenderer sections={sections} mode="teacher_preview" />
     </Card>
   );
 }
 
 function TeacherMarkingPreview({ sections }: { sections: BuilderSection[] }) {
-  const passageStarts = computePassageStartLines(sections, { studentFacing: false });
   return (
-    <Card className="space-y-6">
+    <Card className="space-y-4">
       <div>
         <CardTitle>Teacher marking preview</CardTitle>
         <p className="mt-1 text-sm text-slate-500">
-          Student content plus teacher guidance and mark-scheme notes.
+          Worksheet with teacher guidance panels. Answers appear empty until a
+          submission is opened.
         </p>
       </div>
-      {sections.map((section) => (
-        <PreviewSection
-          key={section._id}
-          section={section}
-          mode="marking"
-          passageStarts={passageStarts}
-        />
-      ))}
+      <StructuredWorksheetRenderer
+        sections={sections}
+        mode="teacher_marking"
+        showTeacherGuidance
+      />
     </Card>
   );
-}
-
-function PreviewSection({
-  section,
-  mode,
-  passageStarts,
-}: {
-  section: BuilderSection;
-  mode: "student" | "marking";
-  passageStarts: Map<string, number>;
-}) {
-  const blocks =
-    mode === "student"
-      ? section.blocks.filter((block) => !block.teacher_only && block.block_type !== "mark_scheme")
-      : section.blocks;
-
-  return (
-    <section className="space-y-4">
-      <h3 className="text-lg font-semibold text-slate-900">{section.title}</h3>
-      {blocks.map((block) => (
-        <PreviewBlock
-          key={block._id}
-          block={block}
-          mode={mode}
-          startLineNumber={passageStarts.get(block._id)}
-        />
-      ))}
-      {section.subsections.map((sub) => (
-        <div key={sub._id} className="ml-4 border-l-2 border-slate-100 pl-4">
-          <PreviewSection
-            section={sub}
-            mode={mode}
-            passageStarts={passageStarts}
-          />
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function PreviewBlock({
-  block,
-  mode,
-  startLineNumber,
-}: {
-  block: BuilderBlock;
-  mode: "student" | "marking";
-  startLineNumber?: number;
-}) {
-  if (mode === "student" && (block.teacher_only || block.block_type === "mark_scheme")) {
-    return null;
-  }
-
-  const guidance =
-    mode === "marking" && (block.teacher_note || block.mark_scheme_note || block.teacher_only);
-
-  switch (block.block_type) {
-    case "heading":
-      return <h2 className="text-2xl font-bold text-slate-900">{block.content}</h2>;
-    case "subheading":
-      return <h3 className="text-lg font-semibold text-slate-800">{block.content}</h3>;
-    case "instruction":
-    case "rich_text":
-    case "teacher_instruction":
-    case "moderation_note":
-    case "staff_resource":
-    case "mark_scheme":
-      return (
-        <div className={block.teacher_only ? "rounded-2xl bg-amber-50 p-3" : ""}>
-          <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">
-            {block.content || block.prompt}
-          </p>
-        </div>
-      );
-    case "passage":
-      return (
-        <PassageView
-          text={block.content}
-          config={block.passageConfig}
-          startLineNumber={startLineNumber}
-        />
-      );
-    case "divider":
-      return <hr className="border-slate-200" />;
-    case "page_break":
-      return <div className="border-t border-dashed border-slate-300 text-xs text-slate-400" />;
-    case "embedded_video":
-      return (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-brand-700">
-          Video: {block.external_url || block.content || "Embedded video"}
-        </div>
-      );
-    case "downloadable_resource":
-    case "image":
-      return (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
-          {BLOCK_TYPE_LABELS[block.block_type]}: {block.content || block.external_url || "Resource"}
-        </div>
-      );
-    default:
-      return (
-        <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="font-medium text-slate-800">{block.content || block.prompt || "Question"}</p>
-            {isResponseType(block.block_type) && block.max_marks != null ? (
-              <Badge tone="brand">{formatMarks(block.max_marks)} marks</Badge>
-            ) : null}
-            {block.required ? <Badge tone="warning">Required</Badge> : null}
-          </div>
-          {block.content && block.prompt ? (
-            <p className="whitespace-pre-wrap text-sm text-slate-500">{block.prompt}</p>
-          ) : null}
-          <PreviewAnswerField block={block} />
-          {guidance ? (
-            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3 text-xs text-amber-900">
-              {block.teacher_note ? <p>Teacher-only notes: {block.teacher_note}</p> : null}
-              {block.mark_scheme_note ? <p>Marking guidance: {block.mark_scheme_note}</p> : null}
-            </div>
-          ) : null}
-        </div>
-      );
-  }
-}
-
-function PreviewAnswerField({ block }: { block: BuilderBlock }) {
-  if (block.review_only) return <p className="text-sm text-slate-400">Teacher review item</p>;
-  if (block.block_type === "short_text") return <Input disabled placeholder="Short answer..." />;
-  if (block.block_type === "numeric") return <Input disabled className="w-40" placeholder="Number" />;
-  if (block.block_type === "multiple_choice" || block.block_type === "multiple_select") {
-    const multi = block.block_type === "multiple_select";
-    const options = resolveMcqOptions(block);
-    return (
-      <div className="space-y-1">
-        {options.map((option) => (
-          <label key={option.id} className="flex items-center gap-2 text-sm">
-            <input type={multi ? "checkbox" : "radio"} disabled />
-            {option.label || "Option"}
-          </label>
-        ))}
-      </div>
-    );
-  }
-  if (block.block_type === "tick_box") {
-    return (
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" disabled />
-        Tick box
-      </label>
-    );
-  }
-  if (block.block_type === "file_upload") return <Input disabled type="file" />;
-  if (block.block_type === "table" || block.block_type === "vocabulary_table") {
-    return (
-      <div className="overflow-x-auto rounded-2xl border border-slate-100">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="bg-slate-50">
-              {(block.tableConfig?.col_labels ?? []).map((label, i) => (
-                <th key={i} className="px-3 py-2 text-left text-xs text-slate-500">
-                  {label || `Column ${i + 1}`}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {Array.from({ length: Math.max(1, (block.tableConfig?.rows ?? 2) - 1) }).map(
-              (_, row) => (
-                <tr key={row} className="border-t border-slate-100">
-                  {Array.from({ length: block.tableConfig?.cols ?? 1 }).map((__, col) => (
-                    <td key={col} className="px-3 py-2 text-slate-300">
-                      -
-                    </td>
-                  ))}
-                </tr>
-              ),
-            )}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-  if (block.block_type === "extended_writing" || block.block_type === "numbered_question") {
-    return <Textarea disabled placeholder="Student writes here..." className="min-h-28" />;
-  }
-  return null;
 }
 
 function mapSections(
@@ -868,4 +731,16 @@ function findBlock(sections: BuilderSection[], blockId: string): BuilderBlock | 
     if (nested) return nested;
   }
   return null;
+}
+
+function removeSection(
+  sections: BuilderSection[],
+  sectionId: string,
+): BuilderSection[] {
+  return sections
+    .filter((section) => section._id !== sectionId)
+    .map((section) => ({
+      ...section,
+      subsections: removeSection(section.subsections, sectionId),
+    }));
 }

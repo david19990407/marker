@@ -4,7 +4,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardTitle } from "@/components/ui/card";
 import { DownloadButton } from "@/components/shared/download-button";
-import { PassageView } from "@/components/shared/passage-view";
+import {
+  StructuredWorksheetRenderer,
+  buildValuesFromResponses,
+} from "@/components/shared/structured-worksheet-renderer";
 import { FeedbackForm } from "@/components/teacher/feedback-form";
 import {
   evaluateStructuredCompletion,
@@ -12,10 +15,8 @@ import {
   isStructuredResponseAnswered,
   type ResponseSnapshot,
 } from "@/lib/homework/completion";
-import { computePassageStartLines } from "@/lib/homework/passage-numbering";
 import {
   flattenStudentBlocks,
-  isResponseType,
   resolveMcqOptions,
   responseKey,
 } from "@/lib/homework/structure";
@@ -119,9 +120,9 @@ export function StructuredMarkingWorkspace({
     [sections],
   );
 
-  const passageStarts = useMemo(
-    () => computePassageStartLines(sections, { studentFacing: false }),
-    [sections],
+  const worksheetValues = useMemo(
+    () => buildValuesFromResponses(sections, responses),
+    [sections, responses],
   );
 
   const navItems = useMemo(() => {
@@ -274,18 +275,13 @@ export function StructuredMarkingWorkspace({
           </p>
         </Card>
 
-        <div className="space-y-8 border border-slate-200 bg-white px-4 py-6 sm:px-6">
-          {sections.map((section) => (
-            <MarkingSection
-              key={section._id}
-              section={section}
-              responseMap={responseMap}
-              passageStarts={passageStarts}
-              selectedBlockId={selectedBlock?._id ?? null}
-              onSelectBlock={setSelectedBlockId}
-              commentBanks={commentBanks}
-            />
-          ))}
+        <div className="border border-slate-200 bg-white px-4 py-6 sm:px-6">
+          <StructuredWorksheetRenderer
+            sections={sections}
+            mode="teacher_marking"
+            values={worksheetValues}
+            showTeacherGuidance
+          />
         </div>
 
         {legacyWrittenResponse?.trim() ? (
@@ -461,207 +457,6 @@ function TeacherGuidance({
   );
 }
 
-function MarkingSection({
-  section,
-  responseMap,
-  passageStarts,
-  selectedBlockId,
-  onSelectBlock,
-  commentBanks,
-  depth = 0,
-}: {
-  section: BuilderSection;
-  responseMap: Map<string, MarkingResponse>;
-  passageStarts: Map<string, number>;
-  selectedBlockId: string | null;
-  onSelectBlock: (id: string) => void;
-  commentBanks: CommentBankSummary[];
-  depth?: number;
-}) {
-  return (
-    <section
-      id={`section-${section._id}`}
-      className={depth > 0 ? "space-y-5 border-l border-slate-200 pl-4" : "space-y-5"}
-    >
-      <h3 className="font-[family-name:var(--font-outfit)] text-xl font-semibold tracking-tight text-slate-900">
-        {section.title}
-      </h3>
-      {section.blocks.map((block) => (
-        <MarkingBlock
-          key={block._id}
-          block={block}
-          response={
-            block.question_id ? responseMap.get(block.question_id) : undefined
-          }
-          startLineNumber={passageStarts.get(block._id)}
-          selected={selectedBlockId === block._id}
-          onSelect={() => onSelectBlock(block._id)}
-          commentBanks={commentBanks}
-        />
-      ))}
-      {section.subsections.map((sub) => (
-        <MarkingSection
-          key={sub._id}
-          section={sub}
-          responseMap={responseMap}
-          passageStarts={passageStarts}
-          selectedBlockId={selectedBlockId}
-          onSelectBlock={onSelectBlock}
-          commentBanks={commentBanks}
-          depth={depth + 1}
-        />
-      ))}
-    </section>
-  );
-}
-
-function MarkingBlock({
-  block,
-  response,
-  startLineNumber,
-  selected,
-  onSelect,
-  commentBanks,
-}: {
-  block: BuilderBlock;
-  response?: MarkingResponse;
-  startLineNumber?: number;
-  selected: boolean;
-  onSelect: () => void;
-  commentBanks: CommentBankSummary[];
-}) {
-  if (block.block_type === "heading") {
-    return (
-      <h2 className="font-[family-name:var(--font-outfit)] text-2xl font-semibold text-slate-900">
-        {block.content}
-      </h2>
-    );
-  }
-  if (block.block_type === "subheading") {
-    return (
-      <h3 className="font-[family-name:var(--font-outfit)] text-lg font-semibold text-slate-800">
-        {block.content}
-      </h3>
-    );
-  }
-  if (block.block_type === "instruction" || block.block_type === "rich_text") {
-    return (
-      <p className="whitespace-pre-wrap text-[1.02rem] leading-8 text-slate-700">
-        {block.content}
-      </p>
-    );
-  }
-  if (block.block_type === "divider") return <hr className="border-slate-200" />;
-  if (block.block_type === "page_break") {
-    return <div className="border-t border-dashed border-slate-300" />;
-  }
-  if (block.block_type === "passage") {
-    return (
-      <PassageView
-        text={block.content}
-        config={block.passageConfig}
-        startLineNumber={startLineNumber}
-      />
-    );
-  }
-  if (block.block_type === "image") {
-    return block.content.startsWith("http") ? (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={block.content}
-        alt={block.prompt || "Image"}
-        className="max-h-80 w-full object-contain"
-      />
-    ) : (
-      <p className="text-sm text-slate-600">{block.content || "Image"}</p>
-    );
-  }
-  if (block.block_type === "embedded_video") {
-    const url = block.external_url || block.content;
-    return (
-      <div className="space-y-1 text-sm text-slate-700">
-        <p className="font-medium">Embedded video</p>
-        <p className="break-all text-brand-700">{url || "No URL"}</p>
-      </div>
-    );
-  }
-  if (block.block_type === "downloadable_resource") {
-    return (
-      <p className="text-sm text-slate-700">
-        Resource: {block.content || block.external_url || "—"}
-      </p>
-    );
-  }
-
-  if (
-    block.teacher_only ||
-    block.block_type === "mark_scheme" ||
-    block.block_type === "moderation_note" ||
-    block.block_type === "staff_resource" ||
-    block.block_type === "teacher_instruction"
-  ) {
-    return (
-      <details className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-        <summary className="cursor-pointer font-medium">
-          Teacher-only: {block.content || block.block_type}
-        </summary>
-        <p className="mt-2 whitespace-pre-wrap">
-          {block.prompt || block.teacher_note || block.content}
-        </p>
-      </details>
-    );
-  }
-
-  if (!isResponseType(block.block_type) && block.block_type !== "teacher_review") {
-    return null;
-  }
-
-  const answered = isStructuredResponseAnswered(block, response ?? null);
-
-  return (
-    <div
-      id={`block-${block._id}`}
-      className={`space-y-3 border px-3 py-3 ${
-        selected ? "border-brand-300 bg-brand-50/30" : "border-slate-200 bg-white"
-      }`}
-    >
-      <button
-        type="button"
-        onClick={onSelect}
-        className="flex w-full flex-wrap items-start justify-between gap-2 text-left"
-      >
-        <div>
-          <p className="font-[family-name:var(--font-outfit)] text-[1.08rem] font-semibold text-slate-900">
-            {block.content || block.prompt || "Question"}
-          </p>
-          {block.content && block.prompt ? (
-            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">
-              {block.prompt}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap gap-1">
-          {block.max_marks != null ? (
-            <Badge tone="brand">{block.max_marks} marks</Badge>
-          ) : null}
-          {block.required ? <Badge tone="warning">Required</Badge> : null}
-          <Badge tone={answered ? "success" : "neutral"}>
-            {answered ? "Answered" : "Unanswered"}
-          </Badge>
-        </div>
-      </button>
-
-      <div className="border border-slate-200 bg-slate-50 px-3 py-2">
-        <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
-          Student response
-        </p>
-        <StudentAnswerSummary block={block} response={response} />
-      </div>
-
-      <TeacherGuidance block={block} commentBanks={commentBanks} />
-    </div>
-  );
-}
 
 function StudentAnswerSummary({
   block,

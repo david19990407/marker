@@ -219,6 +219,7 @@ export function HomeworkStudio({
           sections={sections}
           onChange={updateSections}
           commentBanks={commentBanks}
+          assignmentId={assignment.id}
         />
       ) : null}
 
