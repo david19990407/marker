@@ -12,7 +12,8 @@
 --   7. supabase/fix_school_settings_subjects_year_groups.sql
 --   8. supabase/fix_role_based_class_management_and_branding.sql
 --   9. supabase/phase_05_flexible_feedback_and_comment_banks.sql
---  10. Later phase_06 fix_* migrations as needed for live repairs
+--  10. supabase/phase_06_annotations_and_stamps.sql  -- Phase 8 document marking
+--  11. Later phase_06 fix_* migrations as needed for live repairs
 --
 -- Existing LIVE project:
 --   Prefer additive repair files only. Do NOT re-run this full schema.sql.
@@ -22,6 +23,8 @@
 --     supabase/fix_assignment_template_calculated_mark_constraint.sql
 --   Then flexible feedback + comment banks:
 --     supabase/phase_05_flexible_feedback_and_comment_banks.sql
+--   Then document-style annotations + stamps (Phase 8):
+--     supabase/phase_06_annotations_and_stamps.sql
 --
 -- Individual phase_01 / phase_02 / phase_03 files remain available but are
 -- superseded for production repair by repair_phases_01_to_03.sql.

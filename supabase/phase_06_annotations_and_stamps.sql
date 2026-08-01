@@ -279,6 +279,28 @@ create policy marking_stamps_teacher_read on storage.objects
     and (public.is_admin() or public.is_teacher())
   );
 
+-- Students may fetch stamp images only when a released, student-visible
+-- annotation on their own submission references that stamp object.
+drop policy if exists marking_stamps_student_released_read on storage.objects;
+create policy marking_stamps_student_released_read on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'marking-stamps'
+    and public.is_student()
+    and exists (
+      select 1
+      from public.school_marking_symbols sms
+      join public.submission_annotations sa on sa.stamp_id = sms.id
+      join public.submissions s on s.id = sa.submission_id
+      join public.feedback f on f.submission_id = s.id
+      where sms.storage_path = name
+        and sa.is_deleted = false
+        and sa.visibility = 'student_visible'
+        and s.student_id = auth.uid()
+        and f.status = 'released'
+    )
+  );
+
 -- ── RLS ──────────────────────────────────────────────────────────────────────
 
 alter table public.assignment_stamp_selections enable row level security;
