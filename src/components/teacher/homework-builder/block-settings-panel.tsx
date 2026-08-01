@@ -8,14 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PassageView } from "@/components/shared/passage-view";
 import {
-  computePassageStartLines,
-  displayNumbersToIndexes,
-  mergePassageWithPrevious,
-  movePassageLine,
+  applyAutomaticLabels,
+  createPassageLine,
+  deletePassageLine,
+  linesToContent,
+  mergePassageLineWithPrevious,
+  movePassageLineRow,
   normalizePassageConfig,
-  parseManualLineNumberList,
-  passageSourceLines,
-  splitPassageAt,
+  normalizePassageLines,
+  splitPassageLine,
 } from "@/lib/homework/passage-numbering";
 import {
   BLOCK_TYPE_LABELS,
@@ -23,8 +24,7 @@ import {
   type BuilderBlock,
   type BuilderSection,
   type PassageConfig,
-  type PassageLineNumberMode,
-  type PassageNumberingContinuation,
+  type PassageLine,
 } from "@/lib/types";
 import { normalizeNumericConfig } from "@/lib/homework/structure";
 import { McqEditor } from "./mcq-editor";
@@ -98,11 +98,7 @@ export function BlockSettingsPanel({
         ) : null}
 
         {block.block_type === "passage" ? (
-          <PassageFields
-            block={block}
-            allSections={allSections}
-            onChange={onChange}
-          />
+          <PassageFields block={block} onChange={onChange} />
         ) : block.block_type === "image" ||
           block.block_type === "embedded_video" ||
           block.block_type === "downloadable_resource" ? (
@@ -264,103 +260,52 @@ export function BlockSettingsPanel({
 
 function PassageFields({
   block,
-  allSections,
   onChange,
 }: {
   block: BuilderBlock;
-  allSections: BuilderSection[];
+  allSections?: BuilderSection[];
   onChange: (updater: BlockUpdater) => void;
 }) {
-  const config = normalizePassageConfig(block.passageConfig);
-  const mode = config.line_number_mode ?? "every_5";
-  const lines = passageSourceLines(block.content);
-  const start = Math.max(1, config.starting_line_number || 1);
-  const [manualDraft, setManualDraft] = useState(
-    (config.manual_line_numbers ?? []).join(", "),
-  );
-  const [manualError, setManualError] = useState<string | null>(null);
-  const startLineNumber = useMemo(
-    () => computePassageStartLines(allSections).get(block._id) ?? start,
-    [allSections, block._id, start],
-  );
+  const config = normalizePassageConfig(block.passageConfig, block.content);
+  const lines = config.lines ?? [];
 
-  function patchConfig(patch: Partial<PassageConfig>) {
-    onChange((prev) => {
-      const next = normalizePassageConfig({
-        ...normalizePassageConfig(prev.passageConfig),
-        ...patch,
-      });
-      return { ...prev, passageConfig: next };
-    });
+  function commitLines(nextLines: PassageLine[], patch?: Partial<PassageConfig>) {
+    const ordered = nextLines.map((line, index) => ({ ...line, order: index }));
+    const content = linesToContent(ordered);
+    onChange((prev) => ({
+      ...prev,
+      content,
+      passageConfig: normalizePassageConfig(
+        {
+          ...normalizePassageConfig(prev.passageConfig, prev.content),
+          ...patch,
+          lines: ordered,
+          line_number_mode: "manual",
+          show_line_numbers: ordered.some(
+            (l) => l.label != null && String(l.label).trim() !== "",
+          ),
+        },
+        content,
+      ),
+    }));
   }
 
-  function setContent(next: string) {
-    onChange((prev) => ({ ...prev, content: next }));
+  function patchMeta(patch: Partial<PassageConfig>) {
+    onChange((prev) => ({
+      ...prev,
+      passageConfig: normalizePassageConfig(
+        {
+          ...normalizePassageConfig(prev.passageConfig, prev.content),
+          ...patch,
+          lines,
+        },
+        prev.content,
+      ),
+    }));
   }
 
-  function setMode(nextMode: PassageLineNumberMode) {
-    const interval =
-      nextMode === "every_line"
-        ? 1
-        : nextMode === "every_5"
-          ? 5
-          : nextMode === "every_10"
-            ? 10
-            : Math.max(1, config.line_number_interval || 5);
-    patchConfig({
-      line_number_mode: nextMode,
-      line_number_interval: interval,
-      show_line_numbers: nextMode !== "none",
-    });
-  }
-
-  function applyManualList(raw: string) {
-    const parsed = parseManualLineNumberList(raw);
-    if (parsed.error) {
-      setManualError(parsed.error);
-      return;
-    }
-    const mapped = displayNumbersToIndexes(
-      parsed.values ?? [],
-      startLineNumber,
-      lines.length,
-    );
-    if (mapped.error) {
-      setManualError(mapped.error);
-      return;
-    }
-    setManualError(null);
-    setManualDraft((parsed.values ?? []).join(", "));
-    patchConfig({
-      manual_line_numbers: parsed.values ?? [],
-      numbered_line_indexes: mapped.indexes,
-    });
-  }
-
-  function toggleIndex(index: number, checked: boolean) {
-    const current = new Set(config.numbered_line_indexes ?? []);
-    if (checked) current.add(index);
-    else current.delete(index);
-    const indexes = [...current].sort((a, b) => a - b);
-    const displays = indexes.map((i) => startLineNumber + i);
-    setManualDraft(displays.join(", "));
-    setManualError(null);
-    patchConfig({
-      numbered_line_indexes: indexes,
-      manual_line_numbers: displays,
-    });
-  }
-
-  function setCustomLabel(index: number, raw: string) {
-    const labels = { ...(config.manual_line_labels ?? {}) };
-    if (!raw.trim()) {
-      delete labels[String(index)];
-    } else {
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n <= 0) return;
-      labels[String(index)] = Math.floor(n);
-    }
-    patchConfig({ manual_line_labels: labels });
+  function updateLine(id: string, patch: Partial<PassageLine>) {
+    commitLines(lines.map((line) => (line.id === id ? { ...line, ...patch } : line)));
   }
 
   return (
@@ -372,7 +317,7 @@ function PassageFields({
           </span>
           <Input
             value={config.title ?? ""}
-            onChange={(e) => patchConfig({ title: e.target.value })}
+            onChange={(e) => patchMeta({ title: e.target.value })}
             placeholder="Optional title"
           />
         </label>
@@ -380,229 +325,185 @@ function PassageFields({
           <span className="mb-1 block text-xs font-medium text-slate-500">Source</span>
           <Input
             value={config.source_reference ?? ""}
-            onChange={(e) => patchConfig({ source_reference: e.target.value })}
+            onChange={(e) => patchMeta({ source_reference: e.target.value })}
             placeholder="Author, book, article..."
           />
         </label>
       </div>
 
-      <label className="block text-sm">
-        <span className="mb-1 block text-xs font-medium text-slate-500">
-          Passage text
-        </span>
-        <Textarea
-          value={block.content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder="Paste the extract. Press Enter for each logical line that can receive a number. Soft wrapping does not create numbers."
-          className="min-h-36"
-        />
-      </label>
-
       <div className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-          Line numbering
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Passage rows & line labels
+          </p>
+          <div className="flex flex-wrap gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                commitLines(applyAutomaticLabels(lines, "every_line", 1))
+              }
+            >
+              Label every row
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                commitLines(applyAutomaticLabels(lines, "every_5", 1))
+              }
+            >
+              Every 5th
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                commitLines(applyAutomaticLabels(lines, "every_10", 1))
+              }
+            >
+              Every 10th
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                commitLines(applyAutomaticLabels(lines, "clear"))
+              }
+            >
+              Clear labels
+            </Button>
+          </div>
+        </div>
+        <p className="text-xs text-slate-500">
+          Type any label beside a row (1, 5, A, 1a…). Leave blank for no number.
+          Labels never come from browser wrapping.
         </p>
+
         <label className="block text-sm">
-          <span className="mb-1 block text-xs font-medium text-slate-500">Display</span>
-          <select
-            className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as PassageLineNumberMode)}
-          >
-            <option value="none">No line numbers</option>
-            <option value="every_line">Number every logical line</option>
-            <option value="every_5">Number every fifth logical line</option>
-            <option value="every_10">Number every tenth logical line</option>
-            <option value="custom_interval">Custom interval</option>
-            <option value="manual">Manual selection</option>
-          </select>
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Paste or edit all rows
+          </span>
+          <Textarea
+            value={linesToContent(lines)}
+            onChange={(e) => {
+              const next = normalizePassageLines(null, e.target.value).map(
+                (line, index) => ({
+                  ...line,
+                  label: lines[index]?.label ?? null,
+                  id: lines[index]?.id ?? line.id,
+                }),
+              );
+              commitLines(next);
+            }}
+            placeholder="Paste the extract. Each new line is one labelled row."
+            className="min-h-28 bg-white"
+          />
         </label>
 
-        {mode === "custom_interval" ? (
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs font-medium text-slate-500">
-              Interval
-            </span>
-            <Input
-              type="number"
-              min={1}
-              value={config.line_number_interval}
-              onChange={(e) =>
-                patchConfig({
-                  line_number_interval: Math.max(1, Number(e.target.value) || 1),
-                })
-              }
-            />
-          </label>
-        ) : null}
-
-        {mode !== "none" ? (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-sm">
-              <span className="mb-1 block text-xs font-medium text-slate-500">
-                Numbering sequence
-              </span>
-              <select
-                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                value={config.numbering_continuation ?? "custom_start"}
+        <div className="max-h-80 space-y-2 overflow-auto rounded-xl border border-slate-200 bg-white p-2">
+          {lines.length === 0 ? (
+            <p className="px-2 py-3 text-sm text-slate-400">
+              No rows yet. Paste text above or add a row.
+            </p>
+          ) : null}
+          {lines.map((line, index) => (
+            <div
+              key={line.id}
+              className="grid gap-2 rounded-lg border border-slate-100 px-2 py-2 sm:grid-cols-[72px_minmax(0,1fr)_auto]"
+            >
+              <Input
+                value={line.label ?? ""}
                 onChange={(e) =>
-                  patchConfig({
-                    numbering_continuation: e.target
-                      .value as PassageNumberingContinuation,
+                  updateLine(line.id, {
+                    label: e.target.value.trim() ? e.target.value : null,
                   })
                 }
-              >
-                <option value="restart">Restart numbering</option>
-                <option value="continue">Continue from previous passage</option>
-                <option value="custom_start">Begin from a chosen value</option>
-              </select>
-            </label>
-            {(config.numbering_continuation ?? "custom_start") === "custom_start" ? (
-              <label className="block text-sm">
-                <span className="mb-1 block text-xs font-medium text-slate-500">
-                  Starting number
-                </span>
-                <Input
-                  type="number"
-                  min={1}
-                  value={config.starting_line_number}
-                  onChange={(e) =>
-                    patchConfig({
-                      starting_line_number: Math.max(
-                        1,
-                        Number(e.target.value) || 1,
-                      ),
-                    })
-                  }
-                />
-              </label>
-            ) : (
-              <p className="self-end text-xs text-slate-500">
-                {(config.numbering_continuation ?? "custom_start") === "restart"
-                  ? "This passage will begin at line 1."
-                  : "This passage continues after the previous passage’s last line."}
-              </p>
-            )}
-          </div>
-        ) : null}
-
-        {mode === "manual" ? (
-          <div className="space-y-3">
-            <label className="block text-sm">
-              <span className="mb-1 block text-xs font-medium text-slate-500">
-                Visible numbers (comma-separated)
-              </span>
-              <Input
-                value={manualDraft}
-                onChange={(e) => {
-                  setManualDraft(e.target.value);
-                  setManualError(null);
-                }}
-                onBlur={() => applyManualList(manualDraft)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    applyManualList(manualDraft);
-                  }
-                }}
-                placeholder="e.g. 1, 6, 11, 16, 21"
+                placeholder="Label"
+                aria-label={`Line label for row ${index + 1}`}
+                className="h-9 text-sm"
               />
-              {manualError ? (
-                <span className="mt-1 block text-xs text-rose-600">{manualError}</span>
-              ) : (
-                <span className="mt-1 block text-xs text-slate-400">
-                  Type the full list, then press Enter or leave the field. Soft wraps
-                  never create extra numbers.
-                </span>
-              )}
-            </label>
-
-            <div className="max-h-64 space-y-2 overflow-auto rounded-xl border border-slate-200 bg-white p-2">
-              {lines.map((line, index) => {
-                const checked = (config.numbered_line_indexes ?? []).includes(index);
-                const defaultLabel = startLineNumber + index;
-                const custom = config.manual_line_labels?.[String(index)];
-                return (
-                  <div
-                    key={index}
-                    className="grid gap-2 rounded-lg border border-slate-100 px-2 py-2 sm:grid-cols-[auto_1fr_72px_auto]"
-                  >
-                    <label className="flex items-center gap-2 text-xs text-slate-600">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => toggleIndex(index, e.target.checked)}
-                      />
-                      Show
-                    </label>
-                    <p className="truncate text-sm text-slate-800">
-                      <span className="mr-2 text-xs text-slate-400">#{index + 1}</span>
-                      {line || "(blank)"}
-                    </p>
-                    <Input
-                      type="number"
-                      min={1}
-                      disabled={!checked}
-                      value={custom ?? defaultLabel}
-                      onChange={(e) => setCustomLabel(index, e.target.value)}
-                      aria-label={`Label for line ${index + 1}`}
-                      className="h-8 text-xs"
-                    />
-                    <div className="flex flex-wrap gap-1">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={index === 0}
-                        onClick={() => setContent(movePassageLine(block.content, index, -1))}
-                      >
-                        Up
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={index === lines.length - 1}
-                        onClick={() => setContent(movePassageLine(block.content, index, 1))}
-                      >
-                        Down
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setContent(splitPassageAt(block.content, index))}
-                      >
-                        Split
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={index === 0}
-                        onClick={() =>
-                          setContent(mergePassageWithPrevious(block.content, index))
-                        }
-                      >
-                        Merge
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
+              <Textarea
+                value={line.text}
+                onChange={(e) => updateLine(line.id, { text: e.target.value })}
+                className="min-h-12 text-sm"
+                aria-label={`Passage text row ${index + 1}`}
+              />
+              <div className="flex flex-wrap gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={index === 0}
+                  onClick={() =>
+                    commitLines(movePassageLineRow(lines, line.id, -1))
+                  }
+                >
+                  Up
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={index === lines.length - 1}
+                  onClick={() =>
+                    commitLines(movePassageLineRow(lines, line.id, 1))
+                  }
+                >
+                  Down
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => commitLines(splitPassageLine(lines, line.id))}
+                >
+                  Split
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={index === 0}
+                  onClick={() =>
+                    commitLines(mergePassageLineWithPrevious(lines, line.id))
+                  }
+                >
+                  Merge
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="danger"
+                  onClick={() => commitLines(deletePassageLine(lines, line.id))}
+                >
+                  Delete
+                </Button>
+              </div>
             </div>
-          </div>
-        ) : null}
+          ))}
+        </div>
+
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() =>
+            commitLines([...lines, createPassageLine("", lines.length, null)])
+          }
+        >
+          + Add row
+        </Button>
 
         <div className="space-y-2">
           <p className="text-xs font-medium text-slate-500">
             Student / marking preview
           </p>
-          <PassageView
-            text={block.content}
-            config={config}
-            startLineNumber={startLineNumber}
-          />
+          <PassageView text={linesToContent(lines)} config={config} />
         </div>
       </div>
     </div>

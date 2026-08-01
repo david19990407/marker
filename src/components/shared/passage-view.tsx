@@ -11,24 +11,15 @@ export function PassageView({
 }: {
   text: string;
   config?: PassageConfig | null;
-  /** Override resolved start (used when continuing from a previous passage). */
+  /** Kept for API compatibility; labels come from row.label. */
   startLineNumber?: number;
   className?: string;
 }) {
-  const { rows, showGutter, endingLineNumber } = buildPassageRows(
-    text,
-    config,
-    startLineNumber,
-  );
+  const { rows, showGutter } = buildPassageRows(text, config, startLineNumber);
   const gutterDigits = Math.max(
     2,
-    String(
-      Math.max(
-        endingLineNumber,
-        startLineNumber ?? 1,
-        ...rows.map((r) => r.displayNumber),
-      ),
-    ).length,
+    ...rows.map((r) => (r.label ? String(r.label).length : 0)),
+    2,
   );
 
   return (
@@ -61,18 +52,16 @@ export function PassageView({
         ) : (
           rows.map((row) => (
             <div
-              key={row.logicalIndex}
+              key={row.id}
               className="flex items-start gap-3 sm:gap-4"
             >
               {showGutter && (
                 <span
                   className="shrink-0 select-text pt-[0.15em] text-right text-[0.85em] tabular-nums leading-[inherit] text-slate-400"
                   style={{ width: `${gutterDigits + 0.9}ch` }}
-                  title={
-                    row.showNumber ? `Line ${row.displayNumber}` : undefined
-                  }
+                  title={row.showNumber ? `Line ${row.label}` : undefined}
                 >
-                  {row.showNumber ? row.displayNumber : ""}
+                  {row.showNumber ? row.label : ""}
                 </span>
               )}
               <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
@@ -84,16 +73,4 @@ export function PassageView({
       </div>
     </figure>
   );
-}
-
-export function PassageEndingLine({
-  text,
-  config,
-  startLineNumber,
-}: {
-  text: string;
-  config?: PassageConfig | null;
-  startLineNumber?: number;
-}): number {
-  return buildPassageRows(text, config, startLineNumber).endingLineNumber;
 }

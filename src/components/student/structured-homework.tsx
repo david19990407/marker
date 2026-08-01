@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -13,6 +11,7 @@ import {
 import {
   saveStudentStructuredResponsesAction,
   submitStructuredHomeworkAction,
+  unsubmitStructuredHomeworkAction,
 } from "@/lib/actions/homework-builder";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
 import {
@@ -42,9 +41,9 @@ interface Props {
   sections: BuilderSection[];
   existingResponses: Record<string, ResponseWithCells>;
   editable: boolean;
-  reviewMode?: boolean;
   submissionStatus?: string | null;
   submittedAt?: string | null;
+  allowUnsubmit?: boolean;
 }
 
 type ResponseValue = WorksheetResponseValue;
@@ -54,11 +53,10 @@ export function StructuredHomework({
   sections,
   existingResponses,
   editable,
-  reviewMode = false,
   submissionStatus = null,
   submittedAt = null,
+  allowUnsubmit = true,
 }: Props) {
-  const router = useRouter();
   const [values, setValues] = useState<Record<string, ResponseValue>>(() =>
     buildValuesFromResponses(sections, existingResponses),
   );
@@ -66,6 +64,7 @@ export function StructuredHomework({
   const [flash, setFlash] = useState<{ type: "success" | "error"; msg: string } | null>(
     null,
   );
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [pending, startTransition] = useTransition();
   const sectionsRef = useRef(sections);
   const valuesRef = useRef(values);
@@ -76,11 +75,9 @@ export function StructuredHomework({
     valuesRef.current = values;
   }, [values]);
 
-  const canEditAnswers = editable && !reviewMode;
-
   const autosave = useVersionedAutosave<Record<string, ResponseValue>>({
     delayMs: 1200,
-    enabled: canEditAnswers,
+    enabled: editable,
     save: async (current) => {
       const responses = collectResponses(current, sectionsRef.current);
       const result = await saveStudentStructuredResponsesAction(
@@ -92,7 +89,7 @@ export function StructuredHomework({
   });
 
   function setValue(questionId: string, value: ResponseValue) {
-    if (!canEditAnswers) return;
+    if (!editable) return;
     setValues((prev) => {
       const next = { ...prev, [questionId]: value };
       autosave.markDirty(next);
@@ -104,30 +101,6 @@ export function StructuredHomework({
       delete next[questionId];
       return next;
     });
-  }
-
-  function handleSave() {
-    startTransition(async () => {
-      const ok = await autosave.flush();
-      setFlash(
-        ok
-          ? { type: "success", msg: "Progress saved" }
-          : { type: "error", msg: autosave.lastError ?? "Save failed" },
-      );
-      setTimeout(() => setFlash(null), 3000);
-    });
-  }
-
-  async function goToReview() {
-    const ok = await autosave.flush();
-    if (!ok && autosave.hasUnsavedChanges()) {
-      setFlash({
-        type: "error",
-        msg: autosave.lastError ?? "Save your answers before reviewing",
-      });
-      return;
-    }
-    router.push(`/student/homework/${assignmentId}/review`);
   }
 
   function valuesToSnapshots(
@@ -150,7 +123,6 @@ export function StructuredHomework({
       sections,
       valuesToSnapshots(values, sections),
     );
-
     for (const missing of completion.missingRequired) {
       nextErrors[responseKey(missing.block)] = "This question is required";
     }
@@ -168,26 +140,23 @@ export function StructuredHomework({
         if (block.max_value != null && value.numeric > block.max_value) {
           nextErrors[qid] = `Maximum value is ${block.max_value}`;
         }
-        const numeric = block.numericConfig;
-        if (numeric && !numeric.allow_decimals && !Number.isInteger(value.numeric)) {
-          nextErrors[qid] = "Whole numbers only";
-        }
-      }
-      if (value?.type === "text" && block.word_limit != null) {
-        const words = value.text.trim() ? value.text.trim().split(/\s+/).length : 0;
-        if (words > block.word_limit) {
-          nextErrors[qid] = `Word limit is ${block.word_limit}`;
-        }
-      }
-      if (value?.type === "text" && block.char_limit != null) {
-        if (value.text.length > block.char_limit) {
-          nextErrors[qid] = `Character limit is ${block.char_limit}`;
-        }
       }
     }
 
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
+  }
+
+  function handleSave() {
+    startTransition(async () => {
+      const ok = await autosave.flush();
+      setFlash(
+        ok
+          ? { type: "success", msg: "Progress saved" }
+          : { type: "error", msg: autosave.lastError ?? "Save failed" },
+      );
+      setTimeout(() => setFlash(null), 3000);
+    });
   }
 
   function handleSubmit() {
@@ -196,13 +165,39 @@ export function StructuredHomework({
         type: "error",
         msg: "Please complete required fields before submitting",
       });
+      setConfirmSubmit(false);
       return;
     }
     startTransition(async () => {
-      // Flush any pending edits first (review is read-only, but keep safe).
-      await autosave.flush();
-      const responses = collectResponses(valuesRef.current, sectionsRef.current);
-      const result = await submitStructuredHomeworkAction(assignmentId, responses);
+      const ok = await autosave.flush();
+      if (!ok && autosave.hasUnsavedChanges()) {
+        setFlash({
+          type: "error",
+          msg: autosave.lastError ?? "Save your answers before submitting",
+        });
+        return;
+      }
+      // Status-only after flush — do not rewrite answer rows on submit.
+      const result = await submitStructuredHomeworkAction(assignmentId);
+      if (result.error) {
+        setFlash({ type: "error", msg: result.error });
+        setConfirmSubmit(false);
+        return;
+      }
+      window.location.href = `/student/homework/${assignmentId}`;
+    });
+  }
+
+  function handleUnsubmit() {
+    if (
+      !window.confirm(
+        "Unsubmit and continue editing? Your answers will be kept.",
+      )
+    ) {
+      return;
+    }
+    startTransition(async () => {
+      const result = await unsubmitStructuredHomeworkAction(assignmentId);
       if (result.error) {
         setFlash({ type: "error", msg: result.error });
         return;
@@ -215,12 +210,15 @@ export function StructuredHomework({
     sections,
     valuesToSnapshots(values, sections),
   );
-  const worksheetMode =
-    canEditAnswers ? "student_editable" : "student_readonly";
+  const worksheetMode = editable ? "student_editable" : "student_readonly";
+  const canUnsubmit =
+    allowUnsubmit &&
+    !editable &&
+    (submissionStatus === "submitted" || submissionStatus === "late");
 
   return (
     <div className="homework-worksheet mx-auto max-w-3xl space-y-8 px-1 sm:px-2">
-      {canEditAnswers && (
+      {editable ? (
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             tone={
@@ -231,13 +229,15 @@ export function StructuredHomework({
           >
             {autosave.label}
           </Badge>
-          <Button variant="outline" size="sm" onClick={() => void goToReview()}>
-            Review before submit
-          </Button>
+          <span className="text-xs text-slate-500">
+            Required {completion.answeredRequiredCount}/{completion.requiredCount}
+            {" · "}
+            Answered {completion.answeredAssessableCount}/{completion.assessableCount}
+          </span>
         </div>
-      )}
+      ) : null}
 
-      {flash && (
+      {flash ? (
         <div
           className={`border px-4 py-3 text-sm ${
             flash.type === "success"
@@ -248,31 +248,17 @@ export function StructuredHomework({
         >
           {flash.msg}
         </div>
-      )}
+      ) : null}
 
-      {reviewMode ? (
-        <div className="space-y-2 border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-          <p className="font-medium text-slate-900">
-            {editable
-              ? "Review your answers (read-only). Submit when every required question is complete."
-              : "Submitted answers (read-only)."}
-          </p>
-          <p>
-            Required answered: {completion.answeredRequiredCount}/
-            {completion.requiredCount}
-            {" · "}
-            All questions: {completion.answeredAssessableCount}/
-            {completion.assessableCount}
-          </p>
-          {completion.missingRequired.length > 0 ? (
-            <p className="text-rose-700">
-              Missing required:{" "}
-              {completion.missingRequired
-                .slice(0, 5)
-                .map((q) => q.label)
-                .join("; ")}
-            </p>
-          ) : null}
+      {!editable && submittedAt ? (
+        <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          Submitted{" "}
+          {new Date(submittedAt).toLocaleString(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+          {" · "}
+          status {submissionStatus ?? "submitted"} · read-only
         </div>
       ) : null}
 
@@ -284,41 +270,61 @@ export function StructuredHomework({
         onValueChange={setValue}
         submissionMeta={
           worksheetMode === "student_readonly"
-            ? { status: submissionStatus, submittedAt: submittedAt }
+            ? { status: submissionStatus, submittedAt }
             : null
         }
       />
 
-      {editable && (
-        <div className="flex flex-wrap gap-3">
-          {canEditAnswers ? (
-            <>
+      {editable ? (
+        <div className="space-y-3">
+          {confirmSubmit ? (
+            <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <p className="font-medium text-slate-900">Submit homework?</p>
+              <p className="mt-1">
+                Required answered: {completion.answeredRequiredCount}/
+                {completion.requiredCount}. Your answers stay saved; this only
+                marks the work as submitted.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button onClick={handleSubmit} disabled={pending}>
+                  {pending ? "Submitting…" : "Confirm submit"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmSubmit(false)}
+                  disabled={pending}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-3">
               <Button onClick={handleSave} disabled={pending} variant="secondary">
                 {pending || autosave.status === "saving" ? "Saving…" : "Save progress"}
               </Button>
-              <Button onClick={() => void goToReview()} disabled={pending}>
-                Review & submit
+              <Button onClick={() => setConfirmSubmit(true)} disabled={pending}>
+                Submit homework
               </Button>
-            </>
-          ) : (
-            <>
-              <Link href={`/student/homework/${assignmentId}`}>
-                <Button variant="outline">Back to edit</Button>
-              </Link>
-              <Button onClick={handleSubmit} disabled={pending}>
-                {pending ? "Submitting…" : "Submit homework"}
-              </Button>
-            </>
+            </div>
           )}
         </div>
-      )}
-
-      {!editable && (
-        <p className="text-sm text-slate-500">
-          This submission is locked and read-only.
-        </p>
+      ) : (
+        <div className="flex flex-wrap gap-3">
+          <p className="w-full text-sm text-slate-500">
+            This submission is locked and read-only.
+          </p>
+          {canUnsubmit ? (
+            <Button
+              variant="outline"
+              onClick={handleUnsubmit}
+              disabled={pending}
+            >
+              {pending ? "Working…" : "Unsubmit and continue editing"}
+            </Button>
+          ) : null}
+        </div>
       )}
     </div>
   );
 }
-

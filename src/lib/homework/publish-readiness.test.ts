@@ -18,5 +18,10 @@ describe("collectPublishWarnings", () => {
     expect(warnings.some((w) => w.message.includes("two answer options"))).toBe(
       true,
     );
+    expect(
+      warnings.some(
+        (w) => w.blocking && w.message.includes("two answer options"),
+      ),
+    ).toBe(true);
   });
 });

@@ -25,6 +25,7 @@ import {
   responseKey,
 } from "@/lib/homework/structure";
 import type {
+  AssignmentCommentDraft,
   BuilderBlock,
   BuilderSection,
   Feedback,
@@ -59,6 +60,24 @@ type CommentBankSummary = {
   name: string;
 };
 
+type MarkingComment = Pick<
+  AssignmentCommentDraft,
+  | "_id"
+  | "short_label"
+  | "full_comment"
+  | "category"
+  | "linked_question_id"
+  | "linked_question_ids"
+  | "linked_section_id"
+  | "is_active"
+  | "available_for_question"
+  | "available_for_overall"
+  | "available_for_annotation"
+  | "mark_range_min"
+  | "mark_range_max"
+  | "assessment_objective"
+>;
+
 type NavItem = {
   id: string;
   kind: "section" | "question";
@@ -77,6 +96,7 @@ export function StructuredMarkingWorkspace({
   resources = [],
   markSchemes = [],
   commentBanks = [],
+  assignmentComments = [],
   legacyWrittenResponse = null,
   legacyFileName = null,
   legacyStoragePath = null,
@@ -89,6 +109,7 @@ export function StructuredMarkingWorkspace({
   resources?: ResourceFile[];
   markSchemes?: MarkSchemeFile[];
   commentBanks?: CommentBankSummary[];
+  assignmentComments?: MarkingComment[];
   legacyWrittenResponse?: string | null;
   legacyFileName?: string | null;
   legacyStoragePath?: string | null;
@@ -141,8 +162,7 @@ export function StructuredMarkingWorkspace({
         if (!isAssessableStudentBlock(block) && block.block_type !== "teacher_review") {
           continue;
         }
-        const qid = responseKey(block);
-        const response = responseMap.get(block.question_id ?? qid);
+        const response = lookupResponse(responseMap, block);
         items.push({
           id: `block-${block._id}`,
           kind: "question",
@@ -166,9 +186,28 @@ export function StructuredMarkingWorkspace({
     assessable.find((b) => b._id === selectedBlockId) ??
     assessable[0] ??
     null;
-  const selectedResponse = selectedBlock?.question_id
-    ? responseMap.get(selectedBlock.question_id)
+  const selectedResponse = selectedBlock
+    ? lookupResponse(responseMap, selectedBlock)
     : undefined;
+
+  const linkedComments = useMemo(() => {
+    if (!selectedBlock) return [];
+    const qid = selectedBlock.question_id ?? null;
+    const sectionId = findSectionIdForBlock(sections, selectedBlock._id);
+    return assignmentComments.filter((comment) => {
+      if (!comment.is_active) return false;
+      const linkedIds = [
+        ...(comment.linked_question_ids ?? []),
+        ...(comment.linked_question_id ? [comment.linked_question_id] : []),
+      ];
+      const linksQuestion = qid != null && linkedIds.includes(qid);
+      const linksSection =
+        sectionId != null && comment.linked_section_id === sectionId;
+      const linksWhole =
+        linkedIds.length === 0 && !comment.linked_section_id;
+      return linksQuestion || linksSection || linksWhole;
+    });
+  }, [assignmentComments, selectedBlock, sections]);
 
   const responseFiles = responses.filter((r) => r.storage_path && r.file_name);
 
@@ -345,6 +384,7 @@ export function StructuredMarkingWorkspace({
                   response={selectedResponse}
                 />
               </div>
+              <LinkedCommentsPanel comments={linkedComments} />
               <TeacherGuidance block={selectedBlock} commentBanks={commentBanks} />
               <p className="text-xs text-slate-400">
                 Overall mark and written feedback are saved below. Per-question
@@ -461,6 +501,67 @@ function TeacherGuidance({
   );
 }
 
+
+function lookupResponse(
+  responseMap: Map<string, MarkingResponse>,
+  block: BuilderBlock,
+): MarkingResponse | undefined {
+  const key = responseKey(block);
+  return (
+    responseMap.get(key) ??
+    (block.question_id ? responseMap.get(block.question_id) : undefined)
+  );
+}
+
+function findSectionIdForBlock(
+  sections: BuilderSection[],
+  blockId: string,
+): string | null {
+  function walk(list: BuilderSection[]): string | null {
+    for (const section of list) {
+      if (section.blocks.some((b) => b._id === blockId)) return section._id;
+      const nested = walk(section.subsections);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  return walk(sections);
+}
+
+function LinkedCommentsPanel({ comments }: { comments: MarkingComment[] }) {
+  if (!comments.length) {
+    return (
+      <div className="border border-slate-100 px-3 py-2 text-xs text-slate-500">
+        No linked comments for this question.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 border border-slate-100 px-3 py-2">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+        Linked comments
+      </p>
+      <ul className="space-y-2">
+        {comments.map((comment) => (
+          <li key={comment._id} className="text-sm text-slate-800">
+            <p className="font-medium">{comment.short_label}</p>
+            {comment.full_comment ? (
+              <p className="mt-0.5 whitespace-pre-wrap text-slate-600">
+                {comment.full_comment}
+              </p>
+            ) : null}
+            {comment.mark_range_min != null || comment.mark_range_max != null ? (
+              <p className="mt-0.5 text-xs text-slate-400">
+                Mark range: {comment.mark_range_min ?? "—"}–
+                {comment.mark_range_max ?? "—"}
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function StudentAnswerSummary({
   block,

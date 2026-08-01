@@ -10,7 +10,10 @@ import type {
   TableConfig,
 } from "@/lib/types";
 import { RESPONSE_BLOCK_TYPES as RESPONSE_TYPES } from "@/lib/types";
-import { normalizePassageConfig } from "@/lib/homework/passage-numbering";
+import {
+  linesToContent,
+  normalizePassageConfig,
+} from "@/lib/homework/passage-numbering";
 
 // ── Identity helpers ─────────────────────────────────────────────────────────
 
@@ -39,6 +42,7 @@ export function cloneBlock(block: BuilderBlock): BuilderBlock {
     passageConfig: block.passageConfig
       ? {
           ...block.passageConfig,
+          lines: block.passageConfig.lines?.map((line) => ({ ...line })),
           manual_line_numbers: block.passageConfig.manual_line_numbers
             ? [...block.passageConfig.manual_line_numbers]
             : undefined,
@@ -161,16 +165,19 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
   if (type === "passage") {
     base.content = "";
     base.prompt = "";
-    base.passageConfig = normalizePassageConfig({
-      title: "",
-      source_reference: "",
-      show_line_numbers: true,
-      line_number_mode: "every_5",
-      line_number_interval: 5,
-      starting_line_number: 1,
-      numbering_continuation: "custom_start",
-      manual_line_numbers: [],
-    });
+    base.passageConfig = normalizePassageConfig(
+      {
+        title: "",
+        source_reference: "",
+        show_line_numbers: true,
+        line_number_mode: "manual",
+        line_number_interval: 5,
+        starting_line_number: 1,
+        numbering_continuation: "custom_start",
+        lines: [],
+      },
+      "",
+    );
   }
 
   if (type === "embedded_video") {
@@ -398,8 +405,15 @@ type SectionPayload = {
 
 function blockToPayload(b: BuilderBlock): BlockPayload {
   const config: Record<string, unknown> = {};
+  let content = b.content;
 
-  if (b.passageConfig) config.passage = normalizePassageConfig(b.passageConfig);
+  if (b.passageConfig || b.block_type === "passage") {
+    const passage = normalizePassageConfig(b.passageConfig, b.content);
+    if (passage.lines?.length) {
+      content = linesToContent(passage.lines);
+    }
+    config.passage = passage;
+  }
   if (b.mediaConfig) config.media = b.mediaConfig;
   if (b.numericConfig) config.numeric = b.numericConfig;
   const mediaUrl = b.mediaConfig?.external_url ?? b.external_url;
@@ -425,7 +439,7 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
   const payload: BlockPayload = {
     id: b._id,
     block_type: b.block_type,
-    content: b.content,
+    content,
     teacher_only: b.teacher_only || b.student_visible === false,
     config,
   };
@@ -600,7 +614,13 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
   if (cfg.passage && typeof cfg.passage === "object") {
     block.passageConfig = normalizePassageConfig(
       cfg.passage as Record<string, unknown>,
+      b.content,
     );
+    if (block.passageConfig.lines?.length) {
+      block.content = linesToContent(block.passageConfig.lines);
+    }
+  } else if (bt === "passage") {
+    block.passageConfig = normalizePassageConfig(null, b.content);
   }
 
   if (cfg.media && typeof cfg.media === "object") {

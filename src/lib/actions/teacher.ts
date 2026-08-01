@@ -481,6 +481,27 @@ export async function publishHomeworkAction(
     return { error: "Archived homework cannot be published" };
   }
 
+  if (existing.template_id) {
+    try {
+      const { loadTemplateStructure } = await import("@/lib/homework/structure");
+      const { hasBlockingPublishIssues } = await import(
+        "@/lib/homework/publish-readiness"
+      );
+      const sections = await loadTemplateStructure(
+        supabase,
+        existing.template_id,
+      );
+      if (hasBlockingPublishIssues(sections)) {
+        return {
+          error:
+            "Fix invalid multiple-choice questions (options and correct answers) before publishing.",
+        };
+      }
+    } catch {
+      // If structure cannot be loaded, allow publish of metadata-only updates.
+    }
+  }
+
   const dueAtRaw = formData.get("due_at");
   const releaseAtRaw = formData.get("release_at");
   const due_at =

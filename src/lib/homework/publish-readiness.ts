@@ -5,6 +5,8 @@ import type { BuilderBlock, BuilderSection } from "@/lib/types";
 export type PublishWarning = {
   blockId: string;
   message: string;
+  /** When true, publish must be refused until fixed. */
+  blocking?: boolean;
 };
 
 /** Teacher-side warnings before publishing incomplete structured blocks. */
@@ -22,6 +24,10 @@ export function collectPublishWarnings(
 
   for (const section of sections) walk(section);
   return warnings;
+}
+
+export function hasBlockingPublishIssues(sections: BuilderSection[]): boolean {
+  return collectPublishWarnings(sections).some((w) => w.blocking);
 }
 
 function warningsForBlock(block: BuilderBlock): PublishWarning[] {
@@ -49,18 +55,21 @@ function warningsForBlock(block: BuilderBlock): PublishWarning[] {
         out.push({
           blockId: id,
           message: `${label}: add at least two answer options.`,
+          blocking: true,
         });
       }
       if (!options.some((o) => o.correct) && block.marking_mode === "automatic") {
         out.push({
           blockId: id,
           message: `${label}: mark a correct answer for automatic marking.`,
+          blocking: true,
         });
       }
       if (options.some((o) => !o.label.trim())) {
         out.push({
           blockId: id,
           message: `${label}: every option needs visible text.`,
+          blocking: true,
         });
       }
       return out;

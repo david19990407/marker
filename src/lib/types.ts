@@ -263,6 +263,15 @@ export type PassageNumberingContinuation =
   | "continue"
   | "custom_start";
 
+/** Stable logical passage row — labels are typed by the teacher, never browser wrap. */
+export type PassageLine = {
+  id: string;
+  order: number;
+  text: string;
+  /** Exact gutter label; blank/null means no number beside this row. */
+  label?: string | null;
+};
+
 export type PassageConfig = {
   title?: string;
   source_reference?: string;
@@ -272,18 +281,14 @@ export type PassageConfig = {
   line_number_interval: number;
   starting_line_number: number;
   numbering_continuation?: PassageNumberingContinuation;
-  /**
-   * Legacy/manual display labels that should appear in the gutter
-   * (e.g. 1, 6, 11). Prefer numbered_line_indexes for stable control.
-   */
+  /** Authoritative logical rows with optional teacher-typed labels. */
+  lines?: PassageLine[];
+  /** @deprecated Legacy display set — migrated into lines[].label */
   manual_line_numbers?: number[];
-  /** 0-based logical line indexes that should show a gutter number. */
+  /** @deprecated Prefer lines[].label */
   numbered_line_indexes?: number[];
-  /**
-   * Optional custom labels keyed by logical line index string.
-   * When absent, the label defaults to starting_line_number + index.
-   */
-  manual_line_labels?: Record<string, number>;
+  /** @deprecated Prefer lines[].label */
+  manual_line_labels?: Record<string, number | string>;
 };
 
 export type MediaAlignment = "left" | "center" | "right";
@@ -404,7 +409,11 @@ export interface AssignmentCommentDraft {
   short_label: string;
   full_comment: string;
   category: string;
+  /** Primary question link (legacy column). */
   linked_question_id?: string | null;
+  /** Multi-question links (preferred). */
+  linked_question_ids?: string[];
+  linked_section_id?: string | null;
   mark_range_min?: number | null;
   mark_range_max?: number | null;
   is_active: boolean;
@@ -412,6 +421,9 @@ export interface AssignmentCommentDraft {
   available_for_drag_drop: boolean;
   available_for_overall: boolean;
   available_for_question: boolean;
+  available_for_annotation?: boolean;
+  /** Optional free-text assessment objective tag (subject-agnostic). */
+  assessment_objective?: string | null;
 }
 
 /** Client-side mutable builder section */

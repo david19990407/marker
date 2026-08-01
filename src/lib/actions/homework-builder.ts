@@ -233,27 +233,44 @@ export async function saveAssignmentCommentsAction(
   await assertTeacher();
   const supabase = await createClient();
 
-  const ids = comments.map((comment) => comment._id);
-  let deleteQuery = supabase
-    .from("assignment_comments")
-    .delete()
-    .eq("template_id", templateId);
-
-  if (ids.length > 0) {
-    deleteQuery = deleteQuery.not("id", "in", `(${ids.join(",")})`);
+  // Validate linked questions exist before writing anything.
+  const questionIds = [
+    ...new Set(
+      comments
+        .flatMap((c) => [
+          c.linked_question_id,
+          ...(c.linked_question_ids ?? []),
+        ])
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  let validQuestionIds = new Set<string>();
+  if (questionIds.length) {
+    const { data: questions } = await supabase
+      .from("assignment_questions")
+      .select("id")
+      .in("id", questionIds);
+    validQuestionIds = new Set((questions ?? []).map((q) => q.id as string));
   }
 
-  const { error: deleteError } = await deleteQuery;
-  if (deleteError) return { error: deleteError.message };
-
-  if (comments.length > 0) {
-    const rows = comments.map((comment, index) => ({
+  // Prefer transactional RPC when available.
+  const rows = comments.map((comment, index) => {
+    const linkedIds = [
+      ...new Set(
+        [comment.linked_question_id, ...(comment.linked_question_ids ?? [])]
+          .filter((id): id is string => Boolean(id))
+          .filter((id) => validQuestionIds.has(id)),
+      ),
+    ];
+    return {
       id: comment._id,
       template_id: templateId,
       short_label: comment.short_label.trim() || "Untitled comment",
-      full_comment: comment.full_comment,
+      full_comment: comment.full_comment ?? "",
       category: comment.category || null,
-      linked_question_id: comment.linked_question_id || null,
+      linked_question_id: linkedIds[0] ?? null,
+      linked_question_ids: linkedIds,
+      linked_section_id: comment.linked_section_id || null,
       mark_range_min: comment.mark_range_min ?? null,
       mark_range_max: comment.mark_range_max ?? null,
       is_active: comment.is_active,
@@ -261,13 +278,75 @@ export async function saveAssignmentCommentsAction(
       available_for_drag_drop: comment.available_for_drag_drop,
       available_for_overall: comment.available_for_overall,
       available_for_question: comment.available_for_question,
-    }));
+      available_for_annotation: comment.available_for_annotation ?? false,
+      assessment_objective: comment.assessment_objective || null,
+    };
+  });
 
-    const { error: upsertError } = await supabase
+  const { error: rpcError } = await supabase.rpc("save_assignment_comments", {
+    p_template_id: templateId,
+    p_comments: rows,
+  });
+
+  if (!rpcError) {
+    return {
+      success: "Feedback comments saved",
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  const rpcMissing = /could not find the function|schema cache/i.test(
+    rpcError.message ?? "",
+  );
+  if (!rpcMissing) return { error: rpcError.message };
+
+  // Fallback: upsert first, then delete orphans (never delete-before-upsert).
+  if (rows.length > 0) {
+    let { error: upsertError } = await supabase
       .from("assignment_comments")
       .upsert(rows, { onConflict: "id" });
+
+    // Older DBs may not have the newer columns yet — retry with legacy shape.
+    if (
+      upsertError &&
+      /linked_question_ids|linked_section_id|available_for_annotation|assessment_objective|column/i.test(
+        upsertError.message ?? "",
+      )
+    ) {
+      const legacyRows = rows.map((row) => ({
+        id: row.id,
+        template_id: row.template_id,
+        short_label: row.short_label,
+        full_comment: row.full_comment,
+        category: row.category,
+        linked_question_id: row.linked_question_id,
+        mark_range_min: row.mark_range_min,
+        mark_range_max: row.mark_range_max,
+        is_active: row.is_active,
+        sort_order: row.sort_order,
+        available_for_drag_drop: row.available_for_drag_drop,
+        available_for_overall: row.available_for_overall,
+        available_for_question: row.available_for_question,
+      }));
+      const retry = await supabase
+        .from("assignment_comments")
+        .upsert(legacyRows, { onConflict: "id" });
+      upsertError = retry.error;
+    }
+
     if (upsertError) return { error: upsertError.message };
   }
+
+  const keepIds = rows.map((r) => r.id);
+  let deleteQuery = supabase
+    .from("assignment_comments")
+    .delete()
+    .eq("template_id", templateId);
+  if (keepIds.length > 0) {
+    deleteQuery = deleteQuery.not("id", "in", `(${keepIds.join(",")})`);
+  }
+  const { error: deleteError } = await deleteQuery;
+  if (deleteError) return { error: deleteError.message };
 
   return { success: "Feedback comments saved", savedAt: new Date().toISOString() };
 }
@@ -529,10 +608,17 @@ export async function saveStudentStructuredResponsesAction(
 
 export async function submitStructuredHomeworkAction(
   assignmentId: string,
-  responses: StructuredResponseInput[],
+  responses: StructuredResponseInput[] = [],
 ): Promise<ActionResult> {
-  const saveResult = await saveStudentStructuredResponsesAction(assignmentId, responses);
-  if (saveResult.error) return saveResult;
+  // Optional final sync. Prefer calling after client autosave flush; empty
+  // payloads must never wipe existing answers (guarded in save action).
+  if (responses.length > 0) {
+    const saveResult = await saveStudentStructuredResponsesAction(
+      assignmentId,
+      responses,
+    );
+    if (saveResult.error) return saveResult;
+  }
 
   const profile = await requireProfile(["student"]);
   const supabase = await createClient();
@@ -687,7 +773,6 @@ export async function submitStructuredHomeworkAction(
   }
 
   revalidatePath(`/student/homework/${assignmentId}`);
-  revalidatePath(`/student/homework/${assignmentId}/review`);
   revalidatePath("/student/homework");
   revalidatePath("/student/dashboard");
   revalidatePath("/teacher/marking");
@@ -697,6 +782,51 @@ export async function submitStructuredHomeworkAction(
       ? "Submitted (marked late). Your teacher can now review it."
       : "Homework submitted successfully.",
   };
+}
+
+/** Restore editing without deleting any structured answers. */
+export async function unsubmitStructuredHomeworkAction(
+  assignmentId: string,
+): Promise<ActionResult> {
+  const profile = await requireProfile(["student"]);
+  const supabase = await createClient();
+
+  const { data: submission } = await supabase
+    .from("submissions")
+    .select("id, status")
+    .eq("assignment_id", assignmentId)
+    .eq("student_id", profile.id)
+    .maybeSingle();
+
+  if (!submission) return { error: "Submission not found" };
+  if (!["submitted", "late"].includes(submission.status)) {
+    return { error: "Only submitted homework can be unsubmitted" };
+  }
+
+  const { error: rpcError } = await supabase.rpc("unsubmit_student_homework", {
+    p_assignment_id: assignmentId,
+  });
+
+  if (rpcError) {
+    const rpcMissing = /could not find the function|schema cache/i.test(
+      rpcError.message ?? "",
+    );
+    if (!rpcMissing) return { error: rpcError.message };
+
+    const { error } = await supabase
+      .from("submissions")
+      .update({ status: "draft" })
+      .eq("id", submission.id)
+      .eq("student_id", profile.id)
+      .in("status", ["submitted", "late"]);
+    if (error) return { error: error.message };
+  }
+
+  revalidatePath(`/student/homework/${assignmentId}`);
+  revalidatePath("/student/homework");
+  revalidatePath("/student/dashboard");
+  revalidatePath("/teacher/marking");
+  return { success: "Homework unsubmitted. You can continue editing." };
 }
 
 // ── Load student's existing responses ────────────────────────────────────────
