@@ -231,6 +231,7 @@ export function createAutosaveController<T>(
 export function formatAutosaveLabel(
   status: AutosaveStatus,
   lastSavedAt: Date | null,
+  lastError?: string | null,
 ): string {
   switch (status) {
     case "dirty":
@@ -241,8 +242,12 @@ export function formatAutosaveLabel(
       return lastSavedAt
         ? `Saved ${lastSavedAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
         : "Saved";
-    case "error":
-      return "Save failed";
+    case "error": {
+      const detail = lastError?.trim();
+      if (!detail) return "Save failed";
+      // Keep the badge readable; full detail is shown in the flash panel.
+      return detail.length > 72 ? `Save failed: ${detail.slice(0, 69)}…` : `Save failed: ${detail}`;
+    }
     default:
       return "All changes saved";
   }
