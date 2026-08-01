@@ -27,11 +27,12 @@ export function AssignmentForm({
   const bound = saveAssignmentAction.bind(null, assignment?.id ?? null);
   const [state, action, pending] = useActionState(bound, initial);
 
-  // Multi-class create state
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
   const [perClassMode, setPerClassMode] = useState(false);
   const [perClassDates, setPerClassDates] = useState<Record<string, string>>({});
-  const [scheduleRelease, setScheduleRelease] = useState(false);
+  const [scheduleRelease, setScheduleRelease] = useState(
+    Boolean(assignment?.release_at),
+  );
   const [showTemplateWarning, setShowTemplateWarning] = useState(false);
 
   const isEditing = Boolean(assignment);
@@ -43,11 +44,6 @@ export function AssignmentForm({
         : [...prev, classId],
     );
   };
-
-  const selectAll = () =>
-    setSelectedClassIds(classes.map((c) => c.id));
-
-  const clearAll = () => setSelectedClassIds([]);
 
   return (
     <form action={action} className="space-y-5">
@@ -62,16 +58,15 @@ export function AssignmentForm({
         </div>
       ) : null}
 
-      {/* Class selection */}
       {isEditing ? (
         <>
           <input type="hidden" name="class_id" value={assignment!.class_id} />
           <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            Editing a single class deployment.{" "}
+            Editing deployment for{" "}
             <span className="font-medium text-slate-800">
-              {classes.find((c) => c.id === assignment!.class_id)?.name ??
-                "Class"}
+              {classes.find((c) => c.id === assignment!.class_id)?.name ?? "Class"}
             </span>
+            . Question marks are calculated in the homework builder.
           </div>
         </>
       ) : (
@@ -83,14 +78,14 @@ export function AssignmentForm({
             <div className="flex gap-2 text-xs">
               <button
                 type="button"
-                onClick={selectAll}
+                onClick={() => setSelectedClassIds(classes.map((c) => c.id))}
                 className="text-brand-600 hover:underline"
               >
                 All
               </button>
               <button
                 type="button"
-                onClick={clearAll}
+                onClick={() => setSelectedClassIds([])}
                 className="text-slate-400 hover:underline"
               >
                 None
@@ -99,9 +94,7 @@ export function AssignmentForm({
           </div>
           <div className="max-h-48 space-y-1 overflow-y-auto rounded-2xl border border-slate-200 p-2">
             {classes.length === 0 ? (
-              <p className="px-2 py-1 text-sm text-slate-400">
-                No classes available
-              </p>
+              <p className="px-2 py-1 text-sm text-slate-400">No classes available</p>
             ) : (
               classes.map((c) => (
                 <label
@@ -129,6 +122,21 @@ export function AssignmentForm({
         <Input name="title" required defaultValue={assignment?.title} />
       </label>
 
+      <label className="block text-sm">
+        <span className="mb-1.5 block text-slate-500">Brief overview</span>
+        <Textarea
+          name="instructions"
+          className="min-h-28"
+          placeholder="Short overview for students (optional). Build the full worksheet next."
+          defaultValue={assignment?.instructions}
+        />
+      </label>
+
+      {/* Calculated marks — not primary source of truth on create */}
+      <input type="hidden" name="maximum_mark" value={assignment?.maximum_mark ?? 0} />
+      <input type="hidden" name="allow_text_submission" value="true" />
+      <input type="hidden" name="allow_file_submission" value="true" />
+
       {isEditing && assignment?.template_id ? (
         <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <label className="flex items-start gap-2">
@@ -140,49 +148,34 @@ export function AssignmentForm({
               className="mt-0.5 accent-amber-600"
             />
             <span>
-              Sync title, instructions and submission settings to all linked
-              deployments (other classes sharing this assignment template)
+              Sync title and overview to all linked class deployments for this
+              homework
             </span>
           </label>
         </div>
       ) : null}
 
-      <label className="block text-sm">
-        <span className="mb-1.5 block text-slate-500">Instructions</span>
-        <Textarea
-          name="instructions"
-          className="min-h-40"
-          defaultValue={assignment?.instructions}
-        />
-      </label>
-
-      {/* Due dates */}
       {!isEditing && perClassMode ? (
         <div className="space-y-2">
           <p className="text-sm text-slate-500">Per-class due dates</p>
-          {selectedClassIds.length === 0 ? (
-            <p className="text-sm text-slate-400">Select classes above first</p>
-          ) : (
-            selectedClassIds.map((classId) => {
-              const className =
-                classes.find((c) => c.id === classId)?.name ?? classId;
-              return (
-                <label key={classId} className="block text-sm">
-                  <span className="mb-1 block text-slate-500">{className}</span>
-                  <Input
-                    type="datetime-local"
-                    value={perClassDates[classId] ?? ""}
-                    onChange={(e) =>
-                      setPerClassDates((prev) => ({
-                        ...prev,
-                        [classId]: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              );
-            })
-          )}
+          {selectedClassIds.map((classId) => {
+            const className = classes.find((c) => c.id === classId)?.name ?? classId;
+            return (
+              <label key={classId} className="block text-sm">
+                <span className="mb-1 block text-slate-500">{className}</span>
+                <Input
+                  type="datetime-local"
+                  value={perClassDates[classId] ?? ""}
+                  onChange={(e) =>
+                    setPerClassDates((prev) => ({
+                      ...prev,
+                      [classId]: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+            );
+          })}
           <input
             type="hidden"
             name="per_class_due_at_json"
@@ -214,39 +207,23 @@ export function AssignmentForm({
             onChange={(e) => setPerClassMode(e.target.checked)}
             className="accent-brand-600"
           />
-          <span className="text-slate-600">
-            Set different due dates per class
-          </span>
+          <span className="text-slate-600">Set different due dates per class</span>
         </label>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="text-sm">
-          <span className="mb-1.5 block text-slate-500">Maximum mark</span>
-          <Input
-            type="number"
-            name="maximum_mark"
-            min={1}
-            step="0.5"
-            defaultValue={assignment?.maximum_mark ?? 30}
-            required
-          />
-        </label>
-        <label className="text-sm">
-          <span className="mb-1.5 block text-slate-500">Status</span>
-          <select
-            name="status"
-            defaultValue={assignment?.status ?? "draft"}
-            className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm"
-          >
-            <option value="draft">Draft</option>
-            <option value="published">Published</option>
-            {isEditing ? <option value="archived">Archived</option> : null}
-          </select>
-        </label>
-      </div>
+      <label className="block text-sm">
+        <span className="mb-1.5 block text-slate-500">Status</span>
+        <select
+          name="status"
+          defaultValue={assignment?.status ?? "draft"}
+          className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm"
+        >
+          <option value="draft">Draft</option>
+          <option value="published">Published</option>
+          {isEditing ? <option value="archived">Archived</option> : null}
+        </select>
+      </label>
 
-      {/* Schedule release */}
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -254,11 +231,11 @@ export function AssignmentForm({
           onChange={(e) => setScheduleRelease(e.target.checked)}
           className="accent-brand-600"
         />
-        <span className="text-slate-600">Schedule publishing (release at)</span>
+        <span className="text-slate-600">Schedule release date</span>
       </label>
       {scheduleRelease ? (
         <label className="block text-sm">
-          <span className="mb-1.5 block text-slate-500">Release at</span>
+          <span className="mb-1.5 block text-slate-500">Release date</span>
           <Input
             type="datetime-local"
             name="release_at"
@@ -269,30 +246,23 @@ export function AssignmentForm({
         <input
           type="hidden"
           name="release_at"
-          value={
-            assignment?.release_at ? toLocalInput(assignment.release_at) : ""
-          }
+          value={assignment?.release_at ? toLocalInput(assignment.release_at) : ""}
         />
       )}
 
-      <div className="space-y-2 rounded-2xl border border-slate-100 p-4 text-sm">
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            name="allow_text_submission"
-            defaultChecked={assignment?.allow_text_submission ?? true}
-          />
-          Allow written response
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            name="allow_file_submission"
-            defaultChecked={assignment?.allow_file_submission ?? true}
-          />
-          Allow file upload (PDF/DOCX)
-        </label>
-      </div>
+      {isEditing ? (
+        <p className="text-xs text-slate-500">
+          Maximum mark is calculated from questions in the homework builder
+          {assignment?.maximum_mark != null
+            ? ` (currently ${assignment.maximum_mark}).`
+            : "."}
+        </p>
+      ) : (
+        <p className="text-xs text-slate-500">
+          Total marks are calculated automatically from the questions you add in the
+          builder.
+        </p>
+      )}
 
       <Button
         type="submit"
@@ -304,8 +274,8 @@ export function AssignmentForm({
         {pending
           ? "Saving…"
           : assignment
-            ? "Save assignment"
-            : "Create assignment"}
+            ? "Save details"
+            : "Create and build homework"}
       </Button>
 
       {!isEditing && selectedClassIds.length === 0 && classes.length > 0 ? (

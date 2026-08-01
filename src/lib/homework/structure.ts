@@ -535,10 +535,7 @@ export async function loadTemplateStructure(
   supabase: SupabaseClient<any>,
   templateId: string,
 ): Promise<BuilderSection[]> {
-  const { data, error } = await supabase
-    .from("assignment_sections")
-    .select(
-      `id, template_id, parent_section_id, title, sort_order,
+  const fullSelect = `id, template_id, parent_section_id, title, sort_order,
        assignment_blocks (
          id, section_id, block_type, sort_order, content, config, teacher_only,
          assignment_questions (
@@ -550,10 +547,33 @@ export async function loadTemplateStructure(
            table_marks_mode, table_total_marks
          ),
          assignment_table_cells (row_index, col_index, cell_type, label, marks, read_only)
-       )`,
-    )
+       )`;
+  const legacySelect = `id, template_id, parent_section_id, title, sort_order,
+       assignment_blocks (
+         id, section_id, block_type, sort_order, content, config, teacher_only,
+         assignment_questions (
+           id, prompt, max_marks, required, response_type, choices, sort_order,
+           teacher_note, mark_scheme_note, word_limit, char_limit, allow_attachments,
+           min_value, max_value, correct_answer, comment_bank_key, review_only
+         ),
+         assignment_table_cells (row_index, col_index, cell_type, label, marks, read_only)
+       )`;
+
+  let { data, error } = await supabase
+    .from("assignment_sections")
+    .select(fullSelect)
     .eq("template_id", templateId)
     .order("sort_order");
+
+  if (error) {
+    const fallback = await supabase
+      .from("assignment_sections")
+      .select(legacySelect)
+      .eq("template_id", templateId)
+      .order("sort_order");
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) throw new Error(error.message);
 

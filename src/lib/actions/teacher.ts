@@ -279,10 +279,7 @@ export async function saveAssignmentAction(
     if (!parsed.success) {
       return { error: parsed.error.issues[0]?.message ?? "Invalid assignment" };
     }
-    if (!parsed.data.allow_text_submission && !parsed.data.allow_file_submission) {
-      return { error: "Allow at least one submission method" };
-    }
-
+    // Submission methods are controlled mainly by question blocks; keep legacy flags on.
     let perClassDueAt: Record<string, string> = {};
     const perClassJson = String(formData.get("per_class_due_at_json") || "{}");
     try {

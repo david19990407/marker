@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   BLOCK_TYPE_LABELS,
-  RESPONSE_BLOCK_TYPES,
   type AssignmentBlockType,
   type BuilderBlock,
   type BuilderSection,
@@ -76,18 +75,18 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    if (!selectedSectionId || !findSection(sections, selectedSectionId)) {
-      setSelectedSectionId(sections[0]?._id ?? null);
-    }
-    if (selectedBlockId && !findBlock(sections, selectedBlockId)) {
-      setSelectedBlockId(null);
-    }
-  }, [sections, selectedBlockId, selectedSectionId]);
+  const activeSectionId =
+    selectedSectionId && findSection(sections, selectedSectionId)
+      ? selectedSectionId
+      : (sections[0]?._id ?? null);
+  const activeBlockId =
+    selectedBlockId && findBlock(sections, selectedBlockId)
+      ? selectedBlockId
+      : null;
 
   const selectedBlock = useMemo(
-    () => (selectedBlockId ? findBlock(sections, selectedBlockId) : null),
-    [sections, selectedBlockId],
+    () => (activeBlockId ? findBlock(sections, activeBlockId) : null),
+    [sections, activeBlockId],
   );
 
   function commit(next: BuilderSection[]) {
@@ -101,7 +100,7 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
   }
 
   function addBlockToSelected(type: AssignmentBlockType) {
-    const targetId = selectedSectionId ?? sections[0]?._id;
+    const targetId = activeSectionId ?? sections[0]?._id;
     if (!targetId) {
       const section = emptySection();
       const block = createBlock(type);
@@ -152,7 +151,7 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
         blocks: section.blocks.filter((block) => block._id !== blockId),
       })),
     );
-    if (selectedBlockId === blockId) setSelectedBlockId(null);
+    if (activeBlockId === blockId) setSelectedBlockId(null);
   }
 
   function moveBlock(sectionId: string, index: number, direction: -1 | 1) {
@@ -229,8 +228,8 @@ export function ContentCanvas({ sections, onChange, commentBanks = [] }: Props) 
               key={section._id}
               section={section}
               depth={0}
-              selectedSectionId={selectedSectionId}
-              selectedBlockId={selectedBlockId}
+              selectedSectionId={activeSectionId}
+              selectedBlockId={activeBlockId}
               collapsed={collapsed}
               onSelectSection={setSelectedSectionId}
               onSelectBlock={setSelectedBlockId}

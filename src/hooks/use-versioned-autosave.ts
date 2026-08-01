@@ -7,26 +7,45 @@ import {
   type AutosaveStatus,
 } from "@/lib/homework/autosave";
 
+type SaveFn<T> = (
+  value: T,
+  version: number,
+) => Promise<{ ok: boolean; error?: string }>;
+
 export function useVersionedAutosave<T>(options: {
   delayMs?: number;
-  save: (value: T, version: number) => Promise<{ ok: boolean; error?: string }>;
+  save: SaveFn<T>;
   enabled?: boolean;
 }) {
   const [status, setStatus] = useState<AutosaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
-  const saveRef = useRef(options.save);
-  saveRef.current = options.save;
+  const delayMs = options.delayMs ?? 1200;
+  const enabled = options.enabled !== false;
 
-  const controllerRef = useRef(
-    createAutosaveController<T>({
-      delayMs: options.delayMs ?? 1200,
-      save: (value, version) => saveRef.current(value, version),
-    }),
-  );
+  const saveBox = useRef<{ save: SaveFn<T> }>({ save: options.save });
+  const controllerHolder = useRef<ReturnType<
+    typeof createAutosaveController<T>
+  > | null>(null);
+
+  // Keep latest save function without mutating React state.
+  useEffect(() => {
+    saveBox.current.save = options.save;
+  }, [options.save]);
+
+  const getController = useCallback(() => {
+    if (!controllerHolder.current) {
+      controllerHolder.current = createAutosaveController<T>({
+        delayMs,
+        save: (value, version) => saveBox.current.save(value, version),
+      });
+    }
+    return controllerHolder.current;
+  }, [delayMs]);
 
   const sync = useCallback(() => {
-    const c = controllerRef.current;
+    const c = controllerHolder.current;
+    if (!c) return;
     setStatus(c.getStatus());
     setLastSavedAt(c.getLastSavedAt());
     setLastError(c.lastError);
@@ -34,33 +53,33 @@ export function useVersionedAutosave<T>(options: {
 
   const markDirty = useCallback(
     (value: T) => {
-      if (options.enabled === false) return;
-      controllerRef.current.markDirty(value);
+      if (!enabled) return;
+      getController().markDirty(value);
       sync();
-      // Poll briefly while saving for status transitions from async work
-      window.setTimeout(sync, options.delayMs ?? 1200);
-      window.setTimeout(sync, (options.delayMs ?? 1200) + 50);
+      window.setTimeout(sync, delayMs);
+      window.setTimeout(sync, delayMs + 80);
     },
-    [options.delayMs, options.enabled, sync],
+    [delayMs, enabled, getController, sync],
   );
 
   const flush = useCallback(async () => {
-    const ok = await controllerRef.current.flush();
+    const ok = await getController().flush();
     sync();
     return ok;
-  }, [sync]);
+  }, [getController, sync]);
 
   useEffect(() => {
     const id = window.setInterval(sync, 400);
     return () => {
       window.clearInterval(id);
-      controllerRef.current.dispose();
+      controllerHolder.current?.dispose();
+      controllerHolder.current = null;
     };
   }, [sync]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
-      if (controllerRef.current.hasUnsavedChanges()) {
+      if (controllerHolder.current?.hasUnsavedChanges()) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -76,6 +95,7 @@ export function useVersionedAutosave<T>(options: {
     label: formatAutosaveLabel(status, lastSavedAt),
     markDirty,
     flush,
-    hasUnsavedChanges: () => controllerRef.current.hasUnsavedChanges(),
+    hasUnsavedChanges: () =>
+      controllerHolder.current?.hasUnsavedChanges() ?? false,
   };
 }
