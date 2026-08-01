@@ -148,7 +148,8 @@ export default async function MarkSubmissionPage({
             .order("sort_order", { ascending: true }),
         ]);
 
-        let commentRows = commentsResult.data;
+        let commentRows: Array<Record<string, unknown>> = (commentsResult.data ??
+          []) as Array<Record<string, unknown>>;
         if (commentsResult.error) {
           const { data: legacyComments } = await supabase
             .from("assignment_comments")
@@ -157,7 +158,7 @@ export default async function MarkSubmissionPage({
             )
             .eq("template_id", assignment.template_id)
             .order("sort_order", { ascending: true });
-          commentRows = legacyComments;
+          commentRows = (legacyComments ?? []) as Array<Record<string, unknown>>;
         }
 
         structuredResponses = (responses ?? []).map((r) => ({
@@ -176,7 +177,7 @@ export default async function MarkSubmissionPage({
               : null;
           })
           .filter((b): b is { id: string; name: string } => Boolean(b));
-        assignmentComments = (commentRows ?? []).map((row) => {
+        assignmentComments = commentRows.map((row) => {
           const linkedIds = Array.isArray(row.linked_question_ids)
             ? (row.linked_question_ids as string[])
             : row.linked_question_id
@@ -197,17 +198,15 @@ export default async function MarkSubmissionPage({
             is_active: Boolean(row.is_active),
             available_for_question: Boolean(row.available_for_question),
             available_for_overall: Boolean(row.available_for_overall),
-            available_for_annotation: Boolean(
-              (row as { available_for_annotation?: boolean })
-                .available_for_annotation,
-            ),
+            available_for_annotation: Boolean(row.available_for_annotation),
             mark_range_min:
               row.mark_range_min == null ? null : Number(row.mark_range_min),
             mark_range_max:
               row.mark_range_max == null ? null : Number(row.mark_range_max),
             assessment_objective:
-              (row as { assessment_objective?: string | null })
-                .assessment_objective ?? null,
+              typeof row.assessment_objective === "string"
+                ? row.assessment_objective
+                : null,
           };
         });
       }

@@ -190,7 +190,7 @@ export type PassageLineRow = {
 export function buildPassageRows(
   text: string,
   configInput?: Partial<PassageConfig> | null,
-  _startOverride?: number,
+  startOverride?: number,
 ): {
   rows: PassageLineRow[];
   endingLineNumber: number;
@@ -198,6 +198,7 @@ export function buildPassageRows(
   showGutter: boolean;
 } {
   const config = normalizePassageConfig(configInput, text);
+  void startOverride;
   const lines = config.lines?.length
     ? [...config.lines].sort((a, b) => a.order - b.order)
     : normalizePassageLines(null, text);

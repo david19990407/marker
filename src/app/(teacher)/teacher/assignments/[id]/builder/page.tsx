@@ -83,7 +83,8 @@ export default async function HomeworkBuilderPage({
     (r) => (r as { archived?: boolean }).archived !== true,
   );
   // Prefer extended comment columns; fall back if migration not applied yet.
-  let comments = commentsRes.data ?? [];
+  let comments: Array<Record<string, unknown>> = (commentsRes.data ??
+    []) as Array<Record<string, unknown>>;
   if (commentsRes.error) {
     const fallback = await supabase
       .from("assignment_comments")
@@ -92,7 +93,7 @@ export default async function HomeworkBuilderPage({
       )
       .eq("template_id", assignment.template_id)
       .order("sort_order", { ascending: true });
-    comments = fallback.data ?? [];
+    comments = (fallback.data ?? []) as Array<Record<string, unknown>>;
   }
   const commentBanks = banksRes.data ?? [];
   const commentBankLinks = linksRes.data ?? [];
@@ -102,34 +103,37 @@ export default async function HomeworkBuilderPage({
     : assignment.classes?.name;
 
   const initialComments = comments.map((comment) => {
-    const row = comment as Record<string, unknown>;
-    const linkedIds = Array.isArray(row.linked_question_ids)
-      ? (row.linked_question_ids as string[])
+    const linkedIds = Array.isArray(comment.linked_question_ids)
+      ? (comment.linked_question_ids as string[])
       : comment.linked_question_id
-        ? [comment.linked_question_id]
+        ? [String(comment.linked_question_id)]
         : [];
     return {
-      _id: comment.id,
-      short_label: comment.short_label,
-      full_comment: comment.full_comment,
-      category: comment.category ?? "",
-      linked_question_id: comment.linked_question_id,
+      _id: String(comment.id),
+      short_label: String(comment.short_label ?? ""),
+      full_comment: String(comment.full_comment ?? ""),
+      category: String(comment.category ?? ""),
+      linked_question_id: comment.linked_question_id
+        ? String(comment.linked_question_id)
+        : null,
       linked_question_ids: linkedIds,
       linked_section_id:
-        typeof row.linked_section_id === "string" ? row.linked_section_id : null,
+        typeof comment.linked_section_id === "string"
+          ? comment.linked_section_id
+          : null,
       mark_range_min:
         comment.mark_range_min != null ? Number(comment.mark_range_min) : null,
       mark_range_max:
         comment.mark_range_max != null ? Number(comment.mark_range_max) : null,
-      is_active: comment.is_active ?? true,
-      sort_order: comment.sort_order ?? 0,
-      available_for_drag_drop: comment.available_for_drag_drop ?? true,
-      available_for_overall: comment.available_for_overall ?? true,
-      available_for_question: comment.available_for_question ?? true,
-      available_for_annotation: Boolean(row.available_for_annotation),
+      is_active: Boolean(comment.is_active ?? true),
+      sort_order: Number(comment.sort_order ?? 0),
+      available_for_drag_drop: Boolean(comment.available_for_drag_drop ?? true),
+      available_for_overall: Boolean(comment.available_for_overall ?? true),
+      available_for_question: Boolean(comment.available_for_question ?? true),
+      available_for_annotation: Boolean(comment.available_for_annotation),
       assessment_objective:
-        typeof row.assessment_objective === "string"
-          ? row.assessment_objective
+        typeof comment.assessment_objective === "string"
+          ? comment.assessment_objective
           : null,
     } satisfies AssignmentCommentDraft;
   });
