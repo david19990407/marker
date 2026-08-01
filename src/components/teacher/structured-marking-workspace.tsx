@@ -1,0 +1,844 @@
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardTitle } from "@/components/ui/card";
+import { DownloadButton } from "@/components/shared/download-button";
+import { PassageView } from "@/components/shared/passage-view";
+import { FeedbackForm } from "@/components/teacher/feedback-form";
+import {
+  evaluateStructuredCompletion,
+  isAssessableStudentBlock,
+  isStructuredResponseAnswered,
+  type ResponseSnapshot,
+} from "@/lib/homework/completion";
+import { computePassageStartLines } from "@/lib/homework/passage-numbering";
+import {
+  flattenStudentBlocks,
+  isResponseType,
+  resolveMcqOptions,
+  responseKey,
+} from "@/lib/homework/structure";
+import type {
+  BuilderBlock,
+  BuilderSection,
+  Feedback,
+  StudentResponse,
+} from "@/lib/types";
+
+export type MarkingResponse = StudentResponse & {
+  cells?: Array<{
+    row_index: number;
+    col_index: number;
+    text_value: string | null;
+    numeric_value: number | null;
+    boolean_value: boolean | string | null;
+  }>;
+};
+
+type ResourceFile = {
+  id: string;
+  file_name: string;
+  storage_path: string;
+};
+
+type MarkSchemeFile = {
+  id: string;
+  title: string;
+  file_name: string;
+  storage_path: string;
+};
+
+type CommentBankSummary = {
+  id: string;
+  name: string;
+};
+
+type NavItem = {
+  id: string;
+  kind: "section" | "question";
+  label: string;
+  answered?: boolean;
+  required?: boolean;
+  maxMarks?: number | null;
+};
+
+export function StructuredMarkingWorkspace({
+  submissionId,
+  maximumMark,
+  feedback,
+  sections,
+  responses,
+  resources = [],
+  markSchemes = [],
+  commentBanks = [],
+  legacyWrittenResponse = null,
+  legacyFileName = null,
+  legacyStoragePath = null,
+}: {
+  submissionId: string;
+  maximumMark: number;
+  feedback: Feedback | null;
+  sections: BuilderSection[];
+  responses: MarkingResponse[];
+  resources?: ResourceFile[];
+  markSchemes?: MarkSchemeFile[];
+  commentBanks?: CommentBankSummary[];
+  legacyWrittenResponse?: string | null;
+  legacyFileName?: string | null;
+  legacyStoragePath?: string | null;
+}) {
+  const responseMap = useMemo(() => {
+    const map = new Map<string, MarkingResponse>();
+    for (const response of responses) map.set(response.question_id, response);
+    return map;
+  }, [responses]);
+
+  const snapshots: ResponseSnapshot[] = useMemo(
+    () =>
+      responses.map((r) => ({
+        question_id: r.question_id,
+        text_value: r.text_value,
+        numeric_value: r.numeric_value,
+        boolean_value: r.boolean_value,
+        json_value: r.json_value,
+        file_name: r.file_name,
+        storage_path: r.storage_path,
+        cells: r.cells,
+      })),
+    [responses],
+  );
+
+  const completion = useMemo(
+    () => evaluateStructuredCompletion(sections, snapshots),
+    [sections, snapshots],
+  );
+
+  const assessable = useMemo(
+    () => flattenStudentBlocks(sections).filter(isAssessableStudentBlock),
+    [sections],
+  );
+
+  const passageStarts = useMemo(
+    () => computePassageStartLines(sections, { studentFacing: false }),
+    [sections],
+  );
+
+  const navItems = useMemo(() => {
+    const items: NavItem[] = [];
+    function walk(section: BuilderSection, depth = 0) {
+      items.push({
+        id: `section-${section._id}`,
+        kind: "section",
+        label: `${depth > 0 ? "↳ " : ""}${section.title}`,
+      });
+      for (const block of section.blocks) {
+        if (!isAssessableStudentBlock(block) && block.block_type !== "teacher_review") {
+          continue;
+        }
+        const qid = responseKey(block);
+        const response = responseMap.get(block.question_id ?? qid);
+        items.push({
+          id: `block-${block._id}`,
+          kind: "question",
+          label: block.content || block.prompt || "Question",
+          required: Boolean(block.required),
+          answered: isStructuredResponseAnswered(block, response ?? null),
+          maxMarks: block.max_marks,
+        });
+      }
+      for (const sub of section.subsections) walk(sub, depth + 1);
+    }
+    for (const section of sections) walk(section);
+    return items;
+  }, [sections, responseMap]);
+
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(
+    assessable[0]?._id ?? null,
+  );
+
+  const selectedBlock =
+    assessable.find((b) => b._id === selectedBlockId) ??
+    assessable[0] ??
+    null;
+  const selectedResponse = selectedBlock?.question_id
+    ? responseMap.get(selectedBlock.question_id)
+    : undefined;
+
+  const responseFiles = responses.filter((r) => r.storage_path && r.file_name);
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[240px_minmax(0,1fr)_320px]">
+      {/* Left pane */}
+      <aside className="space-y-4 xl:sticky xl:top-4 xl:self-start">
+        <Card className="space-y-3">
+          <CardTitle>Worksheet navigation</CardTitle>
+          <p className="text-xs text-slate-500">
+            {completion.answeredAssessableCount}/{completion.assessableCount}{" "}
+            answered
+            {completion.missingRequired.length > 0
+              ? ` · ${completion.missingRequired.length} required missing`
+              : ""}
+          </p>
+          <nav className="max-h-[28rem] space-y-1 overflow-auto text-sm">
+            {navItems.map((item) =>
+              item.kind === "section" ? (
+                <a
+                  key={item.id}
+                  href={`#${item.id}`}
+                  className="block rounded-xl px-2 py-1.5 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  {item.label}
+                </a>
+              ) : (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedBlockId(item.id.replace(/^block-/, ""));
+                    document
+                      .getElementById(item.id)
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                  className={`flex w-full items-start justify-between gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-slate-50 ${
+                    selectedBlock && item.id === `block-${selectedBlock._id}`
+                      ? "bg-brand-50 text-brand-900"
+                      : "text-slate-600"
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-400">
+                    {item.answered ? "done" : item.required ? "req" : "opt"}
+                  </span>
+                </button>
+              ),
+            )}
+          </nav>
+        </Card>
+
+        <Card className="space-y-3">
+          <CardTitle>Files & resources</CardTitle>
+          <FileList
+            title="Student uploads"
+            empty="No response files"
+            files={responseFiles.map((f) => ({
+              id: f.id,
+              name: f.file_name || "File",
+              path: f.storage_path!,
+              bucket: "student-submissions",
+            }))}
+          />
+          {legacyStoragePath && legacyFileName ? (
+            <FileList
+              title="Assignment-level upload"
+              empty=""
+              files={[
+                {
+                  id: "legacy-file",
+                  name: legacyFileName,
+                  path: legacyStoragePath,
+                  bucket: "student-submissions",
+                },
+              ]}
+            />
+          ) : null}
+          <FileList
+            title="Assignment resources"
+            empty="No resources"
+            files={resources.map((r) => ({
+              id: r.id,
+              name: r.file_name,
+              path: r.storage_path,
+              bucket: "assignment-resources",
+            }))}
+          />
+          <FileList
+            title="Mark schemes"
+            empty="No mark-scheme PDFs"
+            files={markSchemes.map((m) => ({
+              id: m.id,
+              name: m.title || m.file_name,
+              path: m.storage_path,
+              bucket: "assignment-resources",
+            }))}
+          />
+        </Card>
+      </aside>
+
+      {/* Centre pane — primary worksheet */}
+      <main className="min-w-0 space-y-4">
+        <Card className="space-y-2">
+          <CardTitle>Submitted worksheet</CardTitle>
+          <p className="text-sm text-slate-500">
+            Student answers appear in context, in the same order the student saw.
+          </p>
+        </Card>
+
+        <div className="space-y-8 border border-slate-200 bg-white px-4 py-6 sm:px-6">
+          {sections.map((section) => (
+            <MarkingSection
+              key={section._id}
+              section={section}
+              responseMap={responseMap}
+              passageStarts={passageStarts}
+              selectedBlockId={selectedBlock?._id ?? null}
+              onSelectBlock={setSelectedBlockId}
+              commentBanks={commentBanks}
+            />
+          ))}
+        </div>
+
+        {legacyWrittenResponse?.trim() ? (
+          <Card>
+            <CardTitle className="mb-2">Additional written response</CardTitle>
+            <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">
+              {legacyWrittenResponse}
+            </p>
+          </Card>
+        ) : null}
+      </main>
+
+      {/* Right pane */}
+      <aside className="space-y-4 xl:sticky xl:top-4 xl:self-start">
+        <Card className="space-y-3">
+          <CardTitle>Current question</CardTitle>
+          {selectedBlock ? (
+            <div className="space-y-3 text-sm">
+              <p className="font-[family-name:var(--font-outfit)] text-base font-semibold text-slate-900">
+                {selectedBlock.content || selectedBlock.prompt || "Question"}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {selectedBlock.max_marks != null ? (
+                  <Badge tone="brand">{selectedBlock.max_marks} marks</Badge>
+                ) : (
+                  <Badge tone="neutral">No marks</Badge>
+                )}
+                {selectedBlock.required ? (
+                  <Badge tone="warning">Required</Badge>
+                ) : (
+                  <Badge tone="neutral">Optional</Badge>
+                )}
+                <Badge
+                  tone={
+                    isStructuredResponseAnswered(
+                      selectedBlock,
+                      selectedResponse ?? null,
+                    )
+                      ? "success"
+                      : "neutral"
+                  }
+                >
+                  {isStructuredResponseAnswered(
+                    selectedBlock,
+                    selectedResponse ?? null,
+                  )
+                    ? "Answered"
+                    : "Unanswered"}
+                </Badge>
+              </div>
+              <div className="border border-slate-100 bg-slate-50 px-3 py-2">
+                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Student answer
+                </p>
+                <StudentAnswerSummary
+                  block={selectedBlock}
+                  response={selectedResponse}
+                />
+              </div>
+              <TeacherGuidance block={selectedBlock} commentBanks={commentBanks} />
+              <p className="text-xs text-slate-400">
+                Overall mark and written feedback are saved below. Per-question
+                scoring arrives in a later marking phase.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">No assessable questions.</p>
+          )}
+        </Card>
+
+        <Card>
+          <CardTitle className="mb-4">Assignment feedback</CardTitle>
+          <FeedbackForm
+            submissionId={submissionId}
+            maximumMark={maximumMark}
+            feedback={feedback}
+          />
+        </Card>
+      </aside>
+    </div>
+  );
+}
+
+function FileList({
+  title,
+  empty,
+  files,
+}: {
+  title: string;
+  empty: string;
+  files: Array<{
+    id: string;
+    name: string;
+    path: string;
+    bucket: "assignment-resources" | "student-submissions";
+  }>;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {title}
+      </p>
+      {files.length === 0 ? (
+        empty ? <p className="text-xs text-slate-500">{empty}</p> : null
+      ) : (
+        <ul className="space-y-2">
+          {files.map((file) => (
+            <li
+              key={file.id}
+              className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 px-2 py-1.5 text-xs"
+            >
+              <span className="truncate">{file.name}</span>
+              <DownloadButton bucket={file.bucket} path={file.path} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function TeacherGuidance({
+  block,
+  commentBanks,
+}: {
+  block: BuilderBlock;
+  commentBanks: CommentBankSummary[];
+}) {
+  const linked = commentBanks.filter((bank) =>
+    (block.linked_comment_bank_ids ?? []).includes(bank.id),
+  );
+  const hasGuidance =
+    Boolean(block.teacher_note) ||
+    Boolean(block.mark_scheme_note) ||
+    linked.length > 0;
+
+  if (!hasGuidance) {
+    return (
+      <p className="text-xs text-slate-400">No teacher guidance for this question.</p>
+    );
+  }
+
+  return (
+    <details className="rounded-xl border border-amber-100 bg-amber-50/60 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-amber-900">
+        Teacher guidance
+      </summary>
+      <div className="mt-2 space-y-2 text-xs text-amber-950">
+        {block.mark_scheme_note ? (
+          <div>
+            <p className="font-medium">Mark-scheme note</p>
+            <p className="whitespace-pre-wrap">{block.mark_scheme_note}</p>
+          </div>
+        ) : null}
+        {block.teacher_note ? (
+          <div>
+            <p className="font-medium">Teacher-only notes</p>
+            <p className="whitespace-pre-wrap">{block.teacher_note}</p>
+          </div>
+        ) : null}
+        {linked.length > 0 ? (
+          <div>
+            <p className="font-medium">Linked comment sets</p>
+            <ul className="list-disc pl-4">
+              {linked.map((bank) => (
+                <li key={bank.id}>{bank.name}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function MarkingSection({
+  section,
+  responseMap,
+  passageStarts,
+  selectedBlockId,
+  onSelectBlock,
+  commentBanks,
+  depth = 0,
+}: {
+  section: BuilderSection;
+  responseMap: Map<string, MarkingResponse>;
+  passageStarts: Map<string, number>;
+  selectedBlockId: string | null;
+  onSelectBlock: (id: string) => void;
+  commentBanks: CommentBankSummary[];
+  depth?: number;
+}) {
+  return (
+    <section
+      id={`section-${section._id}`}
+      className={depth > 0 ? "space-y-5 border-l border-slate-200 pl-4" : "space-y-5"}
+    >
+      <h3 className="font-[family-name:var(--font-outfit)] text-xl font-semibold tracking-tight text-slate-900">
+        {section.title}
+      </h3>
+      {section.blocks.map((block) => (
+        <MarkingBlock
+          key={block._id}
+          block={block}
+          response={
+            block.question_id ? responseMap.get(block.question_id) : undefined
+          }
+          startLineNumber={passageStarts.get(block._id)}
+          selected={selectedBlockId === block._id}
+          onSelect={() => onSelectBlock(block._id)}
+          commentBanks={commentBanks}
+        />
+      ))}
+      {section.subsections.map((sub) => (
+        <MarkingSection
+          key={sub._id}
+          section={sub}
+          responseMap={responseMap}
+          passageStarts={passageStarts}
+          selectedBlockId={selectedBlockId}
+          onSelectBlock={onSelectBlock}
+          commentBanks={commentBanks}
+          depth={depth + 1}
+        />
+      ))}
+    </section>
+  );
+}
+
+function MarkingBlock({
+  block,
+  response,
+  startLineNumber,
+  selected,
+  onSelect,
+  commentBanks,
+}: {
+  block: BuilderBlock;
+  response?: MarkingResponse;
+  startLineNumber?: number;
+  selected: boolean;
+  onSelect: () => void;
+  commentBanks: CommentBankSummary[];
+}) {
+  if (block.block_type === "heading") {
+    return (
+      <h2 className="font-[family-name:var(--font-outfit)] text-2xl font-semibold text-slate-900">
+        {block.content}
+      </h2>
+    );
+  }
+  if (block.block_type === "subheading") {
+    return (
+      <h3 className="font-[family-name:var(--font-outfit)] text-lg font-semibold text-slate-800">
+        {block.content}
+      </h3>
+    );
+  }
+  if (block.block_type === "instruction" || block.block_type === "rich_text") {
+    return (
+      <p className="whitespace-pre-wrap text-[1.02rem] leading-8 text-slate-700">
+        {block.content}
+      </p>
+    );
+  }
+  if (block.block_type === "divider") return <hr className="border-slate-200" />;
+  if (block.block_type === "page_break") {
+    return <div className="border-t border-dashed border-slate-300" />;
+  }
+  if (block.block_type === "passage") {
+    return (
+      <PassageView
+        text={block.content}
+        config={block.passageConfig}
+        startLineNumber={startLineNumber}
+      />
+    );
+  }
+  if (block.block_type === "image") {
+    return block.content.startsWith("http") ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={block.content}
+        alt={block.prompt || "Image"}
+        className="max-h-80 w-full object-contain"
+      />
+    ) : (
+      <p className="text-sm text-slate-600">{block.content || "Image"}</p>
+    );
+  }
+  if (block.block_type === "embedded_video") {
+    const url = block.external_url || block.content;
+    return (
+      <div className="space-y-1 text-sm text-slate-700">
+        <p className="font-medium">Embedded video</p>
+        <p className="break-all text-brand-700">{url || "No URL"}</p>
+      </div>
+    );
+  }
+  if (block.block_type === "downloadable_resource") {
+    return (
+      <p className="text-sm text-slate-700">
+        Resource: {block.content || block.external_url || "—"}
+      </p>
+    );
+  }
+
+  if (
+    block.teacher_only ||
+    block.block_type === "mark_scheme" ||
+    block.block_type === "moderation_note" ||
+    block.block_type === "staff_resource" ||
+    block.block_type === "teacher_instruction"
+  ) {
+    return (
+      <details className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+        <summary className="cursor-pointer font-medium">
+          Teacher-only: {block.content || block.block_type}
+        </summary>
+        <p className="mt-2 whitespace-pre-wrap">
+          {block.prompt || block.teacher_note || block.content}
+        </p>
+      </details>
+    );
+  }
+
+  if (!isResponseType(block.block_type) && block.block_type !== "teacher_review") {
+    return null;
+  }
+
+  const answered = isStructuredResponseAnswered(block, response ?? null);
+
+  return (
+    <div
+      id={`block-${block._id}`}
+      className={`space-y-3 border px-3 py-3 ${
+        selected ? "border-brand-300 bg-brand-50/30" : "border-slate-200 bg-white"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex w-full flex-wrap items-start justify-between gap-2 text-left"
+      >
+        <div>
+          <p className="font-[family-name:var(--font-outfit)] text-[1.08rem] font-semibold text-slate-900">
+            {block.content || block.prompt || "Question"}
+          </p>
+          {block.content && block.prompt ? (
+            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">
+              {block.prompt}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {block.max_marks != null ? (
+            <Badge tone="brand">{block.max_marks} marks</Badge>
+          ) : null}
+          {block.required ? <Badge tone="warning">Required</Badge> : null}
+          <Badge tone={answered ? "success" : "neutral"}>
+            {answered ? "Answered" : "Unanswered"}
+          </Badge>
+        </div>
+      </button>
+
+      <div className="border border-slate-200 bg-slate-50 px-3 py-2">
+        <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
+          Student response
+        </p>
+        <StudentAnswerSummary block={block} response={response} />
+      </div>
+
+      <TeacherGuidance block={block} commentBanks={commentBanks} />
+    </div>
+  );
+}
+
+function StudentAnswerSummary({
+  block,
+  response,
+}: {
+  block: BuilderBlock;
+  response?: MarkingResponse;
+}) {
+  if (block.review_only || block.block_type === "teacher_review") {
+    return <p className="text-sm text-slate-500">Teacher review item — no student answer.</p>;
+  }
+  if (!response) {
+    return <p className="text-sm text-slate-500">No response saved.</p>;
+  }
+
+  if (block.block_type === "multiple_choice" || block.block_type === "multiple_select") {
+    const options = resolveMcqOptions(block);
+    const selected =
+      block.block_type === "multiple_select"
+        ? new Set(
+            (response.text_value ?? "")
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean),
+          )
+        : new Set(
+            response.text_value?.trim() ? [response.text_value.trim()] : [],
+          );
+    return (
+      <ul className="space-y-1 text-sm text-slate-800">
+        {options.map((option) => (
+          <li key={option.id} className="flex items-center gap-2">
+            <span
+              className={`inline-block h-2.5 w-2.5 rounded-full ${
+                selected.has(option.label) ? "bg-brand-600" : "bg-slate-300"
+              }`}
+            />
+            <span className={selected.has(option.label) ? "font-medium" : ""}>
+              {option.label}
+            </span>
+            {selected.has(option.label) ? (
+              <span className="text-xs text-slate-400">selected</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (block.block_type === "numeric") {
+    return (
+      <p className="text-sm text-slate-800">
+        {response.numeric_value ?? "—"}
+      </p>
+    );
+  }
+
+  if (block.block_type === "tick_box") {
+    return (
+      <p className="text-sm text-slate-800">
+        {response.boolean_value ? "Ticked" : "Not ticked"}
+      </p>
+    );
+  }
+
+  if (block.block_type === "file_upload") {
+    if (response.storage_path && response.file_name) {
+      return (
+        <div className="flex items-center justify-between gap-2 text-sm">
+          <span>{response.file_name}</span>
+          <DownloadButton
+            bucket="student-submissions"
+            path={response.storage_path}
+          />
+        </div>
+      );
+    }
+    return (
+      <p className="text-sm text-slate-800">
+        {response.text_value || "No file uploaded for this question"}
+      </p>
+    );
+  }
+
+  if (block.block_type === "table" || block.block_type === "vocabulary_table") {
+    const cfg = block.tableConfig;
+    if (!cfg) return <p className="text-sm text-slate-500">No table config.</p>;
+    const startRow = cfg.header_row ? 1 : 0;
+    const cellMap = new Map(
+      (response.cells ?? []).map((c) => [`${c.row_index}:${c.col_index}`, c]),
+    );
+    return (
+      <div className="overflow-x-auto">
+        <table className="min-w-full border-collapse text-sm">
+          {cfg.header_row ? (
+            <thead>
+              <tr>
+                {Array.from({ length: cfg.cols }, (_, ci) => (
+                  <th
+                    key={ci}
+                    className="border-b border-slate-200 px-2 py-1 text-left text-xs text-slate-500"
+                  >
+                    {(cfg.col_labels ?? [])[ci] ?? `Col ${ci + 1}`}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          ) : null}
+          <tbody>
+            {Array.from({ length: Math.max(0, cfg.rows - startRow) }, (_, offset) => {
+              const ri = offset + startRow;
+              return (
+                <tr key={ri} className="border-t border-slate-100">
+                  {Array.from({ length: cfg.cols }, (_, ci) => {
+                    const cell = cellMap.get(`${ri}:${ci}`);
+                    const text =
+                      cell?.text_value ??
+                      (cell?.numeric_value != null
+                        ? String(cell.numeric_value)
+                        : cell?.boolean_value != null
+                          ? String(cell.boolean_value)
+                          : "");
+                    return (
+                      <td key={ci} className="px-2 py-1 text-slate-800">
+                        {text || "—"}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  return (
+    <p className="whitespace-pre-wrap text-sm leading-7 text-slate-800">
+      {response.text_value || "—"}
+    </p>
+  );
+}
+
+/** Unused helper kept for future rich previews */
+export function MarkingEmptyState({ children }: { children: ReactNode }) {
+  return <div className="text-sm text-slate-500">{children}</div>;
+}
+
+export function LegacyMarkingPanels({
+  writtenResponse,
+  fileName,
+  storagePath,
+}: {
+  writtenResponse: string | null;
+  fileName: string | null;
+  storagePath: string | null;
+}) {
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardTitle className="mb-2">Written response</CardTitle>
+        <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">
+          {writtenResponse || "No written response."}
+        </p>
+      </Card>
+      <Card>
+        <CardTitle className="mb-3">Uploaded file</CardTitle>
+        {storagePath && fileName ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm">{fileName}</p>
+            <DownloadButton bucket="student-submissions" path={storagePath} />
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">No file uploaded</p>
+        )}
+      </Card>
+    </div>
+  );
+}

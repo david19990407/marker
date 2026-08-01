@@ -213,27 +213,28 @@ export async function submitHomeworkAction(
     .eq("submission_id", result.submission.id);
   const hasStructured = (structuredCount ?? 0) > 0;
 
-  if (
-    result.assignment.allow_text_submission &&
-    !result.assignment.allow_file_submission &&
-    !hasText &&
-    !hasStructured
-  ) {
-    return { error: "Write your response before submitting" };
-  }
-  if (
-    result.assignment.allow_file_submission &&
-    !result.assignment.allow_text_submission &&
-    !hasFile &&
-    !hasStructured
-  ) {
-    return { error: "Upload a file before submitting" };
-  }
-  if (!hasText && !hasFile && !hasStructured) {
-    return {
-      error:
-        "Add answers, a written response, or a file before submitting",
-    };
+  // Structured answers satisfy completion without legacy written_response/file.
+  if (!hasStructured) {
+    if (
+      result.assignment.allow_text_submission &&
+      !result.assignment.allow_file_submission &&
+      !hasText
+    ) {
+      return { error: "Write your response before submitting" };
+    }
+    if (
+      result.assignment.allow_file_submission &&
+      !result.assignment.allow_text_submission &&
+      !hasFile
+    ) {
+      return { error: "Upload a file before submitting" };
+    }
+    if (!hasText && !hasFile) {
+      return {
+        error:
+          "Add answers, a written response, or a file before submitting",
+      };
+    }
   }
 
   const now = new Date();

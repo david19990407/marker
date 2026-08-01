@@ -1,3 +1,5 @@
+import { isSubmissionStatusComplete } from "@/lib/homework/completion";
+
 export type TeacherHomeworkBucket =
   | "draft"
   | "scheduled"
@@ -83,14 +85,9 @@ export function studentBucket(
   a: OrderableAssignment & { submissionStatus?: string | null },
   nowMs: number,
 ): StudentHomeworkBucket {
-  const submitted = a.submissionStatus &&
-    !["draft", "returned"].includes(a.submissionStatus);
-  if (submitted || a.submissionStatus === "marked" || a.submissionStatus === "returned") {
-    if (a.submissionStatus === "returned") {
-      // returned counts as incomplete for rework
-    } else if (submitted) {
-      return "completed";
-    }
+  // Completed = submitted/late/marked. Returned stays incomplete for rework.
+  if (isSubmissionStatusComplete(a.submissionStatus)) {
+    return "completed";
   }
   if (
     a.release_at &&
