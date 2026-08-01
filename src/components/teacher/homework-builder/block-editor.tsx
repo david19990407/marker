@@ -7,8 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableEditor } from "./table-editor";
 import { formatMarkLabelBracketed } from "@/lib/homework/marks";
+import { getMcqOptionText } from "@/lib/homework/mcq-options";
+import { resolveMcqOptions } from "@/lib/homework/structure";
 import { BLOCK_TYPE_LABELS, RESPONSE_BLOCK_TYPES } from "@/lib/types";
 import type { AssignmentBlockType, BuilderBlock } from "@/lib/types";
+import { McqEditor } from "./mcq-editor";
 
 interface Props {
   block: BuilderBlock;
@@ -373,23 +376,12 @@ function BlockFields({
         </div>
       )}
 
-      {block.block_type === "multiple_choice" && (
-        <>
-          <ChoicesEditor
-            choices={block.choices ?? []}
-            onChange={(choices) => set("choices", choices)}
-          />
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs text-slate-500">
-              Correct option (reference only — no auto-marking)
-            </span>
-            <Input
-              value={block.correct_answer ?? ""}
-              onChange={(e) => set("correct_answer", e.target.value || null)}
-              placeholder="Exact option text"
-            />
-          </label>
-        </>
+      {(block.block_type === "multiple_choice" ||
+        block.block_type === "multiple_select") && (
+        <McqEditor
+          block={block}
+          onChange={(updater) => onChange(updater(block))}
+        />
       )}
 
       {(block.block_type === "table" || block.block_type === "vocabulary_table") && (
@@ -405,52 +397,6 @@ function BlockFields({
         </p>
       )}
     </>
-  );
-}
-
-function ChoicesEditor({
-  choices,
-  onChange,
-}: {
-  choices: string[];
-  onChange: (c: string[]) => void;
-}) {
-  function update(idx: number, val: string) {
-    const next = [...choices];
-    next[idx] = val;
-    onChange(next);
-  }
-  function remove(idx: number) {
-    onChange(choices.filter((_, i) => i !== idx));
-  }
-  function add() {
-    onChange([...choices, `Option ${String.fromCharCode(65 + choices.length)}`]);
-  }
-
-  return (
-    <div className="space-y-2">
-      <p className="text-xs text-slate-500">Choices</p>
-      {choices.map((c, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <Input
-            value={c}
-            onChange={(e) => update(i, e.target.value)}
-            placeholder={`Option ${i + 1}`}
-          />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => remove(i)}
-            aria-label={`Remove option ${i + 1}`}
-          >
-            ✕
-          </Button>
-        </div>
-      ))}
-      <Button size="sm" variant="outline" onClick={add}>
-        + Add option
-      </Button>
-    </div>
   );
 }
 
@@ -536,6 +482,7 @@ function BlockPreview({ block }: { block: BuilderBlock }) {
         </div>
       );
     case "multiple_choice":
+    case "multiple_select":
       return (
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <p className="mb-2 text-sm font-medium text-slate-800">
@@ -543,10 +490,14 @@ function BlockPreview({ block }: { block: BuilderBlock }) {
             {block.required && <span className="ml-1 text-rose-500">*</span>}
           </p>
           <div className="space-y-1">
-            {(block.choices ?? []).map((c, i) => (
-              <label key={i} className="flex items-center gap-2 text-sm">
-                <input type="radio" disabled name={`preview-${block._id}`} />
-                {c}
+            {resolveMcqOptions(block).map((option) => (
+              <label key={option.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type={block.block_type === "multiple_select" ? "checkbox" : "radio"}
+                  disabled
+                  name={`preview-${block._id}`}
+                />
+                {getMcqOptionText(option)}
               </label>
             ))}
           </div>

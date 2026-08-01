@@ -243,9 +243,18 @@ export const BLOCK_TYPE_LABELS: Record<AssignmentBlockType, string> = {
   divider: "Divider",
 };
 
+/** How option identifiers (A/B/C vs 1/2/3) are displayed — never the answer text. */
+export type McqOptionLabelStyle = "letters" | "numbers" | "roman";
+
 export type McqOption = {
   id: string;
-  label: string;
+  /** Canonical answer text shown to students. */
+  text: string;
+  /**
+   * @deprecated Mirrored from `text` for legacy payloads. Do not treat as the
+   * option identifier (A/B/C) — identifiers are display-only from label style.
+   */
+  label?: string;
   feedback?: string;
   correct?: boolean;
 };
@@ -364,6 +373,8 @@ export interface BuilderBlock {
   option_feedback?: string[];
   correct_option_indexes?: number[];
   shuffle_options?: boolean;
+  /** Display style for option identifiers (A/B/C, 1/2/3, i/ii/iii). */
+  option_label_style?: McqOptionLabelStyle;
   /** Minimum selected options for multiple_select (default 1 when required). */
   min_selections?: number | null;
   marking_mode?: "teacher_reviewed" | "automatic";
