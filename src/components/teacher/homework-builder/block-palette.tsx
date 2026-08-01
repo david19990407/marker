@@ -7,12 +7,16 @@ import type { AssignmentBlockType } from "@/lib/types";
 
 const PALETTE_GROUPS: { label: string; types: AssignmentBlockType[] }[] = [
   {
-    label: "Layout",
+    label: "Content",
     types: [
       "heading",
       "subheading",
       "instruction",
       "rich_text",
+      "passage",
+      "image",
+      "embedded_video",
+      "downloadable_resource",
       "divider",
       "page_break",
     ],
@@ -25,20 +29,22 @@ const PALETTE_GROUPS: { label: string; types: AssignmentBlockType[] }[] = [
       "extended_writing",
       "numeric",
       "multiple_choice",
+      "multiple_select",
       "tick_box",
+      "file_upload",
+      "table",
+      "vocabulary_table",
     ],
   },
   {
-    label: "Tables",
-    types: ["table", "vocabulary_table"],
-  },
-  {
-    label: "Resources",
-    types: ["image", "downloadable_resource", "file_upload"],
-  },
-  {
     label: "Teacher only",
-    types: ["teacher_review", "mark_scheme"],
+    types: [
+      "teacher_instruction",
+      "teacher_review",
+      "mark_scheme",
+      "moderation_note",
+      "staff_resource",
+    ],
   },
 ];
 

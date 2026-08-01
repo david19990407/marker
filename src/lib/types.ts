@@ -176,19 +176,25 @@ export type AssignmentBlockType =
   | "subheading"
   | "instruction"
   | "rich_text"
+  | "passage"
   | "numbered_question"
   | "short_text"
   | "extended_writing"
   | "numeric"
   | "multiple_choice"
+  | "multiple_select"
   | "tick_box"
   | "teacher_review"
   | "file_upload"
   | "image"
+  | "embedded_video"
   | "downloadable_resource"
   | "table"
   | "vocabulary_table"
   | "mark_scheme"
+  | "teacher_instruction"
+  | "moderation_note"
+  | "staff_resource"
   | "page_break"
   | "divider";
 
@@ -199,6 +205,7 @@ export const RESPONSE_BLOCK_TYPES: AssignmentBlockType[] = [
   "extended_writing",
   "numeric",
   "multiple_choice",
+  "multiple_select",
   "tick_box",
   "teacher_review",
   "file_upload",
@@ -209,23 +216,44 @@ export const RESPONSE_BLOCK_TYPES: AssignmentBlockType[] = [
 export const BLOCK_TYPE_LABELS: Record<AssignmentBlockType, string> = {
   heading: "Heading",
   subheading: "Subheading",
-  instruction: "Instruction",
+  instruction: "Instructions",
   rich_text: "Rich text",
+  passage: "Passage / source text",
   numbered_question: "Numbered question",
   short_text: "Short answer",
   extended_writing: "Extended writing",
-  numeric: "Numeric answer",
+  numeric: "Numeric response",
   multiple_choice: "Multiple choice",
+  multiple_select: "Multiple select",
   tick_box: "Tick box",
-  teacher_review: "Teacher review",
+  teacher_review: "Teacher review only",
   file_upload: "File upload",
   image: "Image",
+  embedded_video: "Embedded video",
   downloadable_resource: "Downloadable resource",
-  table: "Table",
+  table: "Table response",
   vocabulary_table: "Vocabulary table",
-  mark_scheme: "Mark scheme",
+  mark_scheme: "Mark-scheme note",
+  teacher_instruction: "Teacher instruction",
+  moderation_note: "Moderation note",
+  staff_resource: "Staff-only resource",
   page_break: "Page break",
   divider: "Divider",
+};
+
+export type McqOption = {
+  id: string;
+  label: string;
+  feedback?: string;
+  correct?: boolean;
+};
+
+export type PassageConfig = {
+  title?: string;
+  source_reference?: string;
+  show_line_numbers: boolean;
+  line_number_interval: number;
+  starting_line_number: number;
 };
 
 export type TableCellType =
@@ -254,16 +282,24 @@ export interface TableConfig {
 /** Client-side mutable builder block */
 export interface BuilderBlock {
   _id: string;
-  /** Persisted assignment_questions.id when this block has a response */
+  /** Persisted assignment_questions.id — generated client-side and kept stable */
   question_id?: string | null;
   block_type: AssignmentBlockType;
+  /** Student-facing title */
   content: string;
   teacher_only: boolean;
-  /** For response blocks */
+  /** Student-facing instructions / prompt */
   prompt?: string;
   max_marks?: number | null;
+  marks_apply?: boolean;
   required?: boolean;
+  /** Legacy string choices — prefer mcq_options */
   choices?: string[];
+  mcq_options?: McqOption[];
+  option_feedback?: string[];
+  correct_option_indexes?: number[];
+  shuffle_options?: boolean;
+  marking_mode?: "teacher_reviewed" | "automatic";
   student_visible?: boolean;
   review_only?: boolean;
   allow_attachments?: boolean;
@@ -271,13 +307,47 @@ export interface BuilderBlock {
   mark_scheme_note?: string | null;
   word_limit?: number | null;
   char_limit?: number | null;
+  suggested_minutes?: number | null;
   min_value?: number | null;
   max_value?: number | null;
   correct_answer?: string | null;
-  comment_bank_key?: string | null;
+  /** Linked passage block ids */
+  passage_block_ids?: string[];
+  linked_comment_bank_ids?: string[];
+  passageConfig?: PassageConfig;
+  /** Video / resource URL stored in content or here */
+  external_url?: string | null;
+  captions_text?: string | null;
+  allow_download?: boolean;
+  table_marks_mode?: "none" | "per_row" | "per_cell" | "total";
+  table_total_marks?: number | null;
   /** For table/vocabulary_table */
   tableConfig?: TableConfig;
   cells?: TableCellDef[];
+}
+
+export type BuilderStage =
+  | "details"
+  | "classes"
+  | "content"
+  | "resources"
+  | "feedback"
+  | "preview"
+  | "publish";
+
+export interface AssignmentCommentDraft {
+  _id: string;
+  short_label: string;
+  full_comment: string;
+  category: string;
+  linked_question_id?: string | null;
+  mark_range_min?: number | null;
+  mark_range_max?: number | null;
+  is_active: boolean;
+  sort_order: number;
+  available_for_drag_drop: boolean;
+  available_for_overall: boolean;
+  available_for_question: boolean;
 }
 
 /** Client-side mutable builder section */
