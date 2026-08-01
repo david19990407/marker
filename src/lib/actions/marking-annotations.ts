@@ -154,7 +154,7 @@ export async function saveAnnotationAction(
         }
         return { error: upsertError.message };
       }
-      revalidatePath(`/teacher/marking/submissions/${payload.submission_id}`);
+      // Avoid full-page annotation refetch during interactive drag/save.
       return {
         success: "Annotation saved",
         annotation: mapAnnotation(row as Record<string, unknown>),
@@ -162,7 +162,8 @@ export async function saveAnnotationAction(
     }
     return { error: error.message };
   }
-  revalidatePath(`/teacher/marking/submissions/${payload.submission_id}`);
+  // Client marking workspace keeps optimistic local state; skip revalidatePath
+  // so saving one annotation does not refetch the whole submission payload.
   return {
     success: "Annotation saved",
     annotation: mapAnnotation(data as Record<string, unknown>),
@@ -185,7 +186,7 @@ export async function deleteAnnotationAction(
     .eq("id", annotationId)
     .lte("client_version", clientVersion);
   if (error) return { error: error.message };
-  revalidatePath(`/teacher/marking/submissions/${submissionId}`);
+  void submissionId;
   return { success: "Annotation deleted" };
 }
 
