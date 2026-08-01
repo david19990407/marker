@@ -34,6 +34,7 @@ function mapItem(row: Record<string, unknown>): CommentBankItem {
   return {
     id: String(row.id),
     bank_id: String(row.bank_id),
+    group_id: (row.group_id as string | null) ?? null,
     title: String(row.title ?? ""),
     short_label: String(row.short_label ?? ""),
     full_text: String(row.full_text ?? ""),
@@ -203,6 +204,7 @@ export async function saveCommentBankAction(
       .single();
     if (error) return { error: error.message };
     revalidatePath("/teacher/comment-banks");
+    revalidatePath("/admin/settings/comment-banks");
     return { success: "Comment bank updated", bank: mapBank(data) };
   }
 
@@ -213,6 +215,7 @@ export async function saveCommentBankAction(
     .single();
   if (error) return { error: error.message };
   revalidatePath("/teacher/comment-banks");
+  revalidatePath("/admin/settings/comment-banks");
   return { success: "Comment bank created", bank: mapBank(data) };
 }
 
@@ -228,6 +231,7 @@ export async function saveCommentBankItemAction(
   const payload = {
     ...parsed.data,
     created_by: profile.id,
+    group_id: parsed.data.group_id || null,
     category: parsed.data.category || "",
     year_group: parsed.data.year_group || null,
     subject: parsed.data.subject || null,
@@ -247,6 +251,7 @@ export async function saveCommentBankItemAction(
       .single();
     if (error) return { error: error.message };
     revalidatePath("/teacher/comment-banks");
+    revalidatePath("/admin/settings/comment-banks");
     return { success: "Comment saved", item: mapItem(data) };
   }
 
@@ -257,6 +262,7 @@ export async function saveCommentBankItemAction(
     .single();
   if (error) return { error: error.message };
   revalidatePath("/teacher/comment-banks");
+  revalidatePath("/admin/settings/comment-banks");
   return { success: "Comment created", item: mapItem(data) };
 }
 

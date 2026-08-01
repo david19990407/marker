@@ -13,7 +13,7 @@ describe("annotation coordinate helpers", () => {
     expect(clampNorm(0.25)).toBe(0.25);
   });
 
-  it("builds percentage styles from normalised geometry", () => {
+  it("builds percentage styles from normalised geometry without inflation", () => {
     expect(
       annotationStyle({
         x_norm: 0.1,
@@ -26,6 +26,19 @@ describe("annotation coordinate helpers", () => {
       top: "20%",
       width: "30%",
       height: "40%",
+    });
+    expect(
+      annotationStyle({
+        x_norm: 0.1,
+        y_norm: 0.2,
+        w_norm: 0.01,
+        h_norm: 0.005,
+      }),
+    ).toEqual({
+      left: "10%",
+      top: "20%",
+      width: "1%",
+      height: "0.5%",
     });
   });
 

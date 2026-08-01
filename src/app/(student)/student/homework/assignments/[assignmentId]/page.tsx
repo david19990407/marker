@@ -193,7 +193,7 @@ export default async function StudentAssignmentPage({
         .select("*")
         .eq("submission_id", submission.id)
         .eq("is_deleted", false)
-        .eq("visibility", "student_visible"),
+        .neq("visibility", "teacher_only"),
       supabase
         .from("question_marks")
         .select("*")

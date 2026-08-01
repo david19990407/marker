@@ -100,6 +100,7 @@ export const commentBankSchema = z.object({
 export const commentBankItemSchema = z.object({
   id: z.string().uuid().optional(),
   bank_id: z.string().uuid(),
+  group_id: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(160),
   short_label: z.string().trim().min(1).max(80),
   full_text: z.string().trim().min(1).max(5000),

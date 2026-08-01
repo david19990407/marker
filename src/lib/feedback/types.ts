@@ -69,9 +69,25 @@ export interface CommentBank {
   sort_order: number;
 }
 
+export interface CommentBankGroup {
+  id: string;
+  bank_id: string;
+  name: string;
+  short_code: string | null;
+  description: string | null;
+  sort_order: number;
+  linked_question_id: string | null;
+  mark_range_min: number | null;
+  mark_range_max: number | null;
+  category: string;
+  tags: string[];
+  is_active: boolean;
+}
+
 export interface CommentBankItem {
   id: string;
   bank_id: string;
+  group_id?: string | null;
   title: string;
   short_label: string;
   full_text: string;
@@ -87,6 +103,7 @@ export interface CommentBankItem {
   sort_order: number;
   bank_name?: string;
   bank_scope?: CommentBankScope;
+  group_name?: string | null;
   is_favourite?: boolean;
   recent_used_at?: string | null;
 }

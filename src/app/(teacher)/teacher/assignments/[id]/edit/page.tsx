@@ -5,10 +5,12 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AssignmentForm } from "@/components/teacher/assignment-form";
 import { AssignmentStampSelector } from "@/components/teacher/assignment-stamp-selector";
+import { AssignmentCommentBankImporter } from "@/components/teacher/assignment-comment-bank-importer";
 import {
   listMarkingStampsAction,
   loadAssignmentStampSelectionsAction,
 } from "@/lib/actions/marking-annotations";
+import { listCommentBanksAction } from "@/lib/actions/comment-banks";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import type { Assignment } from "@/lib/types";
@@ -72,12 +74,17 @@ export default async function EditAssignmentPage({
     .eq("id", assignment.class_id)
     .maybeSingle();
 
-  const [stampsResult, selectionsResult] = await Promise.all([
+  const [stampsResult, selectionsResult, banksResult] = await Promise.all([
     listMarkingStampsAction({
       subject: classRow?.subject ?? null,
       assignmentId: id,
     }),
     loadAssignmentStampSelectionsAction(id),
+    listCommentBanksAction({
+      templateId: assignment.template_id,
+      classId: assignment.class_id,
+      subject: classRow?.subject ?? null,
+    }),
   ]);
 
   return (
@@ -101,6 +108,15 @@ export default async function EditAssignmentPage({
           assignment={assignment as Assignment}
         />
       </Card>
+      {assignment.template_id ? (
+        <Card>
+          <CardTitle className="mb-4">Add comment bank</CardTitle>
+          <AssignmentCommentBankImporter
+            templateId={assignment.template_id}
+            banks={banksResult.banks ?? []}
+          />
+        </Card>
+      ) : null}
       <Card>
         <CardTitle className="mb-4">Marking stamps</CardTitle>
         <AssignmentStampSelector
