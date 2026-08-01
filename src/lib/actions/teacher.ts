@@ -665,7 +665,7 @@ export async function saveFeedbackAction(
   const { data: submission } = await supabase
     .from("submissions")
     .select(
-      "id, student_id, assignment_id, status, assignments!inner(id, teacher_id, maximum_mark, title)",
+      "id, student_id, assignment_id, status, assignments!inner(id, teacher_id, maximum_mark, title, class_id)",
     )
     .eq("id", submissionId)
     .maybeSingle();
@@ -673,7 +673,25 @@ export async function saveFeedbackAction(
   const assignment = Array.isArray(submission?.assignments)
     ? submission?.assignments[0]
     : submission?.assignments;
-  if (!submission || !assignment || assignment.teacher_id !== profile.id) {
+  if (!submission || !assignment) {
+    return { error: "Submission not found" };
+  }
+
+  const canMark =
+    profile.role === "admin" ||
+    assignment.teacher_id === profile.id ||
+    Boolean(
+      (
+        await supabase
+          .from("class_teachers")
+          .select("id")
+          .eq("class_id", assignment.class_id)
+          .eq("teacher_id", profile.id)
+          .eq("can_mark_submissions", true)
+          .maybeSingle()
+      ).data,
+    );
+  if (!canMark) {
     return { error: "Submission not found" };
   }
 
@@ -748,13 +766,33 @@ export async function reopenSubmissionAction(
   const supabase = await createClient();
   const { data: submission } = await supabase
     .from("submissions")
-    .select("id, student_id, assignment_id, assignments!inner(teacher_id, title)")
+    .select(
+      "id, student_id, assignment_id, assignments!inner(teacher_id, title, class_id)",
+    )
     .eq("id", submissionId)
     .maybeSingle();
   const assignment = Array.isArray(submission?.assignments)
     ? submission?.assignments[0]
     : submission?.assignments;
-  if (!submission || !assignment || assignment.teacher_id !== profile.id) {
+  if (!submission || !assignment) {
+    return { error: "Submission not found" };
+  }
+
+  const canMark =
+    profile.role === "admin" ||
+    assignment.teacher_id === profile.id ||
+    Boolean(
+      (
+        await supabase
+          .from("class_teachers")
+          .select("id")
+          .eq("class_id", assignment.class_id)
+          .eq("teacher_id", profile.id)
+          .eq("can_mark_submissions", true)
+          .maybeSingle()
+      ).data,
+    );
+  if (!canMark) {
     return { error: "Submission not found" };
   }
 
@@ -782,5 +820,8 @@ export async function reopenSubmissionAction(
 
   revalidatePath(`/teacher/marking/${submissionId}`);
   revalidatePath("/teacher/marking");
+  revalidatePath(`/student/homework/${submission.assignment_id}`);
+  revalidatePath("/student/homework");
+  revalidatePath("/student/dashboard");
   return { success: "Submission reopened for the student" };
 }

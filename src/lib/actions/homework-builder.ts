@@ -4,7 +4,13 @@ import { revalidatePath } from "next/cache";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import type { AssignmentCommentDraft, BuilderSection, StudentResponse } from "@/lib/types";
-import { cloneSection, structureToPayload } from "@/lib/homework/structure";
+import { evaluateStructuredCompletion } from "@/lib/homework/completion";
+import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
+import {
+  cloneSection,
+  loadTemplateStructure,
+  structureToPayload,
+} from "@/lib/homework/structure";
 import { structuredResponsesSchema } from "@/lib/validations/homework";
 import type { ActionResult } from "@/lib/actions/auth";
 import { assertSafeUpload, buildStoragePath } from "@/lib/utils/files";
@@ -377,7 +383,7 @@ export async function submitStructuredHomeworkAction(
 
   const { data: assignment } = await supabase
     .from("assignments")
-    .select("id, due_at")
+    .select("id, title, due_at, class_id, template_id")
     .eq("id", assignmentId)
     .maybeSingle();
   if (!assignment) return { error: "Assignment not found" };
@@ -393,24 +399,143 @@ export async function submitStructuredHomeworkAction(
     return { error: "Submission is locked" };
   }
 
+  // Completion is calculated from structured responses, never legacy written_response.
+  if (assignment.template_id) {
+    try {
+      const sections = await loadTemplateStructure(supabase, assignment.template_id);
+      if (isStructuredAssignment(sections)) {
+        const { data: stored } = await supabase
+          .from("student_responses")
+          .select(
+            "question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
+          )
+          .eq("submission_id", submission.id);
+
+        const snapshots = (stored ?? []).map((row) => ({
+          question_id: row.question_id as string,
+          text_value: row.text_value as string | null,
+          numeric_value: row.numeric_value as number | null,
+          boolean_value: row.boolean_value as boolean | null,
+          json_value: row.json_value,
+          file_name: row.file_name as string | null,
+          storage_path: row.storage_path as string | null,
+          cells: Array.isArray(row.response_cells)
+            ? (row.response_cells as Array<{
+                row_index: number;
+                col_index: number;
+                text_value: string | null;
+                numeric_value: number | null;
+                boolean_value: boolean | null;
+              }>)
+            : [],
+        }));
+
+        const completion = evaluateStructuredCompletion(sections, snapshots);
+        if (!completion.isComplete) {
+          const missing = completion.missingRequired
+            .slice(0, 3)
+            .map((q) => q.label)
+            .join("; ");
+          return {
+            error: missing
+              ? `Complete required questions before submitting (${missing})`
+              : "Complete required questions before submitting",
+          };
+        }
+      }
+    } catch {
+      // If structure cannot be loaded, still allow submit of saved responses.
+    }
+  }
+
   const late =
     assignment.due_at != null &&
     new Date(assignment.due_at).getTime() < Date.now();
+  const nextStatus = late ? "late" : "submitted";
+  const submittedAt = new Date().toISOString();
 
-  const { error } = await supabase
-    .from("submissions")
-    .update({
-      status: late ? "late" : "submitted",
-      submitted_at: new Date().toISOString(),
-    })
-    .eq("id", submission.id)
-    .eq("student_id", profile.id);
+  // Prefer transactional RPC when available; fall back if migration not applied yet.
+  const { error: rpcError } = await supabase.rpc("submit_student_homework", {
+    p_assignment_id: assignmentId,
+    p_status: nextStatus,
+    p_submitted_at: submittedAt,
+  });
 
-  if (error) return { error: error.message };
+  if (rpcError) {
+    const rpcMissing = /could not find the function|schema cache/i.test(
+      rpcError.message ?? "",
+    );
+    if (!rpcMissing) {
+      return { error: rpcError.message };
+    }
+
+    const { error } = await supabase
+      .from("submissions")
+      .update({
+        status: nextStatus,
+        submitted_at: submittedAt,
+      })
+      .eq("id", submission.id)
+      .eq("student_id", profile.id)
+      .in("status", ["draft", "returned"]);
+
+    if (error) return { error: error.message };
+
+    // Confirm the row actually flipped — RLS/with-check failures can no-op.
+    const { data: confirmed } = await supabase
+      .from("submissions")
+      .select("status")
+      .eq("id", submission.id)
+      .maybeSingle();
+    if (!confirmed || !["submitted", "late"].includes(confirmed.status)) {
+      return { error: "Could not finalise submission status" };
+    }
+  }
+
+  const { data: classTeachers } = await supabase
+    .from("class_teachers")
+    .select("teacher_id")
+    .eq("class_id", assignment.class_id)
+    .eq("can_mark_submissions", true);
+
+  if (classTeachers?.length) {
+    await supabase.from("notifications").insert(
+      classTeachers.map((ct) => ({
+        user_id: ct.teacher_id,
+        type: "homework_submitted" as const,
+        title: "Homework submitted",
+        body: `${profile.display_name} submitted ${assignment.title}`,
+        link_path: `/teacher/marking/${submission.id}`,
+      })),
+    );
+  } else {
+    const { data: classRow } = await supabase
+      .from("classes")
+      .select("teacher_id")
+      .eq("id", assignment.class_id)
+      .maybeSingle();
+    if (classRow?.teacher_id) {
+      await supabase.from("notifications").insert({
+        user_id: classRow.teacher_id,
+        type: "homework_submitted",
+        title: "Homework submitted",
+        body: `${profile.display_name} submitted ${assignment.title}`,
+        link_path: `/teacher/marking/${submission.id}`,
+      });
+    }
+  }
 
   revalidatePath(`/student/homework/${assignmentId}`);
   revalidatePath(`/student/homework/${assignmentId}/review`);
-  return { success: "Homework submitted" };
+  revalidatePath("/student/homework");
+  revalidatePath("/student/dashboard");
+  revalidatePath("/teacher/marking");
+  revalidatePath("/teacher/dashboard");
+  return {
+    success: late
+      ? "Submitted (marked late). Your teacher can now review it."
+      : "Homework submitted successfully.",
+  };
 }
 
 // ── Load student's existing responses ────────────────────────────────────────

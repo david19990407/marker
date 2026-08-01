@@ -19,6 +19,10 @@ import {
   type StructuredResponseInput,
 } from "@/lib/actions/homework-builder";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
+import {
+  evaluateStructuredCompletion,
+  type ResponseSnapshot,
+} from "@/lib/homework/completion";
 import { computePassageStartLines } from "@/lib/homework/passage-numbering";
 import {
   flattenStudentBlocks,
@@ -122,34 +126,36 @@ export function StructuredHomework({
     });
   }
 
+  function valuesToSnapshots(
+    current: Record<string, ResponseValue>,
+  ): ResponseSnapshot[] {
+    return collectResponses(current, sectionsRef.current).map((resp) => ({
+      question_id: resp.question_id,
+      text_value: resp.text_value ?? null,
+      numeric_value: resp.numeric_value ?? null,
+      boolean_value: resp.boolean_value ?? null,
+      json_value: resp.json_value ?? null,
+      cells: resp.cells,
+    }));
+  }
+
   function validate(): boolean {
     const nextErrors: Record<string, string> = {};
+    const completion = evaluateStructuredCompletion(
+      sections,
+      valuesToSnapshots(values),
+    );
+
+    for (const missing of completion.missingRequired) {
+      nextErrors[responseKey(missing.block)] = "This question is required";
+    }
+
     const blocks = flattenStudentBlocks(sections).filter(
       (b) => isResponseType(b.block_type) && !b.review_only,
     );
-
     for (const block of blocks) {
       const qid = responseKey(block);
-      if (!block.question_id) continue;
       const value = values[qid];
-
-      if (block.required) {
-        if (!value) {
-          nextErrors[qid] = "This question is required";
-          continue;
-        }
-        if (value.type === "text" && !value.text.trim()) {
-          nextErrors[qid] = "This question is required";
-        } else if (value.type === "numeric" && value.numeric == null) {
-          nextErrors[qid] = "Enter a number";
-        } else if (value.type === "bool" && !value.bool) {
-          nextErrors[qid] = "Please tick this box";
-        } else if (value.type === "table") {
-          const hasAny = value.cells.some((c) => c.text.trim());
-          if (!hasAny) nextErrors[qid] = "Complete at least one cell";
-        }
-      }
-
       if (value?.type === "numeric" && value.numeric != null) {
         if (block.min_value != null && value.numeric < block.min_value) {
           nextErrors[qid] = `Minimum value is ${block.min_value}`;
@@ -158,7 +164,6 @@ export function StructuredHomework({
           nextErrors[qid] = `Maximum value is ${block.max_value}`;
         }
       }
-
       if (value?.type === "text" && block.word_limit != null) {
         const words = value.text.trim() ? value.text.trim().split(/\s+/).length : 0;
         if (words > block.word_limit) {

@@ -12,8 +12,8 @@ import {
 import { DownloadButton } from "@/components/shared/download-button";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
+import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
 import { loadTemplateStructure } from "@/lib/homework/structure";
-import { RESPONSE_BLOCK_TYPES } from "@/lib/types";
 
 export default async function StudentAssignmentPage({
   params,
@@ -81,22 +81,7 @@ export default async function StudentAssignmentPage({
   if (assignment.template_id) {
     try {
       const sections = await loadTemplateStructure(supabase, assignment.template_id);
-
-      const allBlocks = sections.flatMap((s) => [
-        ...s.blocks,
-        ...s.subsections.flatMap((sub) => sub.blocks),
-      ]);
-      const nonEmpty = allBlocks.filter(
-        (b) => !b.teacher_only && b.block_type !== "mark_scheme",
-      );
-      const hasResponseBlocks = nonEmpty.some((b) =>
-        (RESPONSE_BLOCK_TYPES as readonly string[]).includes(b.block_type),
-      );
-
-      hasStructuredBlocks =
-        hasResponseBlocks ||
-        nonEmpty.length > 1 ||
-        (nonEmpty.length === 1 && nonEmpty[0].block_type !== "instruction");
+      hasStructuredBlocks = isStructuredAssignment(sections);
 
       if (hasStructuredBlocks) {
         structuredSections = sections;
@@ -202,40 +187,39 @@ export default async function StudentAssignmentPage({
         )}
       </Card>
 
-      {/* Legacy submission panel (text/file) — always shown when assignment allows it */}
-      {(assignment.allow_text_submission || assignment.allow_file_submission) && (
-        <Card>
-          <CardTitle className="mb-4">Submit work</CardTitle>
-          <SubmissionPanel
-            assignmentId={assignmentId}
-            allowText={assignment.allow_text_submission}
-            allowFile={assignment.allow_file_submission}
-            editable={editable}
-            writtenResponse={submission?.written_response ?? null}
-            fileName={submission?.file_name ?? null}
-            storagePath={submission?.storage_path ?? null}
-          />
-        </Card>
-      )}
-
-      {/* If structured only (no text/file submission), show submit button */}
-      {hasStructuredBlocks &&
-        !assignment.allow_text_submission &&
-        !assignment.allow_file_submission &&
-        editable && (
+      {/* Legacy text/file panel only for non-structured assignments (or optional extras). */}
+      {!hasStructuredBlocks &&
+        (assignment.allow_text_submission || assignment.allow_file_submission) && (
           <Card>
-            <CardTitle className="mb-2">Submit homework</CardTitle>
+            <CardTitle className="mb-4">Submit work</CardTitle>
+            <SubmissionPanel
+              assignmentId={assignmentId}
+              allowText={assignment.allow_text_submission}
+              allowFile={assignment.allow_file_submission}
+              editable={editable}
+              writtenResponse={submission?.written_response ?? null}
+              fileName={submission?.file_name ?? null}
+              storagePath={submission?.storage_path ?? null}
+            />
+          </Card>
+        )}
+
+      {hasStructuredBlocks &&
+        (assignment.allow_text_submission || assignment.allow_file_submission) && (
+          <Card>
+            <CardTitle className="mb-2">Additional submission</CardTitle>
             <p className="mb-4 text-sm text-slate-600">
-              Save your answers above, then submit when you&apos;re ready.
+              Optional extra written response or file for this assignment. Your
+              structured answers above are submitted from Review &amp; submit.
             </p>
             <SubmissionPanel
               assignmentId={assignmentId}
-              allowText={false}
-              allowFile={false}
+              allowText={assignment.allow_text_submission}
+              allowFile={assignment.allow_file_submission}
               editable={editable}
-              writtenResponse={null}
-              fileName={null}
-              storagePath={null}
+              writtenResponse={submission?.written_response ?? null}
+              fileName={submission?.file_name ?? null}
+              storagePath={submission?.storage_path ?? null}
             />
           </Card>
         )}

@@ -319,6 +319,8 @@ export interface BuilderBlock {
   option_feedback?: string[];
   correct_option_indexes?: number[];
   shuffle_options?: boolean;
+  /** Minimum selected options for multiple_select (default 1 when required). */
+  min_selections?: number | null;
   marking_mode?: "teacher_reviewed" | "automatic";
   student_visible?: boolean;
   review_only?: boolean;
