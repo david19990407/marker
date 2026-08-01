@@ -36,8 +36,11 @@ function mapAnnotation(row: Record<string, unknown>): SubmissionAnnotation {
     opacity: Number(row.opacity ?? 0.35),
     stroke_width: Number(row.stroke_width ?? 2),
     stamp_id: (row.stamp_id as string | null) ?? null,
+    source_comment_item_id:
+      (row.source_comment_item_id as string | null) ?? null,
     visibility:
-      (row.visibility as SubmissionAnnotation["visibility"]) ?? "teacher_only",
+      (row.visibility as SubmissionAnnotation["visibility"]) ??
+      "student_visible",
     client_version: Number(row.client_version ?? 1),
     is_deleted: Boolean(row.is_deleted),
     created_by: String(row.created_by),

@@ -33,7 +33,7 @@ function navForRole(role: Profile["role"]): NavItem[] {
         icon: SlidersHorizontal,
       },
       {
-        href: "/admin/marking-stamps",
+        href: "/admin/settings/marking-stamps",
         label: "Marking stamps",
         icon: Stamp,
       },

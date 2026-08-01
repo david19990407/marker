@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { SchoolSettingsForm } from "@/components/admin/school-settings-form";
 import { YearGroupsManager } from "@/components/admin/year-groups-manager";
 import { SubjectsManager } from "@/components/admin/subjects-manager";
@@ -60,6 +62,28 @@ export default async function AdminSettingsPage() {
         <Card>
           <CardTitle className="mb-4">Subject icons</CardTitle>
           <SubjectIconsPanel />
+        </Card>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card className="space-y-3">
+          <CardTitle>Marking stamps</CardTitle>
+          <p className="text-sm text-slate-500">
+            Upload PNG, SVG or WebP stamps for the document marking workspace.
+          </p>
+          <Link href="/admin/settings/marking-stamps">
+            <Button variant="secondary">Manage stamps</Button>
+          </Link>
+        </Card>
+        <Card className="space-y-3">
+          <CardTitle>Comment banks</CardTitle>
+          <p className="text-sm text-slate-500">
+            Create grouped school and department comment banks for teachers to
+            link or copy into assignments.
+          </p>
+          <Link href="/admin/settings/comment-banks">
+            <Button variant="secondary">Manage comment banks</Button>
+          </Link>
         </Card>
       </div>
     </div>

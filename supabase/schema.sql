@@ -13,7 +13,8 @@
 --   8. supabase/fix_role_based_class_management_and_branding.sql
 --   9. supabase/phase_05_flexible_feedback_and_comment_banks.sql
 --  10. supabase/phase_06_annotations_and_stamps.sql  -- Phase 8 document marking
---  11. Later phase_06 fix_* migrations as needed for live repairs
+--  11. supabase/fix_phase_08_marking_workspace_usability.sql
+--  12. Later phase_06 fix_* migrations as needed for live repairs
 --
 -- Existing LIVE project:
 --   Prefer additive repair files only. Do NOT re-run this full schema.sql.
