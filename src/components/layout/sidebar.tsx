@@ -48,7 +48,7 @@ function navForRole(role: Profile["role"]): NavItem[] {
       { href: "/teacher/marking", label: "Marking", icon: ClipboardList },
       {
         href: "/teacher/comment-banks",
-        label: "Comment banks",
+        label: "Browse banks",
         icon: MessageSquareText,
       },
       { href: "/settings", label: "Settings", icon: Settings },

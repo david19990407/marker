@@ -1,10 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import type { ActionResult } from "@/lib/actions/auth";
 import type { CommentBankGroup } from "@/lib/feedback/types";
+
+const uuidSchema = z.string().uuid();
 
 function mapGroup(row: Record<string, unknown>): CommentBankGroup {
   return {
@@ -56,9 +59,10 @@ export async function saveCommentBankGroupAction(input: {
   mark_range_min?: number | null;
   mark_range_max?: number | null;
   category?: string;
+    tags?: string[];
   is_active?: boolean;
 }): Promise<ActionResult & { group?: CommentBankGroup }> {
-  await requireProfile(["admin", "teacher"]);
+  await requireProfile(["admin"]);
   const supabase = await createClient();
   const payload = {
     bank_id: input.bank_id,
@@ -70,6 +74,7 @@ export async function saveCommentBankGroupAction(input: {
     mark_range_min: input.mark_range_min ?? null,
     mark_range_max: input.mark_range_max ?? null,
     category: input.category ?? "",
+    tags: input.tags ?? [],
     is_active: input.is_active ?? true,
   };
   if (!payload.name) return { error: "Group name is required" };
@@ -94,6 +99,116 @@ export async function saveCommentBankGroupAction(input: {
   if (error) return { error: error.message };
   revalidatePath("/admin/settings/comment-banks");
   return { success: "Group created", group: mapGroup(data) };
+}
+
+export async function loadAssignmentCommentSelectionsAction(
+  templateId: string,
+): Promise<ActionResult & { selectedItemIds?: string[] }> {
+  await requireProfile(["teacher", "admin"]);
+  const parsedTemplateId = uuidSchema.safeParse(templateId);
+  if (!parsedTemplateId.success) return { error: "Invalid assignment template" };
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("assignment_comment_selections")
+    .select("comment_item_id, sort_order")
+    .eq("template_id", parsedTemplateId.data)
+    .eq("selected", true)
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    if (/does not exist|schema cache/i.test(error.message)) {
+      return { selectedItemIds: [] };
+    }
+    return { error: error.message };
+  }
+
+  return {
+    selectedItemIds: (data ?? []).map((row) => String(row.comment_item_id)),
+  };
+}
+
+export async function saveAssignmentCommentSelectionsAction(
+  templateId: string,
+  commentItemIds: string[],
+): Promise<ActionResult & { selectedItemIds?: string[] }> {
+  const profile = await requireProfile(["teacher", "admin"]);
+  const parsedTemplateId = uuidSchema.safeParse(templateId);
+  if (!parsedTemplateId.success) return { error: "Invalid assignment template" };
+
+  const parsedItemIds = z.array(uuidSchema).safeParse(commentItemIds);
+  if (!parsedItemIds.success) return { error: "Invalid comment selection" };
+
+  const uniqueItemIds = [...new Set(parsedItemIds.data)];
+  const supabase = await createClient();
+
+  if (!uniqueItemIds.length) {
+    const { error } = await supabase
+      .from("assignment_comment_selections")
+      .delete()
+      .eq("template_id", parsedTemplateId.data);
+    if (error) {
+      if (/does not exist|schema cache/i.test(error.message)) {
+        return {
+          error:
+            "Run fix_phase_08_feedback_and_comment_bank_ux.sql to enable comment selections.",
+        };
+      }
+      return { error: error.message };
+    }
+    revalidatePath("/teacher/assignments");
+    return { success: "Comment selections cleared", selectedItemIds: [] };
+  }
+
+  const { data: items, error: itemsError } = await supabase
+    .from("comment_bank_items")
+    .select("id, bank_id, group_id")
+    .in("id", uniqueItemIds);
+  if (itemsError) return { error: itemsError.message };
+
+  const itemRows = items ?? [];
+  if (itemRows.length !== uniqueItemIds.length) {
+    return { error: "One or more comments are unavailable" };
+  }
+
+  const { error: deleteError } = await supabase
+    .from("assignment_comment_selections")
+    .delete()
+    .eq("template_id", parsedTemplateId.data);
+  if (deleteError) {
+    if (/does not exist|schema cache/i.test(deleteError.message)) {
+      return {
+        error:
+          "Run fix_phase_08_feedback_and_comment_bank_ux.sql to enable comment selections.",
+      };
+    }
+    return { error: deleteError.message };
+  }
+
+  const itemById = new Map(itemRows.map((row) => [String(row.id), row]));
+  const payload = uniqueItemIds.map((itemId, index) => {
+    const item = itemById.get(itemId)!;
+    return {
+      template_id: parsedTemplateId.data,
+      bank_id: item.bank_id,
+      group_id: item.group_id ?? null,
+      comment_item_id: itemId,
+      selected: true,
+      sort_order: index,
+      selected_by: profile.id,
+    };
+  });
+
+  const { error: insertError } = await supabase
+    .from("assignment_comment_selections")
+    .insert(payload);
+  if (insertError) return { error: insertError.message };
+
+  revalidatePath("/teacher/assignments");
+  return {
+    success: `${uniqueItemIds.length} comments selected`,
+    selectedItemIds: uniqueItemIds,
+  };
 }
 
 export async function importCommentBankToAssignmentAction(input: {

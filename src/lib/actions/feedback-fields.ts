@@ -169,14 +169,11 @@ export async function saveFeedbackFieldsAction(
     .map((row) => String(row.id))
     .filter((id) => !keepIds.has(id));
   if (toDelete.length) {
-    // Do not delete classic keys that still have values — archive by renaming is safer;
-    // only delete unused custom fields.
     const { error } = await supabase
       .from("assignment_feedback_fields")
       .delete()
       .in("id", toDelete)
-      .eq("template_id", templateId)
-      .not("field_key", "in", "(strengths,improvements,next_steps,private_notes)");
+      .eq("template_id", templateId);
     if (error) return { error: error.message };
   }
 

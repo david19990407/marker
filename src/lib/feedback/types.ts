@@ -63,6 +63,8 @@ export interface CommentBank {
   owner_id: string | null;
   department_name: string | null;
   subject: string | null;
+  year_group: string | null;
+  teacher_restriction_ids: string[];
   class_id: string | null;
   template_id: string | null;
   is_active: boolean;

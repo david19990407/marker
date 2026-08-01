@@ -44,7 +44,7 @@ interface Props {
   markSchemes?: MarkSchemeSummary[];
   initialComments?: AssignmentCommentDraft[];
   commentBanks?: CommentBankOption[];
-  linkedCommentBankIds?: string[];
+  selectedCommentItemIds?: string[];
   feedbackFields?: import("@/lib/feedback/types").AssignmentFeedbackField[];
 }
 
@@ -67,7 +67,7 @@ export function HomeworkStudio({
   markSchemes = [],
   initialComments = [],
   commentBanks = [],
-  linkedCommentBankIds = [],
+  selectedCommentItemIds = [],
   feedbackFields = [],
 }: Props) {
   const [sections, setSections] = useState<BuilderSection[]>(initialSections);
@@ -284,7 +284,7 @@ export function HomeworkStudio({
           commentAutosaveError={commentAutosave.lastError}
           onFlushComments={() => void commentAutosave.flush()}
           commentBanks={commentBanks}
-          linkedCommentBankIds={linkedCommentBankIds}
+          selectedCommentItemIds={selectedCommentItemIds}
           feedbackFields={feedbackFields}
         />
       </div>

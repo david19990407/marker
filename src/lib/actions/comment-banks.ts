@@ -14,6 +14,10 @@ async function assertTeacher() {
   return requireProfile(["teacher", "admin"]);
 }
 
+async function assertAdmin() {
+  return requireProfile(["admin"]);
+}
+
 function mapBank(row: Record<string, unknown>): CommentBank {
   return {
     id: String(row.id),
@@ -23,6 +27,10 @@ function mapBank(row: Record<string, unknown>): CommentBank {
     owner_id: (row.owner_id as string | null) ?? null,
     department_name: (row.department_name as string | null) ?? null,
     subject: (row.subject as string | null) ?? null,
+    year_group: (row.year_group as string | null) ?? null,
+    teacher_restriction_ids: Array.isArray(row.teacher_restriction_ids)
+      ? (row.teacher_restriction_ids as string[])
+      : [],
     class_id: (row.class_id as string | null) ?? null,
     template_id: (row.template_id as string | null) ?? null,
     is_active: Boolean(row.is_active),
@@ -99,6 +107,7 @@ export async function listCommentBankItemsAction(filters?: {
   classId?: string | null;
   subject?: string | null;
   includeArchived?: boolean;
+  selectedOnly?: boolean;
 }): Promise<
   ActionResult & {
     items?: CommentBankItem[];
@@ -146,6 +155,24 @@ export async function listCommentBankItemsAction(filters?: {
     return { error: error.message };
   }
 
+  let selectedItemIds: Set<string> | null = null;
+  if (filters?.selectedOnly && filters.templateId) {
+    const { data: selections, error: selectionsError } = await supabase
+      .from("assignment_comment_selections")
+      .select("comment_item_id")
+      .eq("template_id", filters.templateId)
+      .eq("selected", true);
+    if (selectionsError) {
+      if (!/does not exist|schema cache/i.test(selectionsError.message)) {
+        return { error: selectionsError.message };
+      }
+    } else {
+      selectedItemIds = new Set(
+        (selections ?? []).map((row) => String(row.comment_item_id)),
+      );
+    }
+  }
+
   const bankById = new Map(banks.map((b) => [b.id, b]));
   const favouriteIds = (favs ?? []).map((f) => String(f.comment_item_id));
   const recentIds = (recent ?? []).map((r) => String(r.comment_item_id));
@@ -157,17 +184,19 @@ export async function listCommentBankItemsAction(filters?: {
   );
 
   return {
-    items: (items ?? []).map((row) => {
-      const item = mapItem(row as Record<string, unknown>);
-      const bank = bankById.get(item.bank_id);
-      return {
-        ...item,
-        bank_name: bank?.name,
-        bank_scope: bank?.scope,
-        is_favourite: favouriteIds.includes(item.id),
-        recent_used_at: recentAt.get(item.id) ?? null,
-      };
-    }),
+    items: (items ?? [])
+      .map((row) => {
+        const item = mapItem(row as Record<string, unknown>);
+        const bank = bankById.get(item.bank_id);
+        return {
+          ...item,
+          bank_name: bank?.name,
+          bank_scope: bank?.scope,
+          is_favourite: favouriteIds.includes(item.id),
+          recent_used_at: recentAt.get(item.id) ?? null,
+        };
+      })
+      .filter((item) => !selectedItemIds || selectedItemIds.has(item.id)),
     favouriteIds,
     recentIds,
   };
@@ -176,7 +205,7 @@ export async function listCommentBankItemsAction(filters?: {
 export async function saveCommentBankAction(
   input: unknown,
 ): Promise<ActionResult & { bank?: CommentBank }> {
-  const profile = await assertTeacher();
+  const profile = await assertAdmin();
   const parsed = commentBankSchema.safeParse(input);
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid bank" };
@@ -191,6 +220,8 @@ export async function saveCommentBankAction(
     description: parsed.data.description || null,
     department_name: parsed.data.department_name || null,
     subject: parsed.data.subject || null,
+    year_group: parsed.data.year_group || null,
+    teacher_restriction_ids: parsed.data.teacher_restriction_ids ?? [],
     class_id: parsed.data.class_id || null,
     template_id: parsed.data.template_id || null,
   };
@@ -222,7 +253,7 @@ export async function saveCommentBankAction(
 export async function saveCommentBankItemAction(
   input: unknown,
 ): Promise<ActionResult & { item?: CommentBankItem }> {
-  const profile = await assertTeacher();
+  const profile = await assertAdmin();
   const parsed = commentBankItemSchema.safeParse(input);
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid comment" };
@@ -269,14 +300,14 @@ export async function saveCommentBankItemAction(
 export async function archiveCommentBankItemAction(
   itemId: string,
 ): Promise<ActionResult> {
-  await assertTeacher();
+  await assertAdmin();
   const supabase = await createClient();
   const { error } = await supabase
     .from("comment_bank_items")
     .update({ is_active: false })
     .eq("id", itemId);
   if (error) return { error: error.message };
-  revalidatePath("/teacher/comment-banks");
+  revalidatePath("/admin/settings/comment-banks");
   return { success: "Comment archived" };
 }
 

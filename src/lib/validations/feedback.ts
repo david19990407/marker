@@ -91,6 +91,8 @@ export const commentBankSchema = z.object({
   description: z.string().trim().max(1000).optional().nullable(),
   department_name: z.string().trim().max(120).optional().nullable(),
   subject: z.string().trim().max(120).optional().nullable(),
+  year_group: z.string().trim().max(40).optional().nullable(),
+  teacher_restriction_ids: z.array(z.string().uuid()).default([]),
   class_id: z.string().uuid().optional().nullable(),
   template_id: z.string().uuid().optional().nullable(),
   is_active: z.boolean().default(true),

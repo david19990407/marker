@@ -12,7 +12,7 @@ interface Props {
   markSchemes?: ComponentProps<typeof HomeworkStudio>["markSchemes"];
   initialComments?: ComponentProps<typeof HomeworkStudio>["initialComments"];
   commentBanks?: ComponentProps<typeof HomeworkStudio>["commentBanks"];
-  linkedCommentBankIds?: ComponentProps<typeof HomeworkStudio>["linkedCommentBankIds"];
+  selectedCommentItemIds?: ComponentProps<typeof HomeworkStudio>["selectedCommentItemIds"];
   feedbackFields?: ComponentProps<typeof HomeworkStudio>["feedbackFields"];
 }
 

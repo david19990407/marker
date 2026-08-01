@@ -1,19 +1,22 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AssignmentCommentSelector,
+  type AssignmentCommentSelectorBank,
+} from "@/components/teacher/assignment-comment-selector";
 import { FeedbackFieldsEditor } from "@/components/teacher/homework-builder/feedback-fields-editor";
-import { saveCommentBankLinksAction } from "@/lib/actions/homework-builder";
 import type { AssignmentFeedbackField } from "@/lib/feedback/types";
 import { newId } from "@/lib/homework/structure";
 import { BLOCK_TYPE_LABELS, RESPONSE_BLOCK_TYPES } from "@/lib/types";
 import type { AssignmentCommentDraft, BuilderSection } from "@/lib/types";
 
-export type CommentBankOption = { id: string; name: string };
+export type CommentBankOption = AssignmentCommentSelectorBank;
 
 interface Props {
   templateId: string;
@@ -25,7 +28,7 @@ interface Props {
   commentAutosaveError?: string | null;
   onFlushComments?: () => void;
   commentBanks?: CommentBankOption[];
-  linkedCommentBankIds?: string[];
+  selectedCommentItemIds?: string[];
   feedbackFields?: AssignmentFeedbackField[];
 }
 
@@ -40,17 +43,14 @@ export function FeedbackStage({
   commentAutosaveError = null,
   onFlushComments,
   commentBanks = [],
-  linkedCommentBankIds = [],
+  selectedCommentItemIds = [],
   feedbackFields = [],
 }: Props) {
-  const [bankIds, setBankIds] = useState<string[]>(linkedCommentBankIds);
   const [selectedBank, setSelectedBank] = useState<BankView>("assignment");
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(
     null,
   );
   const [search, setSearch] = useState("");
-  const [bankMessage, setBankMessage] = useState<string | null>(null);
-  const [bankPending, startBankTransition] = useTransition();
   const [generatorOpen, setGeneratorOpen] = useState(false);
 
   const questionOptions = useMemo(
@@ -199,20 +199,6 @@ export function FeedbackStage({
     setGeneratorOpen(false);
   }
 
-  function toggleBank(id: string) {
-    setBankIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
-  }
-
-  function saveBankLinks() {
-    setBankMessage(null);
-    startBankTransition(async () => {
-      const result = await saveCommentBankLinksAction(templateId, bankIds);
-      setBankMessage(result.error ?? result.success ?? "Links saved");
-    });
-  }
-
   return (
     <div className="space-y-4">
       <FeedbackFieldsEditor
@@ -220,14 +206,13 @@ export function FeedbackStage({
         initialFields={feedbackFields}
       />
     <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
-      {/* Left: banks */}
+      {/* Left: admin bank selections */}
       <Card className="h-fit space-y-3">
-        <div>
-          <CardTitle>Comment banks</CardTitle>
-          <p className="mt-1 text-xs text-slate-500">
-            Assignment comments and linked school banks.
-          </p>
-        </div>
+        <AssignmentCommentSelector
+          templateId={templateId}
+          banks={commentBanks}
+          initialSelections={selectedCommentItemIds}
+        />
         <button
           type="button"
           onClick={() => setSelectedBank("assignment")}
@@ -240,43 +225,6 @@ export function FeedbackStage({
           Assignment comments
           <span className="ml-2 text-xs text-slate-400">{comments.length}</span>
         </button>
-        <div className="space-y-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-            School banks
-          </p>
-          {commentBanks.length === 0 ? (
-            <p className="text-xs text-slate-400">No school banks available.</p>
-          ) : (
-            commentBanks.map((bank) => {
-              const linked = bankIds.includes(bank.id);
-              return (
-                <label
-                  key={bank.id}
-                  className="flex cursor-pointer items-center gap-2 rounded-xl px-2 py-1.5 text-sm hover:bg-slate-50"
-                >
-                  <input
-                    type="checkbox"
-                    checked={linked}
-                    onChange={() => toggleBank(bank.id)}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{bank.name}</span>
-                </label>
-              );
-            })
-          )}
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          onClick={saveBankLinks}
-          disabled={bankPending}
-        >
-          {bankPending ? "Saving…" : "Save bank links"}
-        </Button>
-        {bankMessage ? (
-          <p className="text-xs text-slate-500">{bankMessage}</p>
-        ) : null}
       </Card>
 
       {/* Centre: comments */}
