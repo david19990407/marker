@@ -14,6 +14,7 @@ describe("mcq option text helpers", () => {
     expect(getMcqOptionText({ label: "Legacy only" } as { label: string })).toBe(
       "Legacy only",
     );
+    expect(getMcqOptionText({ text: "", label: "From label" })).toBe("From label");
   });
 
   it("heals Option A + feedback answer pattern", () => {

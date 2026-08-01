@@ -26,8 +26,10 @@ const ROMAN = [
 
 /** Canonical answer text for an option (never the A/B/C identifier). */
 export function getMcqOptionText(option: Pick<McqOption, "text" | "label">): string {
+  // Empty string is not authoritative — fall back to legacy label.
+  if (typeof option.text === "string" && option.text.trim()) return option.text;
+  if (typeof option.label === "string" && option.label.trim()) return option.label;
   if (typeof option.text === "string") return option.text;
-  if (typeof option.label === "string") return option.label;
   return "";
 }
 
@@ -86,13 +88,15 @@ export function normalizeMcqOption(
       ? raw.id
       : idFallback || `opt-${index}`;
 
-  // Prefer explicit text; fall back to legacy label.
-  let text =
-    typeof raw.text === "string"
-      ? raw.text
-      : typeof raw.label === "string"
-        ? raw.label
-        : "";
+  // Prefer non-empty text; fall back to legacy label when text is blank.
+  let text = "";
+  if (typeof raw.text === "string" && raw.text.trim()) {
+    text = raw.text;
+  } else if (typeof raw.label === "string") {
+    text = raw.label;
+  } else if (typeof raw.text === "string") {
+    text = raw.text;
+  }
   let feedback = typeof raw.feedback === "string" ? raw.feedback : "";
 
   if (feedback.trim() && looksLikeOptionPlaceholder(text)) {

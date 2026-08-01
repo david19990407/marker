@@ -495,7 +495,13 @@ async function assertStudentCanAccessAssignment(assignmentId: string) {
 export async function saveStudentStructuredResponsesAction(
   assignmentId: string,
   responses: StructuredResponseInput[],
-): Promise<ActionResult> {
+): Promise<
+  ActionResult & {
+    savedCount?: number;
+    submissionId?: string;
+    savedAt?: string;
+  }
+> {
   const access = await assertStudentCanAccessAssignment(assignmentId);
   if ("error" in access && access.error) return { error: access.error };
   const { profile, supabase } = access as Awaited<
@@ -522,7 +528,19 @@ export async function saveStudentStructuredResponsesAction(
   }
 
   if (!["draft", "returned"].includes(submission.status)) {
-    return { error: "Submission is locked" };
+    return {
+      error: `Submission is locked (status: ${submission.status}). Unsubmit to continue editing.`,
+    };
+  }
+
+  if (responses.length === 0) {
+    // Legitimate when the student has not entered answers yet.
+    return {
+      success: "Nothing to save",
+      savedAt: new Date().toISOString(),
+      submissionId: submission.id,
+      savedCount: 0,
+    };
   }
 
   const parsed = structuredResponsesSchema.safeParse(responses);
@@ -559,6 +577,7 @@ export async function saveStudentStructuredResponsesAction(
   );
 
   const errors: string[] = [];
+  let savedCount = 0;
 
   for (const resp of parsed.data) {
     const existing = existingByQuestion.get(resp.question_id);
@@ -593,6 +612,30 @@ export async function saveStudentStructuredResponsesAction(
       upsertRow.client_version = incomingVersion;
     }
 
+    const responseKind = incomingEmpty
+      ? "empty"
+      : resp.json_value != null
+        ? "mcq_or_json"
+        : resp.numeric_value != null
+          ? "numeric"
+          : resp.boolean_value != null
+            ? "boolean"
+            : resp.cells?.length
+              ? "table"
+              : "text";
+
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[student-response-save]", {
+        submissionId: submission.id,
+        questionId: resp.question_id,
+        responseType: responseKind,
+        operation: existing ? "update" : "insert",
+        clientVersion: incomingVersion,
+        timestamp: new Date().toISOString(),
+        // Do not log answer text.
+      });
+    }
+
     let { data: upserted, error: upsertError } = await supabase
       .from("student_responses")
       .upsert(upsertRow, { onConflict: "submission_id,question_id" })
@@ -614,9 +657,13 @@ export async function saveStudentStructuredResponsesAction(
     }
 
     if (upsertError) {
-      errors.push(upsertError.message);
+      errors.push(
+        `Question ${resp.question_id.slice(0, 8)}… upsert failed: ${upsertError.message}`,
+      );
       continue;
     }
+
+    savedCount += 1;
 
     if (resp.cells?.length && upserted) {
       const cellRows = resp.cells.map((c) => ({
@@ -632,15 +679,32 @@ export async function saveStudentStructuredResponsesAction(
         .from("response_cells")
         .upsert(cellRows, { onConflict: "student_response_id,row_index,col_index" });
 
-      if (cellError) errors.push(cellError.message);
+      if (cellError) {
+        errors.push(
+          `Question ${resp.question_id.slice(0, 8)}… cell save failed: ${cellError.message}`,
+        );
+      }
     }
   }
 
-  if (errors.length > 0) return { error: errors[0] };
+  if (errors.length > 0) {
+    return {
+      error: errors[0],
+      submissionId: submission.id,
+      savedCount,
+    };
+  }
 
   // Local-first: do not revalidatePath on autosave (prevents remount / text loss).
-  return { success: "Responses saved", savedAt: new Date().toISOString() } as ActionResult & {
+  return {
+    success: "Responses saved",
+    savedAt: new Date().toISOString(),
+    submissionId: submission.id,
+    savedCount,
+  } as ActionResult & {
     savedAt: string;
+    submissionId: string;
+    savedCount: number;
   };
 }
 

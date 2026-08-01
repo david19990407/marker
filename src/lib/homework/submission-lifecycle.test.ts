@@ -4,6 +4,7 @@ import { evaluateStructuredCompletion } from "./completion";
 import { buildMcqAnswerJson } from "./mcq-answers";
 import {
   collectResponses,
+  collectUnpersistableAnswerLabels,
   valuesToCompletionSnapshots,
 } from "./response-collect";
 import { applyMcqOptions, createBlock, emptySection } from "./structure";
@@ -148,5 +149,27 @@ describe("phase 6 submission lifecycle helpers", () => {
     );
     expect(responses[0]?.json_value).toEqual(buildMcqAnswerJson(["b"]));
     expect(responses[0]?.text_value).toBe("B");
+  });
+
+  it("cannot persist extended writing when question_id is missing", () => {
+    const writing = createBlock("extended_writing");
+    writing.required = true;
+    writing.question_id = null;
+    const section = emptySection();
+    section.blocks = [writing];
+    const values = {
+      [writing._id]: {
+        type: "text" as const,
+        text: "Visible answer that cannot be saved",
+      },
+    };
+    expect(collectResponses(values, [section])).toHaveLength(0);
+    expect(collectUnpersistableAnswerLabels(values, [section])).toHaveLength(1);
+    // Local completion still counts the typed answer.
+    const completion = evaluateStructuredCompletion(
+      [section],
+      valuesToCompletionSnapshots(values, [section]),
+    );
+    expect(completion.answeredRequiredCount).toBe(1);
   });
 });

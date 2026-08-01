@@ -63,9 +63,13 @@ export function useVersionedAutosave<T>(options: {
   );
 
   const flush = useCallback(async () => {
-    const ok = await getController().flush();
+    const controller = getController();
+    const ok = await controller.flush();
     sync();
-    return ok;
+    return {
+      ok,
+      error: controller.lastError,
+    };
   }, [getController, sync]);
 
   useEffect(() => {
@@ -92,11 +96,12 @@ export function useVersionedAutosave<T>(options: {
     status,
     lastSavedAt,
     lastError,
-    label: formatAutosaveLabel(status, lastSavedAt),
+    label: formatAutosaveLabel(status, lastSavedAt, lastError),
     markDirty,
     flush,
     hasUnsavedChanges: () =>
       controllerHolder.current?.hasUnsavedChanges() ?? false,
     getVersion: () => controllerHolder.current?.version ?? 0,
+    getLastError: () => controllerHolder.current?.lastError ?? null,
   };
 }

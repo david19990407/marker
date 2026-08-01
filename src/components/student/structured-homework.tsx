@@ -77,8 +77,9 @@ export function StructuredHomework({
     valuesRef.current = values;
   }, [values]);
 
-  // Submit/unsubmit use a full navigation reload so values rehydrate from
-  // existingResponses via useState initialiser (no effect setState).
+  const missingQuestionIds = flattenStudentBlocks(sections).filter(
+    (b) => isResponseType(b.block_type) && !b.review_only && !b.question_id,
+  );
 
   const autosave = useVersionedAutosave<Record<string, ResponseValue>>({
     delayMs: 1200,
@@ -96,15 +97,17 @@ export function StructuredHomework({
       if (unpersistable.length > 0 && responses.length === 0) {
         return {
           ok: false,
-          error:
-            "Some answers could not be saved because questions are missing database IDs. Ask your teacher to re-open and save the homework.",
+          error: `Save failed for: ${unpersistable.slice(0, 2).join("; ")}. Questions are missing database IDs — ask your teacher to re-open and save the homework.`,
         };
       }
       const result = await saveStudentStructuredResponsesAction(
         assignmentId,
         responses,
       );
-      return result.error ? { ok: false, error: result.error } : { ok: true };
+      if (result.error) {
+        return { ok: false, error: result.error };
+      }
+      return { ok: true };
     },
   });
 
@@ -123,7 +126,7 @@ export function StructuredHomework({
     });
   }
 
-  function validate(): boolean {
+  function validateLocal(): { ok: boolean; message?: string } {
     const nextErrors: Record<string, string> = {};
     const completion = evaluateStructuredCompletion(
       sections,
@@ -135,13 +138,11 @@ export function StructuredHomework({
 
     const unpersistable = collectUnpersistableAnswerLabels(values, sections);
     if (unpersistable.length) {
-      setFlash({
-        type: "error",
-        msg: `Cannot submit: answers are not linked to saved questions (${unpersistable.slice(0, 2).join("; ")}). Ask your teacher to re-save the homework.`,
-      });
-      setConfirmSubmit(false);
       setErrors(nextErrors);
-      return false;
+      return {
+        ok: false,
+        message: `Cannot submit: answers are not linked to saved questions (${unpersistable.slice(0, 2).join("; ")}). Ask your teacher to re-save the homework.`,
+      };
     }
 
     const blocks = flattenStudentBlocks(sections).filter(
@@ -161,41 +162,52 @@ export function StructuredHomework({
     }
 
     setErrors(nextErrors);
-    return Object.keys(nextErrors).length === 0;
+    if (Object.keys(nextErrors).length > 0) {
+      return {
+        ok: false,
+        message: "Please complete required fields before submitting",
+      };
+    }
+    return { ok: true };
   }
 
   function handleSave() {
     startTransition(async () => {
-      const ok = await autosave.flush();
+      const result = await autosave.flush();
       setFlash(
-        ok
+        result.ok
           ? { type: "success", msg: "Progress saved" }
-          : { type: "error", msg: autosave.lastError ?? "Save failed" },
+          : {
+              type: "error",
+              msg: result.error ?? autosave.getLastError() ?? "Save failed",
+            },
       );
-      setTimeout(() => setFlash(null), 3000);
+      setTimeout(() => setFlash(null), 5000);
     });
   }
 
   function handleSubmit() {
-    if (!validate()) {
-      setFlash({
-        type: "error",
-        msg: "Please complete required fields before submitting",
-      });
+    const local = validateLocal();
+    if (!local.ok) {
+      setFlash({ type: "error", msg: local.message ?? "Cannot submit" });
       setConfirmSubmit(false);
       return;
     }
     startTransition(async () => {
-      const ok = await autosave.flush();
-      if (!ok || autosave.hasUnsavedChanges()) {
+      const flushResult = await autosave.flush();
+      if (!flushResult.ok || autosave.hasUnsavedChanges()) {
         setFlash({
           type: "error",
-          msg: autosave.lastError ?? "Save your answers before submitting",
+          msg:
+            flushResult.error ??
+            autosave.getLastError() ??
+            "Save your answers before submitting",
         });
         return;
       }
 
-      // Final sync of the same flushed snapshot, then status-only submit.
+      // Final sync of the flushed snapshot, then status-only submit.
+      // Server reloads authoritative rows and re-validates completion.
       const responses = collectResponses(
         valuesRef.current,
         sectionsRef.current,
@@ -278,6 +290,15 @@ export function StructuredHomework({
         </div>
       )}
 
+      {missingQuestionIds.length > 0 && editable ? (
+        <div className="border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          This worksheet is missing question database IDs for{" "}
+          {missingQuestionIds.length} item
+          {missingQuestionIds.length === 1 ? "" : "s"}. Answers cannot be saved
+          until your teacher re-opens and saves the homework.
+        </div>
+      ) : null}
+
       {flash ? (
         <div
           className={`border px-4 py-3 text-sm ${
@@ -287,7 +308,19 @@ export function StructuredHomework({
           }`}
           role="status"
         >
-          {flash.msg}
+          <p>{flash.msg}</p>
+          {flash.type === "error" && editable ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-2"
+              onClick={handleSave}
+              disabled={pending}
+            >
+              Retry save
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

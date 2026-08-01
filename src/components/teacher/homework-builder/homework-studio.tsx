@@ -294,8 +294,8 @@ export function HomeworkStudio({
         <PublishStage
           assignment={assignment}
           sections={sections}
-          flushStructure={() => autosave.flush()}
-          flushComments={() => commentAutosave.flush()}
+          flushStructure={async () => (await autosave.flush()).ok}
+          flushComments={async () => (await commentAutosave.flush()).ok}
           structureDirty={autosave.hasUnsavedChanges()}
           onGoToBlock={(blockId) => {
             setFocusBlockId(blockId);
@@ -400,7 +400,9 @@ function PublishStage({
   const warnings = collectPublishWarnings(sections);
   const blocking = warnings.filter((w) => w.blocking);
   const isPublished = assignment.status === "published";
-  const ready = blocking.length === 0;
+  const clientReady = blocking.length === 0;
+  // Never show the green ready banner alongside blocking client/server errors.
+  const showReadyBanner = clientReady && !flushError && !state.error;
 
   function handleSubmit(formData: FormData) {
     startFlush(async () => {
@@ -444,11 +446,12 @@ function PublishStage({
         {structureDirty ? <Badge tone="warning">Unsaved content</Badge> : null}
       </div>
 
-      {ready ? (
+      {showReadyBanner ? (
         <div className="border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-sm text-emerald-900">
           Homework is ready to publish.
         </div>
-      ) : (
+      ) : null}
+      {!clientReady ? (
         <div className="border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-950">
           <p className="mb-2 font-medium">Validation summary</p>
           <ul className="space-y-3">
@@ -477,7 +480,7 @@ function PublishStage({
             ))}
           </ul>
         </div>
-      )}
+      ) : null}
 
       {warnings.some((w) => !w.blocking) ? (
         <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
@@ -546,7 +549,7 @@ function PublishStage({
         <div className="flex flex-wrap gap-3">
           <Button
             type="submit"
-            disabled={pending || flushPending || !ready}
+            disabled={pending || flushPending || !clientReady}
           >
             {pending || flushPending
               ? "Saving & publishing…"

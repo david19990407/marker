@@ -306,6 +306,31 @@ export function resolveMcqOptions(block: BuilderBlock): McqOption[] {
         i,
       );
     }
+    if (choice && typeof choice === "object") {
+      const obj = choice as Record<string, unknown>;
+      return normalizeMcqOption(
+        {
+          id: typeof obj.id === "string" ? obj.id : `opt-${i}`,
+          text:
+            obj.text != null
+              ? String(obj.text)
+              : obj.label != null
+                ? String(obj.label)
+                : "",
+          feedback:
+            typeof obj.feedback === "string"
+              ? obj.feedback
+              : (block.option_feedback?.[i] ?? ""),
+          correct:
+            typeof obj.is_correct === "boolean"
+              ? obj.is_correct
+              : typeof obj.correct === "boolean"
+                ? obj.correct
+                : (block.correct_option_indexes ?? []).includes(i),
+        },
+        i,
+      );
+    }
     return normalizeMcqOption(
       {
         id: `opt-${i}`,
@@ -571,6 +596,47 @@ export function structureToPayload(sections: BuilderSection[]): SectionPayload[]
 
 // ── DB load ──────────────────────────────────────────────────────────────────
 
+type DbQuestion = {
+  id: string;
+  prompt: string;
+  max_marks: number | null;
+  required: boolean;
+  response_type: string;
+  choices: unknown;
+  sort_order: number;
+  teacher_note?: string | null;
+  mark_scheme_note?: string | null;
+  word_limit?: number | null;
+  char_limit?: number | null;
+  allow_attachments?: boolean | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  correct_answer?: unknown;
+  comment_bank_key?: string | null;
+  review_only?: boolean | null;
+  marks_apply?: boolean | null;
+  marking_mode?: string | null;
+  shuffle_options?: boolean | null;
+  suggested_minutes?: number | null;
+  passage_block_ids?: unknown;
+  option_feedback?: unknown;
+  correct_option_indexes?: unknown;
+  table_marks_mode?: string | null;
+  table_total_marks?: number | null;
+  unit?: string | null;
+  decimal_places?: number | null;
+  allow_decimals?: boolean | null;
+};
+
+type DbTableCell = {
+  row_index: number;
+  col_index: number;
+  cell_type: string;
+  label: string | null;
+  marks: number | null;
+  read_only: boolean;
+};
+
 type DbBlock = {
   id: string;
   section_id: string;
@@ -579,46 +645,30 @@ type DbBlock = {
   content: string;
   config: Record<string, unknown> | null;
   teacher_only: boolean;
-  assignment_questions: Array<{
-    id: string;
-    prompt: string;
-    max_marks: number | null;
-    required: boolean;
-    response_type: string;
-    choices: unknown;
-    sort_order: number;
-    teacher_note?: string | null;
-    mark_scheme_note?: string | null;
-    word_limit?: number | null;
-    char_limit?: number | null;
-    allow_attachments?: boolean | null;
-    min_value?: number | null;
-    max_value?: number | null;
-    correct_answer?: unknown;
-    comment_bank_key?: string | null;
-    review_only?: boolean | null;
-    marks_apply?: boolean | null;
-    marking_mode?: string | null;
-    shuffle_options?: boolean | null;
-    suggested_minutes?: number | null;
-    passage_block_ids?: unknown;
-    option_feedback?: unknown;
-    correct_option_indexes?: unknown;
-    table_marks_mode?: string | null;
-    table_total_marks?: number | null;
-    unit?: string | null;
-    decimal_places?: number | null;
-    allow_decimals?: boolean | null;
-  }> | null;
-  assignment_table_cells: Array<{
-    row_index: number;
-    col_index: number;
-    cell_type: string;
-    label: string | null;
-    marks: number | null;
-    read_only: boolean;
-  }> | null;
+  /**
+   * PostgREST returns a one-to-one embed as an object (unique block_id),
+   * and may historically return an array. Accept both.
+   */
+  assignment_questions: DbQuestion | DbQuestion[] | null;
+  assignment_table_cells: DbTableCell[] | DbTableCell | null;
 };
+
+/**
+ * Normalise a PostgREST embed that may be an object (one-to-one) or array.
+ * Critical: `unique` FK embeds are objects — reading `[0]` drops the row.
+ */
+export function firstEmbeddedRecord<T>(
+  value: T | T[] | null | undefined,
+): T | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value;
+}
+
+export function asEmbeddedArray<T>(value: T | T[] | null | undefined): T[] {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
 
 type DbSection = {
   id: string;
@@ -631,7 +681,7 @@ type DbSection = {
 
 function dbBlockToBuilder(b: DbBlock): BuilderBlock {
   const bt = b.block_type as AssignmentBlockType;
-  const q = b.assignment_questions?.[0] ?? null;
+  const q = firstEmbeddedRecord(b.assignment_questions);
   const cfg = b.config ?? {};
   const block: BuilderBlock = {
     _id: b.id,
@@ -864,7 +914,7 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
       header_row: typeof cfg.header_row === "boolean" ? cfg.header_row : true,
       col_labels: Array.isArray(cfg.col_labels) ? (cfg.col_labels as string[]) : [],
     };
-    block.cells = (b.assignment_table_cells ?? []).map((c) => ({
+    block.cells = asEmbeddedArray(b.assignment_table_cells).map((c) => ({
       row_index: c.row_index,
       col_index: c.col_index,
       cell_type: c.cell_type as TableCellDef["cell_type"],
