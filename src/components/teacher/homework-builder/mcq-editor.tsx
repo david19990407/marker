@@ -2,7 +2,11 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { newId } from "@/lib/homework/structure";
+import {
+  applyMcqOptions,
+  newId,
+  resolveMcqOptions,
+} from "@/lib/homework/structure";
 import type { BuilderBlock, McqOption } from "@/lib/types";
 
 export function McqEditor({
@@ -10,51 +14,35 @@ export function McqEditor({
   onChange,
 }: {
   block: BuilderBlock;
-  onChange: (b: BuilderBlock) => void;
+  onChange: (updater: (prev: BuilderBlock) => BuilderBlock) => void;
 }) {
   const multi = block.block_type === "multiple_select";
-  const options: McqOption[] =
-    block.mcq_options?.length
-      ? block.mcq_options
-      : (block.choices ?? []).map((label, i) => ({
-          id: `legacy-${i}`,
-          label,
-          correct: (block.correct_option_indexes ?? []).includes(i),
-          feedback: block.option_feedback?.[i] ?? "",
-        }));
+  const options = resolveMcqOptions(block);
 
-  function commit(nextOptions: McqOption[]) {
-    onChange({
-      ...block,
-      mcq_options: nextOptions,
-      choices: nextOptions.map((o) => o.label),
-      option_feedback: nextOptions.map((o) => o.feedback ?? ""),
-      correct_option_indexes: nextOptions
-        .map((o, i) => (o.correct ? i : -1))
-        .filter((i) => i >= 0),
-      correct_answer: multi
-        ? null
-        : (nextOptions.find((o) => o.correct)?.label ?? null),
-    });
+  function commit(mapOptions: (current: McqOption[]) => McqOption[]) {
+    onChange((prev) => applyMcqOptions(prev, mapOptions(resolveMcqOptions(prev))));
   }
 
   function update(idx: number, patch: Partial<McqOption>) {
-    const next = options.map((o, i) => {
-      if (i !== idx) {
-        if (!multi && patch.correct) return { ...o, correct: false };
-        return o;
-      }
-      return { ...o, ...patch };
-    });
-    commit(next);
+    commit((current) =>
+      current.map((o, i) => {
+        if (i !== idx) {
+          if (!multi && patch.correct) return { ...o, correct: false };
+          return o;
+        }
+        return { ...o, ...patch };
+      }),
+    );
   }
 
   function move(idx: number, dir: -1 | 1) {
-    const target = idx + dir;
-    if (target < 0 || target >= options.length) return;
-    const next = [...options];
-    [next[idx], next[target]] = [next[target], next[idx]];
-    commit(next);
+    commit((current) => {
+      const target = idx + dir;
+      if (target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next;
+    });
   }
 
   return (
@@ -97,7 +85,7 @@ export function McqEditor({
             <Button
               size="sm"
               variant="danger"
-              onClick={() => commit(options.filter((_, j) => j !== i))}
+              onClick={() => commit((current) => current.filter((_, j) => j !== i))}
               disabled={options.length <= 2}
             >
               ✕
@@ -115,11 +103,11 @@ export function McqEditor({
         size="sm"
         variant="outline"
         onClick={() =>
-          commit([
-            ...options,
+          commit((current) => [
+            ...current,
             {
               id: newId(),
-              label: `Option ${String.fromCharCode(65 + options.length)}`,
+              label: `Option ${String.fromCharCode(65 + current.length)}`,
               correct: false,
               feedback: "",
             },
@@ -133,7 +121,9 @@ export function McqEditor({
         <input
           type="checkbox"
           checked={block.shuffle_options ?? false}
-          onChange={(e) => onChange({ ...block, shuffle_options: e.target.checked })}
+          onChange={(e) =>
+            onChange((prev) => ({ ...prev, shuffle_options: e.target.checked }))
+          }
         />
         Shuffle options for students
       </label>
@@ -144,10 +134,10 @@ export function McqEditor({
           className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm"
           value={block.marking_mode ?? "automatic"}
           onChange={(e) =>
-            onChange({
-              ...block,
+            onChange((prev) => ({
+              ...prev,
               marking_mode: e.target.value as "automatic" | "teacher_reviewed",
-            })
+            }))
           }
         >
           <option value="automatic">Automatic (reference answers stored)</option>

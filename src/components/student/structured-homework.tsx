@@ -19,7 +19,13 @@ import {
   type StructuredResponseInput,
 } from "@/lib/actions/homework-builder";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
-import { flattenStudentBlocks, isResponseType, responseKey } from "@/lib/homework/structure";
+import { computePassageStartLines } from "@/lib/homework/passage-numbering";
+import {
+  flattenStudentBlocks,
+  isResponseType,
+  resolveMcqOptions,
+  responseKey,
+} from "@/lib/homework/structure";
 import type { BuilderSection, BuilderBlock, StudentResponse } from "@/lib/types";
 
 export type ResponseWithCells = StudentResponse & {
@@ -65,6 +71,7 @@ export function StructuredHomework({
   const [pending, startTransition] = useTransition();
   const sectionsRef = useRef(sections);
   const valuesRef = useRef(values);
+  const passageStarts = computePassageStartLines(sections, { studentFacing: true });
   useEffect(() => {
     sectionsRef.current = sections;
   }, [sections]);
@@ -186,7 +193,7 @@ export function StructuredHomework({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="homework-worksheet mx-auto max-w-3xl space-y-8 px-1 sm:px-2">
       {editable && (
         <div className="flex flex-wrap items-center gap-2">
           <Badge
@@ -210,7 +217,7 @@ export function StructuredHomework({
 
       {flash && (
         <div
-          className={`rounded-2xl border px-4 py-3 text-sm ${
+          className={`border px-4 py-3 text-sm ${
             flash.type === "success"
               ? "border-green-200 bg-green-50 text-green-800"
               : "border-rose-200 bg-rose-50 text-rose-800"
@@ -222,22 +229,25 @@ export function StructuredHomework({
       )}
 
       {reviewMode && (
-        <div className="rounded-2xl border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-900">
+        <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
           Review your answers below. Submit only when every required question is complete.
         </div>
       )}
 
-      {sections.map((section) => (
-        <SectionView
-          key={section._id}
-          section={section}
-          values={values}
-          errors={errors}
-          onValueChange={setValue}
-          editable={editable}
-          reviewMode={reviewMode}
-        />
-      ))}
+      <div className="space-y-10 border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#fafafa_100%)] px-4 py-8 shadow-sm sm:px-8 sm:py-10">
+        {sections.map((section) => (
+          <SectionView
+            key={section._id}
+            section={section}
+            values={values}
+            errors={errors}
+            onValueChange={setValue}
+            editable={editable}
+            reviewMode={reviewMode}
+            passageStarts={passageStarts}
+          />
+        ))}
+      </div>
 
       {editable && (
         <div className="flex flex-wrap gap-3">
@@ -284,6 +294,7 @@ function SectionView({
   onValueChange,
   editable,
   reviewMode,
+  passageStarts,
 }: {
   section: BuilderSection;
   values: Record<string, ResponseValue>;
@@ -291,10 +302,14 @@ function SectionView({
   onValueChange: (qid: string, v: ResponseValue) => void;
   editable: boolean;
   reviewMode: boolean;
+  passageStarts: Map<string, number>;
 }) {
   return (
-    <section className="space-y-4" aria-labelledby={`section-${section._id}`}>
-      <h3 id={`section-${section._id}`} className="text-base font-semibold text-slate-800">
+    <section className="space-y-7" aria-labelledby={`section-${section._id}`}>
+      <h3
+        id={`section-${section._id}`}
+        className="font-[family-name:var(--font-outfit)] text-xl font-semibold tracking-tight text-slate-900"
+      >
         {section.title}
       </h3>
       {section.blocks
@@ -308,15 +323,19 @@ function SectionView({
             onValueChange={onValueChange}
             editable={editable}
             reviewMode={reviewMode}
+            startLineNumber={passageStarts.get(block._id)}
           />
         ))}
       {section.subsections.map((sub) => (
         <div
           key={sub._id}
-          className="ml-4 space-y-4 border-l-2 border-slate-100 pl-4"
+          className="space-y-7 border-l border-slate-200 pl-5"
           aria-labelledby={`subsection-${sub._id}`}
         >
-          <h4 id={`subsection-${sub._id}`} className="text-sm font-semibold text-slate-700">
+          <h4
+            id={`subsection-${sub._id}`}
+            className="font-[family-name:var(--font-outfit)] text-lg font-semibold tracking-tight text-slate-800"
+          >
             {sub.title}
           </h4>
           {sub.blocks
@@ -330,6 +349,7 @@ function SectionView({
                 onValueChange={onValueChange}
                 editable={editable}
                 reviewMode={reviewMode}
+                startLineNumber={passageStarts.get(block._id)}
               />
             ))}
         </div>
@@ -345,6 +365,7 @@ function BlockView({
   onValueChange,
   editable,
   reviewMode,
+  startLineNumber,
 }: {
   block: BuilderBlock;
   values: Record<string, ResponseValue>;
@@ -352,6 +373,7 @@ function BlockView({
   onValueChange: (qid: string, v: ResponseValue) => void;
   editable: boolean;
   reviewMode: boolean;
+  startLineNumber?: number;
 }) {
   const qid = responseKey(block);
   const current = values[qid];
@@ -363,18 +385,34 @@ function BlockView({
 
   switch (block.block_type) {
     case "heading":
-      return <h2 className="text-xl font-bold text-slate-900">{block.content}</h2>;
+      return (
+        <h2 className="font-[family-name:var(--font-outfit)] text-2xl font-semibold tracking-tight text-slate-900">
+          {block.content}
+        </h2>
+      );
     case "subheading":
-      return <h3 className="text-base font-semibold text-slate-800">{block.content}</h3>;
+      return (
+        <h3 className="font-[family-name:var(--font-outfit)] text-lg font-semibold tracking-tight text-slate-800">
+          {block.content}
+        </h3>
+      );
     case "instruction":
     case "rich_text":
       return (
-        <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{block.content}</p>
+        <p className="whitespace-pre-wrap text-[1.02rem] leading-8 text-slate-700">
+          {block.content}
+        </p>
       );
     case "divider":
       return <hr className="border-slate-200" />;
     case "passage":
-      return <PassageView text={block.content} config={block.passageConfig} />;
+      return (
+        <PassageView
+          text={block.content}
+          config={block.passageConfig}
+          startLineNumber={startLineNumber}
+        />
+      );
     case "embedded_video": {
       const url = block.external_url || block.content;
       if (!url) return null;
@@ -501,7 +539,7 @@ function BlockView({
               id={fieldId}
               value={text}
               onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
-              className="min-h-28"
+              className="min-h-32 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
               placeholder="Write your answer here…"
               maxLength={block.char_limit ?? undefined}
               aria-required={block.required}
@@ -517,7 +555,7 @@ function BlockView({
             </p>
           </>
         ) : (
-          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+          <p className="whitespace-pre-wrap text-[1.02rem] leading-7 text-slate-700">
             {text || "—"}
           </p>
         )}
@@ -534,12 +572,13 @@ function BlockView({
             value={(current as TextValue)?.text ?? ""}
             onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
             placeholder="Short answer…"
+            className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
             maxLength={block.char_limit ?? undefined}
             aria-required={block.required}
             aria-invalid={!!error}
           />
         ) : (
-          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+          <p className="text-[1.02rem] leading-7 text-slate-700">
             {(current as TextValue)?.text || "—"}
           </p>
         )}
@@ -561,7 +600,7 @@ function BlockView({
                 numeric: e.target.value !== "" ? Number(e.target.value) : null,
               })
             }
-            className="w-40"
+            className="w-40 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
             min={block.min_value ?? undefined}
             max={block.max_value ?? undefined}
             placeholder="0"
@@ -569,7 +608,7 @@ function BlockView({
             aria-invalid={!!error}
           />
         ) : (
-          <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+          <p className="text-[1.02rem] leading-7 text-slate-700">
             {(current as NumericValue)?.numeric ?? "—"}
           </p>
         )}
@@ -578,20 +617,25 @@ function BlockView({
   }
 
   if (block.block_type === "multiple_choice") {
+    const options = resolveMcqOptions(block);
     return (
       <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
-        <div className="space-y-1" role="radiogroup" aria-labelledby={fieldId}>
-          {(block.choices ?? []).map((choice, i) => (
-            <label key={i} className="flex items-center gap-2 text-sm">
+        <div className="space-y-2" role="radiogroup" aria-labelledby={fieldId}>
+          {options.map((option) => (
+            <label
+              key={option.id}
+              className="flex items-start gap-3 text-[1.02rem] leading-7 text-slate-800"
+            >
               <input
                 type="radio"
                 name={`mcq-${qid}`}
-                value={choice}
-                checked={(current as TextValue)?.text === choice}
-                onChange={() => onValueChange(qid, { type: "text", text: choice })}
+                value={option.label}
+                className="mt-1.5"
+                checked={(current as TextValue)?.text === option.label}
+                onChange={() => onValueChange(qid, { type: "text", text: option.label })}
                 disabled={!editable}
               />
-              {choice}
+              <span>{option.label}</span>
             </label>
           ))}
         </div>
@@ -600,6 +644,7 @@ function BlockView({
   }
 
   if (block.block_type === "multiple_select") {
+    const options = resolveMcqOptions(block);
     const selected = new Set(
       ((current as TextValue)?.text ?? "")
         .split("\n")
@@ -608,15 +653,19 @@ function BlockView({
     );
     return (
       <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
-        <div className="space-y-1" role="group" aria-labelledby={fieldId}>
-          {(block.choices ?? []).map((choice, i) => (
-            <label key={i} className="flex items-center gap-2 text-sm">
+        <div className="space-y-2" role="group" aria-labelledby={fieldId}>
+          {options.map((option) => (
+            <label
+              key={option.id}
+              className="flex items-start gap-3 text-[1.02rem] leading-7 text-slate-800"
+            >
               <input
                 type="checkbox"
-                checked={selected.has(choice)}
+                className="mt-1.5"
+                checked={selected.has(option.label)}
                 onChange={(e) => {
-                  if (e.target.checked) selected.add(choice);
-                  else selected.delete(choice);
+                  if (e.target.checked) selected.add(option.label);
+                  else selected.delete(option.label);
                   onValueChange(qid, {
                     type: "text",
                     text: Array.from(selected).join("\n"),
@@ -624,7 +673,7 @@ function BlockView({
                 }}
                 disabled={!editable}
               />
-              {choice}
+              <span>{option.label}</span>
             </label>
           ))}
         </div>
@@ -718,21 +767,30 @@ function QuestionShell({
 }) {
   return (
     <div
-      className={`space-y-2 ${reviewMode ? "rounded-2xl border border-slate-100 p-3" : ""}`}
+      className={`space-y-3 ${reviewMode ? "border border-slate-200 bg-white p-4" : ""}`}
     >
-      <label htmlFor={fieldId} className="block text-sm font-medium text-slate-800">
-        {block.content || block.prompt}
-        {block.required && <span className="ml-1 text-rose-500">*</span>}
-        {block.max_marks != null && (
-          <span className="ml-2 text-xs font-normal text-slate-400">
-            [{block.max_marks} marks]
-          </span>
-        )}
-      </label>
-      {block.content && block.prompt && (
-        <p className="whitespace-pre-wrap text-xs text-slate-500">{block.prompt}</p>
-      )}
-      {children}
+      <div className="space-y-1.5">
+        <label
+          htmlFor={fieldId}
+          className="block font-[family-name:var(--font-outfit)] text-[1.08rem] font-semibold leading-snug tracking-tight text-slate-900"
+        >
+          {block.content || block.prompt}
+          {block.required && <span className="ml-1 text-rose-500">*</span>}
+          {block.max_marks != null && (
+            <span className="ml-2 align-middle text-xs font-normal tracking-normal text-slate-400">
+              [{block.max_marks} marks]
+            </span>
+          )}
+        </label>
+        {block.content && block.prompt ? (
+          <p className="whitespace-pre-wrap text-[0.95rem] leading-7 text-slate-600">
+            {block.prompt}
+          </p>
+        ) : null}
+      </div>
+      <div className="answer-area space-y-2 border border-slate-200 bg-white px-3 py-3">
+        {children}
+      </div>
       {error && (
         <p className="text-xs text-rose-600" role="alert">
           {error}
@@ -771,12 +829,14 @@ function TableView({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {(block.prompt || block.content) && (
-        <p className="text-sm font-medium text-slate-800">{block.prompt || block.content}</p>
+        <p className="font-[family-name:var(--font-outfit)] text-[1.08rem] font-semibold tracking-tight text-slate-900">
+          {block.prompt || block.content}
+        </p>
       )}
-      <div className="overflow-x-auto rounded-2xl border border-slate-200">
-        <table className="min-w-full text-sm">
+      <div className="overflow-x-auto border border-slate-200">
+        <table className="min-w-full border-collapse text-[0.98rem]">
           {cfg.header_row && (
             <thead>
               <tr className="bg-slate-50">
@@ -784,7 +844,7 @@ function TableView({
                   <th
                     key={ci}
                     scope="col"
-                    className="px-4 py-2 text-left text-xs font-semibold text-slate-600"
+                    className="border-b border-slate-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500"
                   >
                     {(cfg.col_labels ?? [])[ci] ?? `Column ${ci + 1}`}
                   </th>
@@ -809,7 +869,7 @@ function TableView({
 
                     if (isTeacherReview) {
                       return (
-                        <td key={ci} className="px-4 py-2">
+                        <td key={ci} className="px-4 py-3">
                           <span className="sr-only">Teacher review cell</span>
                           <span className="text-xs text-slate-300">—</span>
                         </td>
@@ -820,7 +880,7 @@ function TableView({
                       return (
                         <td
                           key={ci}
-                          className="bg-slate-50 px-4 py-2 text-xs text-slate-600"
+                          className="bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600"
                         >
                           {cellDef?.label ?? ""}
                         </td>
@@ -829,7 +889,7 @@ function TableView({
 
                     if (isTick) {
                       return (
-                        <td key={ci} className="px-4 py-2">
+                        <td key={ci} className="px-4 py-3">
                           <input
                             type="checkbox"
                             aria-label={label}
@@ -844,7 +904,7 @@ function TableView({
                     }
 
                     return (
-                      <td key={ci} className="px-2 py-1">
+                      <td key={ci} className="px-3 py-2">
                         {editable ? (
                           cellDef?.cell_type === "student_numeric" ? (
                             <Input

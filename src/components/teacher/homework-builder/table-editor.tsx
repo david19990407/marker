@@ -18,7 +18,7 @@ const CELL_TYPE_OPTIONS: { value: TableCellType; label: string }[] = [
 
 interface Props {
   block: BuilderBlock;
-  onChange: (b: BuilderBlock) => void;
+  onChange: (updater: (prev: BuilderBlock) => BuilderBlock) => void;
 }
 
 export function TableEditor({ block, onChange }: Props) {
@@ -26,118 +26,161 @@ export function TableEditor({ block, onChange }: Props) {
   const cells = block.cells ?? defaultTableCells(cfg.rows, cfg.cols);
 
   function setConfig<K extends keyof typeof cfg>(key: K, value: (typeof cfg)[K]) {
-    const nextCfg = { ...cfg, [key]: value };
-    onChange({ ...block, tableConfig: nextCfg });
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      return { ...prev, tableConfig: { ...prevCfg, [key]: value } };
+    });
   }
 
   function resizeTable(rows: number, cols: number) {
-    const nextCells: TableCellDef[] = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const existing = cells.find(
-          (cell) => cell.row_index === r && cell.col_index === c,
-        );
-        nextCells.push(
-          existing ?? {
-            row_index: r,
-            col_index: c,
-            cell_type: "student_text",
-            label: null,
-            marks: null,
-            read_only: false,
-          },
-        );
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const prevCells = prev.cells ?? defaultTableCells(prevCfg.rows, prevCfg.cols);
+      const nextCells: TableCellDef[] = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const existing = prevCells.find(
+            (cell) => cell.row_index === r && cell.col_index === c,
+          );
+          nextCells.push(
+            existing ?? {
+              row_index: r,
+              col_index: c,
+              cell_type: "student_text",
+              label: null,
+              marks: null,
+              read_only: false,
+            },
+          );
+        }
       }
-    }
-    onChange({
-      ...block,
-      tableConfig: { ...cfg, rows, cols },
-      cells: nextCells,
+      return {
+        ...prev,
+        tableConfig: { ...prevCfg, rows, cols },
+        cells: nextCells,
+      };
     });
   }
 
   function updateCell(rowIdx: number, colIdx: number, updates: Partial<TableCellDef>) {
-    const nextCells = cells.map((c) =>
-      c.row_index === rowIdx && c.col_index === colIdx ? { ...c, ...updates } : c,
-    );
-    onChange({ ...block, cells: nextCells });
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const prevCells = prev.cells ?? defaultTableCells(prevCfg.rows, prevCfg.cols);
+      return {
+        ...prev,
+        cells: prevCells.map((c) =>
+          c.row_index === rowIdx && c.col_index === colIdx ? { ...c, ...updates } : c,
+        ),
+      };
+    });
   }
 
   function updateColLabel(colIdx: number, label: string) {
-    const nextLabels = [...(cfg.col_labels ?? [])];
-    nextLabels[colIdx] = label;
-    setConfig("col_labels", nextLabels);
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const nextLabels = [...(prevCfg.col_labels ?? [])];
+      nextLabels[colIdx] = label;
+      return { ...prev, tableConfig: { ...prevCfg, col_labels: nextLabels } };
+    });
   }
 
   function moveRow(rowIdx: number, dir: -1 | 1) {
-    const targetRow = rowIdx + dir;
-    if (targetRow < 0 || targetRow >= cfg.rows) return;
-    const nextCells = cells.map((c) => {
-      if (c.row_index === rowIdx) return { ...c, row_index: targetRow };
-      if (c.row_index === targetRow) return { ...c, row_index: rowIdx };
-      return c;
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const targetRow = rowIdx + dir;
+      if (targetRow < 0 || targetRow >= prevCfg.rows) return prev;
+      const prevCells = prev.cells ?? defaultTableCells(prevCfg.rows, prevCfg.cols);
+      return {
+        ...prev,
+        cells: prevCells.map((c) => {
+          if (c.row_index === rowIdx) return { ...c, row_index: targetRow };
+          if (c.row_index === targetRow) return { ...c, row_index: rowIdx };
+          return c;
+        }),
+      };
     });
-    onChange({ ...block, cells: nextCells });
   }
 
   function moveCol(colIdx: number, dir: -1 | 1) {
-    const targetCol = colIdx + dir;
-    if (targetCol < 0 || targetCol >= cfg.cols) return;
-    const nextLabels = [...(cfg.col_labels ?? [])];
-    [nextLabels[colIdx], nextLabels[targetCol]] = [nextLabels[targetCol], nextLabels[colIdx]];
-    const nextCells = cells.map((c) => {
-      if (c.col_index === colIdx) return { ...c, col_index: targetCol };
-      if (c.col_index === targetCol) return { ...c, col_index: colIdx };
-      return c;
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const targetCol = colIdx + dir;
+      if (targetCol < 0 || targetCol >= prevCfg.cols) return prev;
+      const nextLabels = [...(prevCfg.col_labels ?? [])];
+      [nextLabels[colIdx], nextLabels[targetCol]] = [
+        nextLabels[targetCol],
+        nextLabels[colIdx],
+      ];
+      const prevCells = prev.cells ?? defaultTableCells(prevCfg.rows, prevCfg.cols);
+      return {
+        ...prev,
+        tableConfig: { ...prevCfg, col_labels: nextLabels },
+        cells: prevCells.map((c) => {
+          if (c.col_index === colIdx) return { ...c, col_index: targetCol };
+          if (c.col_index === targetCol) return { ...c, col_index: colIdx };
+          return c;
+        }),
+      };
     });
-    onChange({ ...block, tableConfig: { ...cfg, col_labels: nextLabels }, cells: nextCells });
   }
 
   function duplicateRow(rowIdx: number) {
-    const nextRows = cfg.rows + 1;
-    const nextCells = cells.map((c) =>
-      c.row_index > rowIdx ? { ...c, row_index: c.row_index + 1 } : c,
-    );
-    for (let c = 0; c < cfg.cols; c++) {
-      const source = cells.find((cell) => cell.row_index === rowIdx && cell.col_index === c);
-      nextCells.push({
-        row_index: rowIdx + 1,
-        col_index: c,
-        cell_type: source?.cell_type ?? "student_text",
-        label: source?.label ?? null,
-        marks: source?.marks ?? null,
-        read_only: source?.read_only ?? false,
-      });
-    }
-    onChange({
-      ...block,
-      tableConfig: { ...cfg, rows: nextRows },
-      cells: nextCells,
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const prevCells = prev.cells ?? defaultTableCells(prevCfg.rows, prevCfg.cols);
+      const nextRows = prevCfg.rows + 1;
+      const nextCells = prevCells.map((c) =>
+        c.row_index > rowIdx ? { ...c, row_index: c.row_index + 1 } : c,
+      );
+      for (let c = 0; c < prevCfg.cols; c++) {
+        const source = prevCells.find(
+          (cell) => cell.row_index === rowIdx && cell.col_index === c,
+        );
+        nextCells.push({
+          row_index: rowIdx + 1,
+          col_index: c,
+          cell_type: source?.cell_type ?? "student_text",
+          label: source?.label ?? null,
+          marks: source?.marks ?? null,
+          read_only: source?.read_only ?? false,
+        });
+      }
+      return {
+        ...prev,
+        tableConfig: { ...prevCfg, rows: nextRows },
+        cells: nextCells,
+      };
     });
   }
 
   function duplicateCol(colIdx: number) {
-    const nextCols = cfg.cols + 1;
-    const nextLabels = [...(cfg.col_labels ?? [])];
-    nextLabels.splice(colIdx + 1, 0, `${nextLabels[colIdx] ?? "Column"} (copy)`);
-    const nextCells = cells.map((c) =>
-      c.col_index > colIdx ? { ...c, col_index: c.col_index + 1 } : c,
-    );
-    for (let r = 0; r < cfg.rows; r++) {
-      const source = cells.find((cell) => cell.row_index === r && cell.col_index === colIdx);
-      nextCells.push({
-        row_index: r,
-        col_index: colIdx + 1,
-        cell_type: source?.cell_type ?? "student_text",
-        label: source?.label ?? null,
-        marks: source?.marks ?? null,
-        read_only: source?.read_only ?? false,
-      });
-    }
-    onChange({
-      ...block,
-      tableConfig: { ...cfg, cols: nextCols, col_labels: nextLabels },
-      cells: nextCells,
+    onChange((prev) => {
+      const prevCfg = prev.tableConfig ?? defaultTableConfig();
+      const prevCells = prev.cells ?? defaultTableCells(prevCfg.rows, prevCfg.cols);
+      const nextCols = prevCfg.cols + 1;
+      const nextLabels = [...(prevCfg.col_labels ?? [])];
+      nextLabels.splice(colIdx + 1, 0, `${nextLabels[colIdx] ?? "Column"} (copy)`);
+      const nextCells = prevCells.map((c) =>
+        c.col_index > colIdx ? { ...c, col_index: c.col_index + 1 } : c,
+      );
+      for (let r = 0; r < prevCfg.rows; r++) {
+        const source = prevCells.find(
+          (cell) => cell.row_index === r && cell.col_index === colIdx,
+        );
+        nextCells.push({
+          row_index: r,
+          col_index: colIdx + 1,
+          cell_type: source?.cell_type ?? "student_text",
+          label: source?.label ?? null,
+          marks: source?.marks ?? null,
+          read_only: source?.read_only ?? false,
+        });
+      }
+      return {
+        ...prev,
+        tableConfig: { ...prevCfg, cols: nextCols, col_labels: nextLabels },
+        cells: nextCells,
+      };
     });
   }
 

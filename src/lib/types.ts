@@ -250,12 +250,30 @@ export type McqOption = {
   correct?: boolean;
 };
 
+export type PassageLineNumberMode =
+  | "none"
+  | "every_line"
+  | "every_5"
+  | "every_10"
+  | "custom_interval"
+  | "manual";
+
+export type PassageNumberingContinuation =
+  | "restart"
+  | "continue"
+  | "custom_start";
+
 export type PassageConfig = {
   title?: string;
   source_reference?: string;
+  /** Derived/compat flag — prefer line_number_mode */
   show_line_numbers: boolean;
+  line_number_mode?: PassageLineNumberMode;
   line_number_interval: number;
   starting_line_number: number;
+  numbering_continuation?: PassageNumberingContinuation;
+  /** Display numbers that appear in the gutter when mode is "manual" */
+  manual_line_numbers?: number[];
 };
 
 export type TableCellType =
