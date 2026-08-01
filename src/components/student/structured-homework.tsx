@@ -20,6 +20,7 @@ import {
   collectUnpersistableAnswerLabels,
   valuesToCompletionSnapshots,
 } from "@/lib/homework/response-collect";
+import { maxClientVersionFromRows } from "@/lib/homework/response-protect";
 import {
   flattenStudentBlocks,
   isResponseType,
@@ -81,9 +82,15 @@ export function StructuredHomework({
     (b) => isResponseType(b.block_type) && !b.review_only && !b.question_id,
   );
 
+  // After submit/unsubmit reload, seed from DB so edits are not rejected as stale.
+  const initialAutosaveVersion = maxClientVersionFromRows(
+    Object.values(existingResponses),
+  );
+
   const autosave = useVersionedAutosave<Record<string, ResponseValue>>({
     delayMs: 1200,
     enabled: editable,
+    initialVersion: initialAutosaveVersion,
     save: async (current, version) => {
       const responses = collectResponses(
         current,
@@ -106,6 +113,14 @@ export function StructuredHomework({
       );
       if (result.error) {
         return { ok: false, error: result.error };
+      }
+      if (
+        responses.length > 0 &&
+        typeof result.savedCount === "number" &&
+        result.savedCount === 0
+      ) {
+        // Server skipped every row (e.g. identical stale content). Treat as ok.
+        return { ok: true };
       }
       return { ok: true };
     },

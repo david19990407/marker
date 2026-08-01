@@ -11,6 +11,7 @@ import {
 } from "@/components/teacher/structured-marking-workspace";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
+import { pickAuthoritativeResponsesByQuestion } from "@/lib/homework/response-protect";
 import { loadTemplateStructure } from "@/lib/homework/structure";
 import {
   assertTeacherCanMarkClass,
@@ -18,6 +19,8 @@ import {
 } from "@/lib/marking/queries";
 import { createClient } from "@/lib/supabase/server";
 import type { Feedback } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
 
 export default async function MarkSubmissionPage({
   params,
@@ -153,9 +156,18 @@ export default async function MarkSubmissionPage({
           commentRows = (legacyComments ?? []) as Array<Record<string, unknown>>;
         }
 
-        structuredResponses = (responses ?? []).map((r) => ({
-          ...(r as MarkingResponse),
-          cells: Array.isArray(r.response_cells) ? r.response_cells : [],
+        const authoritative = pickAuthoritativeResponsesByQuestion(
+          (responses ?? []) as Array<
+            MarkingResponse & {
+              response_cells?: MarkingResponse["cells"];
+            }
+          >,
+        );
+        structuredResponses = [...authoritative.values()].map((r) => ({
+          ...r,
+          cells: Array.isArray(r.response_cells)
+            ? r.response_cells
+            : (r.cells ?? []),
         }));
         resources = resourceRows ?? [];
         markSchemes = schemeRows ?? [];

@@ -83,4 +83,21 @@ describe("autosave versioning", () => {
     expect(controller.getStatus()).toBe("saved");
     controller.dispose();
   });
+
+  it("seeds initialVersion so post-reload edits do not restart at 1", async () => {
+    const versions: number[] = [];
+    const controller = createAutosaveController<string>({
+      delayMs: 5,
+      initialVersion: 12,
+      save: async (_value, version) => {
+        versions.push(version);
+        return { ok: true };
+      },
+    });
+    expect(controller.version).toBe(12);
+    controller.markDirty("after reload");
+    await controller.flush();
+    expect(versions.at(-1)).toBe(13);
+    controller.dispose();
+  });
 });

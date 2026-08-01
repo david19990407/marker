@@ -8,6 +8,11 @@ export type AutosaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
 export interface AutosaveControllerOptions<T> {
   /** Debounce delay in ms after typing stops (800–1500 recommended). */
   delayMs?: number;
+  /**
+   * Seed from the max persisted client_version after reload.
+   * Without this, post-unsubmit edits restart at 1 and are rejected as stale.
+   */
+  initialVersion?: number;
   /** Persist the latest local snapshot. Must not remount the UI. */
   save: (value: T, version: number) => Promise<{ ok: boolean; error?: string }>;
   /** Optional: merge server IDs into local state without replacing content. */
@@ -59,14 +64,14 @@ export function createAutosaveController<T>(
 ): AutosaveController<T> {
   const delayMs = options.delayMs ?? 1200;
   let status: AutosaveStatus = "idle";
-  let version = 0;
+  let version = Math.max(0, Math.floor(options.initialVersion ?? 0));
   let latestValue: T | undefined;
   let lastSavedAt: Date | null = null;
   let lastError: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: Promise<boolean> | null = null;
   let inFlightVersion: number | null = null;
-  let latestStartedVersion = 0;
+  let latestStartedVersion = version;
   let disposed = false;
 
   async function runSave(triggerVersion: number): Promise<boolean> {

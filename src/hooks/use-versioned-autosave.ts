@@ -14,6 +14,11 @@ type SaveFn<T> = (
 
 export function useVersionedAutosave<T>(options: {
   delayMs?: number;
+  /**
+   * Seed from max persisted client_version so post-reload edits are not
+   * rejected as stale against the first-session versions.
+   */
+  initialVersion?: number;
   save: SaveFn<T>;
   enabled?: boolean;
 }) {
@@ -22,21 +27,28 @@ export function useVersionedAutosave<T>(options: {
   const [lastError, setLastError] = useState<string | null>(null);
   const delayMs = options.delayMs ?? 1200;
   const enabled = options.enabled !== false;
+  const initialVersion = Math.max(0, Math.floor(options.initialVersion ?? 0));
 
   const saveBox = useRef<{ save: SaveFn<T> }>({ save: options.save });
   const controllerHolder = useRef<ReturnType<
     typeof createAutosaveController<T>
   > | null>(null);
+  const initialVersionRef = useRef(initialVersion);
 
   // Keep latest save function without mutating React state.
   useEffect(() => {
     saveBox.current.save = options.save;
   }, [options.save]);
 
+  useEffect(() => {
+    initialVersionRef.current = initialVersion;
+  }, [initialVersion]);
+
   const getController = useCallback(() => {
     if (!controllerHolder.current) {
       controllerHolder.current = createAutosaveController<T>({
         delayMs,
+        initialVersion: initialVersionRef.current,
         save: (value, version) => saveBox.current.save(value, version),
       });
     }

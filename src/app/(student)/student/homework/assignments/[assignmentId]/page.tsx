@@ -13,7 +13,10 @@ import { DownloadButton } from "@/components/shared/download-button";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
+import { pickAuthoritativeResponsesByQuestion } from "@/lib/homework/response-protect";
 import { loadTemplateStructure } from "@/lib/homework/structure";
+
+export const dynamic = "force-dynamic";
 
 export default async function StudentAssignmentPage({
   params,
@@ -94,10 +97,19 @@ export default async function StudentAssignmentPage({
             )
             .eq("submission_id", submission.id);
 
-          for (const r of responses ?? []) {
-            existingResponses[r.question_id] = {
-              ...(r as ResponseWithCells),
-              cells: Array.isArray(r.response_cells) ? r.response_cells : [],
+          const authoritative = pickAuthoritativeResponsesByQuestion(
+            (responses ?? []) as Array<
+              ResponseWithCells & {
+                response_cells?: ResponseWithCells["cells"];
+              }
+            >,
+          );
+          for (const [questionId, r] of authoritative) {
+            existingResponses[questionId] = {
+              ...r,
+              cells: Array.isArray(r.response_cells)
+                ? r.response_cells
+                : (r.cells ?? []),
             };
           }
         }
