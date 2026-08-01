@@ -2,10 +2,11 @@ import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { SubjectIcon } from "@/components/shared/subject-icon";
 import { createClient } from "@/lib/supabase/server";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { getBranding } from "@/lib/school/branding";
+import { loadMarkingDashboard } from "@/lib/marking/queries";
 
 export default async function TeacherDashboardPage() {
   const [profile, branding] = await Promise.all([
@@ -13,38 +14,29 @@ export default async function TeacherDashboardPage() {
     getBranding(),
   ]);
   const supabase = await createClient();
-  const teacherId = profile.id;
 
-  const [{ count: classCount }, { data: assignmentRows }] = await Promise.all([
-    supabase
-      .from("classes")
-      .select("*", { count: "exact", head: true })
-      .eq("teacher_id", teacherId)
-      .eq("archived", false),
-    supabase.from("assignments").select("id, title").eq("teacher_id", teacherId),
-  ]);
+  const [{ count: classCount }, { count: assignmentCount }, classSummaries] =
+    await Promise.all([
+      supabase
+        .from("classes")
+        .select("*", { count: "exact", head: true })
+        .eq("teacher_id", profile.id)
+        .eq("archived", false),
+      supabase
+        .from("assignments")
+        .select("*", { count: "exact", head: true })
+        .eq("teacher_id", profile.id)
+        .neq("status", "archived"),
+      loadMarkingDashboard(supabase, profile, "oldest"),
+    ]);
 
-  const assignmentIds = (assignmentRows ?? []).map((a) => a.id);
-  let unmarked: {
-    id: string;
-    submitted_at: string | null;
-    status: string;
-    student?: { display_name: string } | { display_name: string }[] | null;
-    assignments?: { title: string } | { title: string }[] | null;
-  }[] = [];
-
-  if (assignmentIds.length) {
-    const { data } = await supabase
-      .from("submissions")
-      .select(
-        "id, submitted_at, status, student:profiles!submissions_student_id_fkey(display_name), assignments!inner(title)",
-      )
-      .in("assignment_id", assignmentIds)
-      .in("status", ["submitted", "late"])
-      .order("submitted_at", { ascending: true })
-      .limit(8);
-    unmarked = data ?? [];
-  }
+  const unmarkedTotal = classSummaries.reduce(
+    (sum, c) => sum + c.unmarkedCount,
+    0,
+  );
+  const waitingClasses = classSummaries
+    .filter((c) => c.unmarkedCount > 0)
+    .slice(0, 6);
 
   return (
     <div className="space-y-6">
@@ -52,8 +44,8 @@ export default async function TeacherDashboardPage() {
         title={`Welcome, ${profile.first_name}`}
         description={
           branding.schoolName
-            ? `${branding.schoolName} — live overview of your classes, assignments and marking queue.`
-            : "Live overview of your classes, assignments and marking queue."
+            ? `${branding.schoolName} — overview of classes, assignments and marking.`
+            : "Overview of classes, assignments and marking."
         }
       />
 
@@ -64,13 +56,11 @@ export default async function TeacherDashboardPage() {
         </Card>
         <Card>
           <p className="text-sm text-slate-500">Assignments</p>
-          <p className="mt-2 text-3xl font-semibold">
-            {assignmentRows?.length ?? 0}
-          </p>
+          <p className="mt-2 text-3xl font-semibold">{assignmentCount ?? 0}</p>
         </Card>
         <Card>
           <p className="text-sm text-slate-500">Unmarked submissions</p>
-          <p className="mt-2 text-3xl font-semibold">{unmarked.length}</p>
+          <p className="mt-2 text-3xl font-semibold">{unmarkedTotal}</p>
         </Card>
       </div>
 
@@ -82,13 +72,13 @@ export default async function TeacherDashboardPage() {
           <Button variant="secondary">New assignment</Button>
         </Link>
         <Link href="/teacher/marking">
-          <Button variant="outline">Open marking queue</Button>
+          <Button variant="outline">Open marking</Button>
         </Link>
       </div>
 
       <Card>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-semibold text-slate-900">Marking queue</h2>
+          <h2 className="font-semibold text-slate-900">Classes needing marking</h2>
           <Link
             href="/teacher/marking"
             className="text-sm text-brand-700 hover:underline"
@@ -96,44 +86,42 @@ export default async function TeacherDashboardPage() {
             View all
           </Link>
         </div>
-        {!unmarked.length ? (
-          <p className="text-sm text-slate-500">No submissions to mark</p>
+        {!waitingClasses.length ? (
+          <p className="text-sm text-slate-500">No unmarked work right now</p>
         ) : (
           <ul className="space-y-3">
-            {unmarked.map((item) => {
-              const student = Array.isArray(item.student)
-                ? item.student[0]
-                : item.student;
-              const assignment = Array.isArray(item.assignments)
-                ? item.assignments[0]
-                : item.assignments;
-              return (
-                <li
-                  key={item.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-100 px-4 py-3"
-                >
+            {waitingClasses.map((cls) => (
+              <li
+                key={cls.classId}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-100 px-4 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <SubjectIcon
+                    name={cls.subject}
+                    iconType={cls.subjectIconType}
+                    iconValue={cls.subjectIconValue}
+                    colour={cls.subjectColour}
+                    size="sm"
+                  />
                   <div>
-                    <div className="mb-1">
-                      <Badge tone={item.status === "late" ? "danger" : "brand"}>
-                        {item.status}
-                      </Badge>
-                    </div>
-                    <p className="text-sm font-medium">
-                      {student?.display_name ?? "Student"} ·{" "}
-                      {assignment?.title ?? "Assignment"}
+                    <p className="text-sm font-medium text-slate-900">
+                      {cls.className}
                     </p>
                     <p className="text-xs text-slate-500">
-                      {item.submitted_at
-                        ? new Date(item.submitted_at).toLocaleString("en-GB")
+                      {cls.unmarkedCount} unmarked ·{" "}
+                      {cls.assignmentsWithUnmarked} assignment
+                      {cls.assignmentsWithUnmarked === 1 ? "" : "s"}
+                      {cls.oldestUnmarkedAt
+                        ? ` · oldest ${new Date(cls.oldestUnmarkedAt).toLocaleString("en-GB")}`
                         : ""}
                     </p>
                   </div>
-                  <Link href={`/teacher/marking/${item.id}`}>
-                    <Button size="sm">Mark</Button>
-                  </Link>
-                </li>
-              );
-            })}
+                </div>
+                <Link href={`/teacher/marking/classes/${cls.classId}`}>
+                  <Button size="sm">Open</Button>
+                </Link>
+              </li>
+            ))}
           </ul>
         )}
       </Card>

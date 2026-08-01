@@ -7,5 +7,5 @@ export default async function StudentHomeworkReviewPage({
   params: Promise<{ assignmentId: string }>;
 }) {
   const { assignmentId } = await params;
-  redirect(`/student/homework/${assignmentId}`);
+  redirect(`/student/homework/assignments/${assignmentId}`);
 }

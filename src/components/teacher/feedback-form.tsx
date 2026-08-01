@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,10 +22,20 @@ export function FeedbackForm({
   maximumMark: number;
   feedback?: Feedback | null;
 }) {
+  const draftButtonRef = useRef<HTMLButtonElement>(null);
   const [draftState, draftAction, draftPending] = useActionState(
     saveFeedbackAction.bind(null, submissionId, "draft"),
     initial,
   );
+
+  useEffect(() => {
+    function onSaveBeforeNav() {
+      draftButtonRef.current?.click();
+    }
+    window.addEventListener("marking:save-before-nav", onSaveBeforeNav);
+    return () =>
+      window.removeEventListener("marking:save-before-nav", onSaveBeforeNav);
+  }, []);
   const [releaseState, releaseAction, releasePending] = useActionState(
     saveFeedbackAction.bind(null, submissionId, "release"),
     initial,
@@ -55,7 +65,7 @@ export function FeedbackForm({
         </div>
       ) : null}
 
-      <form className="space-y-4">
+      <form className="space-y-4" data-marking-feedback="true">
         <label className="block text-sm">
           <span className="mb-1.5 block text-slate-500">
             Mark (out of {maximumMark})
@@ -94,7 +104,12 @@ export function FeedbackForm({
           />
         </label>
         <div className="flex flex-wrap gap-2">
-          <Button formAction={draftAction} disabled={draftPending}>
+          <Button
+            ref={draftButtonRef}
+            formAction={draftAction}
+            disabled={draftPending}
+            data-marking-save-draft="true"
+          >
             {draftPending ? "Saving…" : "Save draft"}
           </Button>
           <Button

@@ -3,165 +3,85 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SubjectIcon } from "@/components/shared/subject-icon";
 import { requireProfile } from "@/lib/auth/get-profile";
+import { loadMarkingDashboard } from "@/lib/marking/queries";
+import type { MarkingClassSort } from "@/lib/marking/types";
 import { createClient } from "@/lib/supabase/server";
 
-export default async function MarkingQueuePage({
+export default async function MarkingDashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ classId?: string; assignmentId?: string; status?: string }>;
+  searchParams: Promise<{ sort?: string }>;
 }) {
   const profile = await requireProfile(["teacher", "admin"]);
   const params = await searchParams;
   const supabase = await createClient();
+  const sort = (params.sort as MarkingClassSort) || "oldest";
+  const classes = await loadMarkingDashboard(supabase, profile, sort);
 
-  const [{ data: classes }, { data: assignments }] = await Promise.all([
-    supabase
-      .from("classes")
-      .select("id, name")
-      .eq("teacher_id", profile.id)
-      .eq("archived", false)
-      .order("name"),
-    supabase
-      .from("assignments")
-      .select("id, title, class_id")
-      .eq("teacher_id", profile.id)
-      .neq("status", "archived")
-      .order("title"),
-  ]);
-
-  let assignmentQuery = supabase
-    .from("assignments")
-    .select("id")
-    .eq("teacher_id", profile.id);
-  if (params.classId) assignmentQuery = assignmentQuery.eq("class_id", params.classId);
-  if (params.assignmentId) assignmentQuery = assignmentQuery.eq("id", params.assignmentId);
-  const { data: scopedAssignments } = await assignmentQuery;
-  const assignmentIds = (scopedAssignments ?? []).map((a) => a.id);
-
-  let submissions: {
-    id: string;
-    status: string;
-    submitted_at: string | null;
-    assignment_id: string;
-    student?: { display_name: string } | { display_name: string }[] | null;
-    assignments?: { title: string } | { title: string }[] | null;
-  }[] = [];
-
-  if (assignmentIds.length) {
-    let q = supabase
-      .from("submissions")
-      .select(
-        "id, status, submitted_at, assignment_id, student:profiles!submissions_student_id_fkey(display_name), assignments!inner(title)",
-      )
-      .in("assignment_id", assignmentIds)
-      .order("submitted_at", { ascending: true });
-
-    const status = params.status || "unmarked";
-    if (status === "unmarked") {
-      q = q.in("status", ["submitted", "late"]);
-    } else if (status !== "all") {
-      q = q.eq("status", status);
-    }
-
-    const { data } = await q;
-    submissions = data ?? [];
-  }
+  const sorts: Array<{ id: MarkingClassSort; label: string }> = [
+    { id: "oldest", label: "Oldest waiting" },
+    { id: "unmarked", label: "Most unmarked" },
+    { id: "recent", label: "Most recent" },
+    { id: "name", label: "Class name" },
+  ];
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Marking queue"
-        description="Unmarked student submissions, oldest first."
+        title="Marking"
+        description="Choose a class, then an assignment, then a student."
       />
 
-      <Card>
-        <form
-          method="get"
-          className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]"
-        >
-          <select
-            name="classId"
-            defaultValue={params.classId ?? ""}
-            className="h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm"
-          >
-            <option value="">All classes</option>
-            {(classes ?? []).map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-          <select
-            name="assignmentId"
-            defaultValue={params.assignmentId ?? ""}
-            className="h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm"
-          >
-            <option value="">All assignments</option>
-            {(assignments ?? []).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.title}
-              </option>
-            ))}
-          </select>
-          <select
-            name="status"
-            defaultValue={params.status ?? "unmarked"}
-            className="h-11 rounded-2xl border border-slate-200 bg-white px-3 text-sm"
-          >
-            <option value="unmarked">Unmarked</option>
-            <option value="submitted">Submitted</option>
-            <option value="late">Late</option>
-            <option value="marked">Marked</option>
-            <option value="returned">Returned</option>
-            <option value="all">All</option>
-          </select>
-          <Button type="submit" variant="secondary">
-            Filter
-          </Button>
-        </form>
-      </Card>
+      <div className="flex flex-wrap gap-2">
+        {sorts.map((s) => (
+          <Link key={s.id} href={`/teacher/marking?sort=${s.id}`}>
+            <Badge tone={sort === s.id ? "brand" : "neutral"}>{s.label}</Badge>
+          </Link>
+        ))}
+      </div>
 
-      {!submissions.length ? (
+      {!classes.length ? (
         <Card>
-          <p className="text-sm text-slate-500">No submissions to mark</p>
+          <p className="text-sm text-slate-500">No classes with marking access</p>
         </Card>
       ) : (
         <div className="space-y-3">
-          {submissions.map((s) => {
-            const student = Array.isArray(s.student) ? s.student[0] : s.student;
-            const assignment = Array.isArray(s.assignments)
-              ? s.assignments[0]
-              : s.assignments;
-            return (
-              <Card
-                key={s.id}
-                className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
-              >
+          {classes.map((cls) => (
+            <Card
+              key={cls.classId}
+              className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+            >
+              <div className="flex items-start gap-3">
+                <SubjectIcon
+                  name={cls.subject}
+                  iconType={cls.subjectIconType}
+                  iconValue={cls.subjectIconValue}
+                  colour={cls.subjectColour}
+                  size="md"
+                />
                 <div>
-                  <div className="mb-1 flex gap-2">
-                    <Badge
-                      tone={s.status === "late" ? "danger" : "brand"}
-                    >
-                      {s.status}
-                    </Badge>
-                  </div>
-                  <p className="font-semibold text-slate-900">
-                    {student?.display_name ?? "Student"}
-                  </p>
+                  <h2 className="font-semibold text-slate-900">{cls.className}</h2>
                   <p className="text-sm text-slate-500">
-                    {assignment?.title ?? "Assignment"}
-                    {s.submitted_at
-                      ? ` · submitted ${new Date(s.submitted_at).toLocaleString("en-GB")}`
+                    {cls.subject}
+                    {cls.yearGroup ? ` · ${cls.yearGroup}` : ""}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {cls.assignmentsWithUnmarked} assignment
+                    {cls.assignmentsWithUnmarked === 1 ? "" : "s"} with unmarked
+                    work · {cls.unmarkedCount} unmarked
+                    {cls.oldestUnmarkedAt
+                      ? ` · oldest ${new Date(cls.oldestUnmarkedAt).toLocaleString("en-GB")}`
                       : ""}
                   </p>
                 </div>
-                <Link href={`/teacher/marking/${s.id}`}>
-                  <Button size="sm">Open</Button>
-                </Link>
-              </Card>
-            );
-          })}
+              </div>
+              <Link href={`/teacher/marking/classes/${cls.classId}`}>
+                <Button size="sm">Open class</Button>
+              </Link>
+            </Card>
+          ))}
         </div>
       )}
     </div>

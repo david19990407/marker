@@ -15,7 +15,6 @@ import {
 } from "@/lib/actions/homework-builder";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
 import { evaluateStructuredCompletion } from "@/lib/homework/completion";
-import { formatMarkLabel } from "@/lib/homework/marks";
 import {
   collectResponses,
   collectUnpersistableAnswerLabels,
@@ -26,6 +25,7 @@ import {
   isResponseType,
   responseKey,
 } from "@/lib/homework/structure";
+import { SubmissionStatusBanner } from "@/components/student/submission-status-banner";
 import type { BuilderSection, StudentResponse } from "@/lib/types";
 
 export type ResponseWithCells = StudentResponse & {
@@ -222,7 +222,7 @@ export function StructuredHomework({
         setConfirmSubmit(false);
         return;
       }
-      window.location.href = `/student/homework/${assignmentId}`;
+      window.location.href = `/student/homework/assignments/${assignmentId}`;
     });
   }
 
@@ -240,7 +240,7 @@ export function StructuredHomework({
         setFlash({ type: "error", msg: result.error });
         return;
       }
-      window.location.href = `/student/homework/${assignmentId}`;
+      window.location.href = `/student/homework/assignments/${assignmentId}`;
     });
   }
 
@@ -256,6 +256,13 @@ export function StructuredHomework({
 
   return (
     <div className="homework-worksheet mx-auto max-w-3xl space-y-8 px-1 sm:px-2">
+      <SubmissionStatusBanner
+        status={submissionStatus}
+        submittedAt={submittedAt}
+        answeredCount={completion.answeredAssessableCount}
+        assessableCount={completion.assessableCount}
+      />
+
       {editable ? (
         <div className="flex flex-wrap items-center gap-2">
           <Badge
@@ -273,22 +280,9 @@ export function StructuredHomework({
             {completion.requiredCount > 0
               ? ` · Required ${completion.answeredRequiredCount}/${completion.requiredCount}`
               : ""}
-            {completion.totalMarks > 0
-              ? ` · ${formatMarkLabel(completion.answeredMarks)} of ${formatMarkLabel(completion.totalMarks)} attempted`
-              : ""}
           </span>
         </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-slate-500">
-            Questions answered {completion.answeredAssessableCount}/
-            {completion.assessableCount}
-            {completion.totalMarks > 0
-              ? ` · ${formatMarkLabel(completion.answeredMarks)} of ${formatMarkLabel(completion.totalMarks)} attempted`
-              : ""}
-          </span>
-        </div>
-      )}
+      ) : null}
 
       {missingQuestionIds.length > 0 && editable ? (
         <div className="border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
@@ -324,29 +318,13 @@ export function StructuredHomework({
         </div>
       ) : null}
 
-      {!editable && submittedAt ? (
-        <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-          Submitted{" "}
-          {new Date(submittedAt).toLocaleString(undefined, {
-            dateStyle: "medium",
-            timeStyle: "short",
-          })}
-          {" · "}
-          status {submissionStatus ?? "submitted"} · read-only
-        </div>
-      ) : null}
-
       <StructuredWorksheetRenderer
         sections={sections}
         mode={worksheetMode}
         values={values}
         errors={errors}
         onValueChange={setValue}
-        submissionMeta={
-          worksheetMode === "student_readonly"
-            ? { status: submissionStatus, submittedAt }
-            : null
-        }
+        submissionMeta={null}
       />
 
       {editable ? (
