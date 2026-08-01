@@ -272,8 +272,18 @@ export type PassageConfig = {
   line_number_interval: number;
   starting_line_number: number;
   numbering_continuation?: PassageNumberingContinuation;
-  /** Display numbers that appear in the gutter when mode is "manual" */
+  /**
+   * Legacy/manual display labels that should appear in the gutter
+   * (e.g. 1, 6, 11). Prefer numbered_line_indexes for stable control.
+   */
   manual_line_numbers?: number[];
+  /** 0-based logical line indexes that should show a gutter number. */
+  numbered_line_indexes?: number[];
+  /**
+   * Optional custom labels keyed by logical line index string.
+   * When absent, the label defaults to starting_line_number + index.
+   */
+  manual_line_labels?: Record<string, number>;
 };
 
 export type MediaAlignment = "left" | "center" | "right";

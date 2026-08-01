@@ -9,6 +9,10 @@ import { SignedImage, SignedVideo } from "@/components/shared/signed-media";
 import { DownloadButton } from "@/components/shared/download-button";
 import { computePassageStartLines } from "@/lib/homework/passage-numbering";
 import {
+  labelsForOptionIds,
+  selectedMcqOptionIds,
+} from "@/lib/homework/mcq-answers";
+import {
   isResponseType,
   normalizeMediaConfig,
   normalizeNumericConfig,
@@ -45,6 +49,7 @@ export type WorksheetResponseValue =
   | { type: "text"; text: string }
   | { type: "numeric"; numeric: number | null }
   | { type: "bool"; bool: boolean }
+  | { type: "mcq"; optionIds: string[] }
   | {
       type: "table";
       cells: Array<{ row_index: number; col_index: number; text: string }>;
@@ -183,6 +188,14 @@ export function buildValuesFromResponses(
         result[qid] = { type: "numeric", numeric: resp.numeric_value };
       } else if (block.block_type === "tick_box") {
         result[qid] = { type: "bool", bool: resp.boolean_value ?? false };
+      } else if (
+        block.block_type === "multiple_choice" ||
+        block.block_type === "multiple_select"
+      ) {
+        result[qid] = {
+          type: "mcq",
+          optionIds: selectedMcqOptionIds(block, resp),
+        };
       } else if (
         block.block_type === "table" ||
         block.block_type === "vocabulary_table"
@@ -556,9 +569,12 @@ function BlockView({
       block,
       qid,
     );
-    const selected =
-      (current as { type: "text"; text: string } | undefined)?.text ?? "";
+    const selectedIds =
+      (current as { type: "mcq"; optionIds: string[] } | undefined)?.optionIds ??
+      [];
+    const selectedId = selectedIds[0] ?? "";
     const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+    const selectedLabels = labelsForOptionIds(block, selectedIds);
 
     return (
       <QuestionShell
@@ -576,11 +592,11 @@ function BlockView({
               <input
                 type="radio"
                 name={`mcq-${qid}`}
-                value={option.label}
+                value={option.id}
                 className="mt-1.5"
-                checked={selected === option.label}
+                checked={selectedId === option.id}
                 onChange={() =>
-                  onValueChange(qid, { type: "text", text: option.label })
+                  onValueChange(qid, { type: "mcq", optionIds: [option.id] })
                 }
                 disabled={!editable}
               />
@@ -590,7 +606,7 @@ function BlockView({
         </div>
         {mode === "teacher_marking" ? (
           <MarkingAnswerMeta
-            selected={selected || "—"}
+            selected={selectedLabels[0] || "—"}
             reference={correctLabels[0] ?? block.correct_answer ?? "—"}
             automatic={block.marking_mode === "automatic"}
           />
@@ -606,13 +622,12 @@ function BlockView({
       block,
       qid,
     );
-    const selected = new Set(
-      ((current as { type: "text"; text: string } | undefined)?.text ?? "")
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean),
+    const selectedIds = new Set(
+      (current as { type: "mcq"; optionIds: string[] } | undefined)?.optionIds ??
+        [],
     );
     const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+    const selectedLabels = labelsForOptionIds(block, Array.from(selectedIds));
 
     return (
       <QuestionShell
@@ -630,13 +645,13 @@ function BlockView({
               <input
                 type="checkbox"
                 className="mt-1.5"
-                checked={selected.has(option.label)}
+                checked={selectedIds.has(option.id)}
                 onChange={(e) => {
-                  if (e.target.checked) selected.add(option.label);
-                  else selected.delete(option.label);
+                  if (e.target.checked) selectedIds.add(option.id);
+                  else selectedIds.delete(option.id);
                   onValueChange(qid, {
-                    type: "text",
-                    text: Array.from(selected).join("\n"),
+                    type: "mcq",
+                    optionIds: Array.from(selectedIds),
                   });
                 }}
                 disabled={!editable}
@@ -647,7 +662,7 @@ function BlockView({
         </div>
         {mode === "teacher_marking" ? (
           <MarkingAnswerMeta
-            selected={Array.from(selected).join(", ") || "—"}
+            selected={selectedLabels.join(", ") || "—"}
             reference={correctLabels.join(", ") || block.correct_answer || "—"}
             automatic={block.marking_mode === "automatic"}
           />

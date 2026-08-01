@@ -278,7 +278,8 @@ export async function saveAssignmentAction(
       allow_file_submission:
         formData.get("allow_file_submission") === "on" ||
         formData.get("allow_file_submission") === "true",
-      status: formData.get("status") || "draft",
+      // New homework is always created as draft; publish is a separate action.
+      status: "draft",
     });
     if (!parsed.success) {
       return { error: parsed.error.issues[0]?.message ?? "Invalid assignment" };
@@ -445,6 +446,97 @@ export async function saveAssignmentAction(
   revalidatePath("/teacher/assignments");
   revalidatePath(`/teacher/assignments/${assignmentId}`);
   return { success: "Assignment saved" };
+}
+
+/** Publish (or re-confirm) a draft/published homework without a status dropdown. */
+export async function publishHomeworkAction(
+  assignmentId: string,
+  _prev: ActionResult,
+  formData: FormData,
+): Promise<ActionResult> {
+  const profile = await assertTeacher();
+  const supabase = await createClient();
+
+  const { data: existing } = await supabase
+    .from("assignments")
+    .select(
+      "id, teacher_id, class_id, title, status, release_at, due_at, template_id",
+    )
+    .eq("id", assignmentId)
+    .maybeSingle();
+  if (!existing) return { error: "Assignment not found" };
+
+  if (existing.teacher_id !== profile.id) {
+    const { data: ct } = await supabase
+      .from("class_teachers")
+      .select("id, can_create_assignments")
+      .eq("class_id", existing.class_id)
+      .eq("teacher_id", profile.id)
+      .eq("can_create_assignments", true)
+      .maybeSingle();
+    if (!ct) return { error: "Assignment not found" };
+  }
+
+  if (existing.status === "archived") {
+    return { error: "Archived homework cannot be published" };
+  }
+
+  const dueAtRaw = formData.get("due_at");
+  const releaseAtRaw = formData.get("release_at");
+  const due_at =
+    dueAtRaw != null && String(dueAtRaw).trim()
+      ? new Date(String(dueAtRaw)).toISOString()
+      : existing.due_at;
+  const release_at =
+    releaseAtRaw != null && String(releaseAtRaw).trim()
+      ? new Date(String(releaseAtRaw)).toISOString()
+      : releaseAtRaw === ""
+        ? null
+        : existing.release_at;
+
+  if (existing.status === "published") {
+    const acknowledged = formData.get("confirm_published_edit") === "on";
+    if (!acknowledged) {
+      return {
+        error:
+          "Confirm that you want to update this published homework before saving changes.",
+      };
+    }
+  }
+
+  const { error } = await supabase
+    .from("assignments")
+    .update({
+      status: "published",
+      due_at,
+      release_at,
+    })
+    .eq("id", assignmentId);
+  if (error) return { error: error.message };
+
+  await maybeNotifyPublished(
+    assignmentId,
+    "published",
+    existing.class_id,
+    existing.title,
+  );
+
+  revalidatePath("/teacher/assignments");
+  revalidatePath(`/teacher/assignments/${assignmentId}`);
+  revalidatePath(`/teacher/assignments/${assignmentId}/builder`);
+  revalidatePath("/teacher/dashboard");
+  revalidatePath("/student/homework");
+  revalidatePath("/student/dashboard");
+
+  const scheduled =
+    release_at && new Date(release_at).getTime() > Date.now();
+  return {
+    success: scheduled
+      ? "Homework published and scheduled for release."
+      : existing.status === "published"
+        ? "Published homework updated."
+        : "Homework published.",
+  };
 }
 
 export async function copyAssignmentAction(

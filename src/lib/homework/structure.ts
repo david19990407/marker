@@ -42,6 +42,12 @@ export function cloneBlock(block: BuilderBlock): BuilderBlock {
           manual_line_numbers: block.passageConfig.manual_line_numbers
             ? [...block.passageConfig.manual_line_numbers]
             : undefined,
+          numbered_line_indexes: block.passageConfig.numbered_line_indexes
+            ? [...block.passageConfig.numbered_line_indexes]
+            : undefined,
+          manual_line_labels: block.passageConfig.manual_line_labels
+            ? { ...block.passageConfig.manual_line_labels }
+            : undefined,
         }
       : undefined,
     mediaConfig: block.mediaConfig ? { ...block.mediaConfig } : undefined,
