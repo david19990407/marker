@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { exactAnnotationStyle } from "./annotation-geometry";
 
 export type AnnotationType =
   | "text_highlight"
@@ -13,9 +14,8 @@ export type AnnotationVisibility = "teacher_only" | "student_visible";
 export type AnnotationTool =
   | "select"
   | "text_highlight"
-  | "freehand"
-  | "text_comment"
   | "area_comment"
+  | "text_comment"
   | "stamp"
   | "delete";
 
@@ -39,6 +39,7 @@ export interface SubmissionAnnotation {
   opacity: number;
   stroke_width: number;
   stamp_id: string | null;
+  source_comment_item_id?: string | null;
   visibility: AnnotationVisibility;
   client_version: number;
   is_deleted: boolean;
@@ -115,11 +116,7 @@ export interface QuestionMarkRecord {
   marked_at?: string | null;
 }
 
-/** Clamp normalised geometry into 0..1. */
-export function clampNorm(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
-}
+export { clamp01 as clampNorm } from "./annotation-geometry";
 
 export function annotationStyle(
   annotation: Pick<
@@ -127,12 +124,12 @@ export function annotationStyle(
     "x_norm" | "y_norm" | "w_norm" | "h_norm"
   >,
 ): CSSProperties {
-  return {
-    left: `${clampNorm(annotation.x_norm) * 100}%`,
-    top: `${clampNorm(annotation.y_norm) * 100}%`,
-    width: `${Math.max(clampNorm(annotation.w_norm) * 100, 1)}%`,
-    height: `${Math.max(clampNorm(annotation.h_norm) * 100, 1)}%`,
-  };
+  return exactAnnotationStyle({
+    x: annotation.x_norm,
+    y: annotation.y_norm,
+    w: annotation.w_norm,
+    h: annotation.h_norm,
+  });
 }
 
 export function formatMarksLabel(n: number): string {
