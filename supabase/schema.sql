@@ -16,6 +16,8 @@
 --   Prefer additive repair files only. Do NOT re-run this full schema.sql.
 --   After phase_04 / phase_06 (if needed), run:
 --     supabase/repair_and_improve_phase_04_builder.sql
+--   Then (calculated mark totals may start at 0):
+--     supabase/fix_assignment_template_calculated_mark_constraint.sql
 --
 -- Individual phase_01 / phase_02 / phase_03 files remain available but are
 -- superseded for production repair by repair_phases_01_to_03.sql.
@@ -97,7 +99,7 @@ create table public.assignments (
   title text not null,
   instructions text not null default '',
   due_at timestamptz,
-  maximum_mark numeric(6,2) not null default 30 check (maximum_mark > 0),
+  maximum_mark numeric(6,2) not null default 0 check (maximum_mark >= 0),
   status public.assignment_status not null default 'draft',
   allow_text_submission boolean not null default true,
   allow_file_submission boolean not null default true,

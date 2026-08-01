@@ -83,7 +83,9 @@ export interface AssignmentTemplate {
   instructions: string;
   allow_text_submission: boolean;
   allow_file_submission: boolean;
+  /** Calculated total; may be 0 when no marked questions exist yet. */
   default_maximum_mark: number;
+  calculated_maximum_mark?: number | null;
   academic_year: string | null;
   created_at: string;
   updated_at: string;

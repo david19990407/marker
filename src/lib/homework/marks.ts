@@ -38,13 +38,21 @@ export function calculateTotalMarks(sections: BuilderSection[]): number {
   }
 
   for (const section of sections) visitSection(section);
-  return roundMarks(total);
+  return normalizeCalculatedTotal(total, true);
 }
 
 export function roundMarks(value: number, allowDecimals = true): number {
   if (!Number.isFinite(value) || value < 0) return 0;
   if (!allowDecimals) return Math.round(value);
   return Math.round(value * 100) / 100;
+}
+
+/** Client-side total never goes negative; decimals optional via school setting. */
+export function normalizeCalculatedTotal(
+  value: number,
+  allowDecimals = true,
+): number {
+  return roundMarks(Math.max(0, value), allowDecimals);
 }
 
 export function formatMarks(value: number): string {
