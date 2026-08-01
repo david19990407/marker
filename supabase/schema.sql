@@ -11,6 +11,8 @@
 --   6. supabase/fix_class_creation_rls.sql
 --   7. supabase/fix_school_settings_subjects_year_groups.sql
 --   8. supabase/fix_role_based_class_management_and_branding.sql
+--   9. supabase/phase_05_flexible_feedback_and_comment_banks.sql
+--  10. Later phase_06 fix_* migrations as needed for live repairs
 --
 -- Existing LIVE project:
 --   Prefer additive repair files only. Do NOT re-run this full schema.sql.
@@ -18,6 +20,8 @@
 --     supabase/repair_and_improve_phase_04_builder.sql
 --   Then (calculated mark totals may start at 0):
 --     supabase/fix_assignment_template_calculated_mark_constraint.sql
+--   Then flexible feedback + comment banks:
+--     supabase/phase_05_flexible_feedback_and_comment_banks.sql
 --
 -- Individual phase_01 / phase_02 / phase_03 files remain available but are
 -- superseded for production repair by repair_phases_01_to_03.sql.
@@ -910,3 +914,10 @@ create policy "Teachers read submission files for their classes"
         and c.teacher_id = auth.uid()
     )
   );
+
+-- ---------------------------------------------------------------------------
+-- Appendix: flexible feedback + comment banks (Phase 5 / plan Phase 7)
+-- Full DDL, RLS, grants, indexes and data migration live in:
+--   supabase/phase_05_flexible_feedback_and_comment_banks.sql
+-- Do not duplicate here for live projects — run that additive migration.
+-- ---------------------------------------------------------------------------

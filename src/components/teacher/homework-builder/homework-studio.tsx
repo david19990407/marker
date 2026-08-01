@@ -45,6 +45,7 @@ interface Props {
   initialComments?: AssignmentCommentDraft[];
   commentBanks?: CommentBankOption[];
   linkedCommentBankIds?: string[];
+  feedbackFields?: import("@/lib/feedback/types").AssignmentFeedbackField[];
 }
 
 const STAGES: Array<{ id: BuilderStage; label: string }> = [
@@ -67,6 +68,7 @@ export function HomeworkStudio({
   initialComments = [],
   commentBanks = [],
   linkedCommentBankIds = [],
+  feedbackFields = [],
 }: Props) {
   const [sections, setSections] = useState<BuilderSection[]>(initialSections);
   const sectionsRef = useRef(sections);
@@ -283,6 +285,7 @@ export function HomeworkStudio({
           onFlushComments={() => void commentAutosave.flush()}
           commentBanks={commentBanks}
           linkedCommentBankIds={linkedCommentBankIds}
+          feedbackFields={feedbackFields}
         />
       </div>
 

@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { FeedbackFieldsEditor } from "@/components/teacher/homework-builder/feedback-fields-editor";
 import { saveCommentBankLinksAction } from "@/lib/actions/homework-builder";
+import type { AssignmentFeedbackField } from "@/lib/feedback/types";
 import { newId } from "@/lib/homework/structure";
 import { BLOCK_TYPE_LABELS, RESPONSE_BLOCK_TYPES } from "@/lib/types";
 import type { AssignmentCommentDraft, BuilderSection } from "@/lib/types";
@@ -24,6 +26,7 @@ interface Props {
   onFlushComments?: () => void;
   commentBanks?: CommentBankOption[];
   linkedCommentBankIds?: string[];
+  feedbackFields?: AssignmentFeedbackField[];
 }
 
 type BankView = "assignment" | string;
@@ -38,6 +41,7 @@ export function FeedbackStage({
   onFlushComments,
   commentBanks = [],
   linkedCommentBankIds = [],
+  feedbackFields = [],
 }: Props) {
   const [bankIds, setBankIds] = useState<string[]>(linkedCommentBankIds);
   const [selectedBank, setSelectedBank] = useState<BankView>("assignment");
@@ -210,6 +214,11 @@ export function FeedbackStage({
   }
 
   return (
+    <div className="space-y-4">
+      <FeedbackFieldsEditor
+        templateId={templateId}
+        initialFields={feedbackFields}
+      />
     <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
       {/* Left: banks */}
       <Card className="h-fit space-y-3">
@@ -421,6 +430,7 @@ export function FeedbackStage({
           />
         )}
       </Card>
+    </div>
     </div>
   );
 }

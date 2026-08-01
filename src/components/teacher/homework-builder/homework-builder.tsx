@@ -13,6 +13,7 @@ interface Props {
   initialComments?: ComponentProps<typeof HomeworkStudio>["initialComments"];
   commentBanks?: ComponentProps<typeof HomeworkStudio>["commentBanks"];
   linkedCommentBankIds?: ComponentProps<typeof HomeworkStudio>["linkedCommentBankIds"];
+  feedbackFields?: ComponentProps<typeof HomeworkStudio>["feedbackFields"];
 }
 
 export function HomeworkBuilder({ classNames = [], ...props }: Props) {

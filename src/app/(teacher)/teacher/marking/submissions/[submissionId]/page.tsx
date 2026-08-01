@@ -9,6 +9,8 @@ import {
   StructuredMarkingWorkspace,
   type MarkingResponse,
 } from "@/components/teacher/structured-marking-workspace";
+import { listCommentBankItemsAction } from "@/lib/actions/comment-banks";
+import { loadFeedbackFieldsAction } from "@/lib/actions/feedback-fields";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
 import { pickAuthoritativeResponsesByQuestion } from "@/lib/homework/response-protect";
@@ -18,6 +20,11 @@ import {
   loadSubmissionNavigation,
 } from "@/lib/marking/queries";
 import { createClient } from "@/lib/supabase/server";
+import type {
+  AssignmentFeedbackField,
+  CommentBankItem,
+  FeedbackFieldValue,
+} from "@/lib/feedback/types";
 import type { Feedback } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -55,16 +62,48 @@ export default async function MarkSubmissionPage({
   );
   if (!canMark) notFound();
 
-  const [{ data: feedback }, nav] = await Promise.all([
-    supabase.from("feedback").select("*").eq("submission_id", submissionId).maybeSingle(),
-    loadSubmissionNavigation(
-      supabase,
-      profile,
-      assignment.id,
-      submissionId,
-      unmarkedOnly,
-    ),
-  ]);
+  const [{ data: feedback }, nav, commentItemsResult, fieldsResult] =
+    await Promise.all([
+      supabase
+        .from("feedback")
+        .select("*")
+        .eq("submission_id", submissionId)
+        .maybeSingle(),
+      loadSubmissionNavigation(
+        supabase,
+        profile,
+        assignment.id,
+        submissionId,
+        unmarkedOnly,
+      ),
+      listCommentBankItemsAction({
+        templateId: assignment.template_id,
+        classId: assignment.class_id,
+      }),
+      assignment.template_id
+        ? loadFeedbackFieldsAction(assignment.template_id)
+        : Promise.resolve({ fields: [] as AssignmentFeedbackField[] }),
+    ]);
+
+  let feedbackFieldValues: FeedbackFieldValue[] = [];
+  if (feedback?.id) {
+    const { data: valueRows } = await supabase
+      .from("feedback_field_values")
+      .select("*")
+      .eq("feedback_id", feedback.id);
+    feedbackFieldValues = (valueRows ?? []).map((row) => ({
+      field_id: String(row.field_id),
+      field_key: String(row.field_key),
+      text_value: (row.text_value as string | null) ?? null,
+      numeric_value:
+        row.numeric_value == null ? null : Number(row.numeric_value),
+      boolean_value: (row.boolean_value as boolean | null) ?? null,
+      json_value: row.json_value,
+    }));
+  }
+
+  const feedbackFields = fieldsResult.fields ?? [];
+  const commentBankItems: CommentBankItem[] = commentItemsResult.items ?? [];
 
   const student = Array.isArray(submission.student)
     ? submission.student[0]
@@ -262,6 +301,11 @@ export default async function MarkSubmissionPage({
           markSchemes={markSchemes}
           commentBanks={commentBanks}
           assignmentComments={assignmentComments}
+          feedbackFields={feedbackFields}
+          feedbackFieldValues={feedbackFieldValues}
+          commentBankItems={commentBankItems}
+          studentName={student?.display_name ?? ""}
+          assignmentTitle={assignment.title}
           legacyWrittenResponse={submission.written_response}
           legacyFileName={submission.file_name}
           legacyStoragePath={submission.storage_path}
@@ -279,6 +323,11 @@ export default async function MarkSubmissionPage({
               submissionId={submissionId}
               maximumMark={Number(assignment.maximum_mark)}
               feedback={(feedback as Feedback | null) ?? null}
+              fields={feedbackFields}
+              fieldValues={feedbackFieldValues}
+              commentItems={commentBankItems}
+              studentName={student?.display_name ?? ""}
+              assignmentTitle={assignment.title}
             />
           </Card>
         </div>
