@@ -11,7 +11,10 @@ import {
   loadTemplateStructure,
   structureToPayload,
 } from "@/lib/homework/structure";
-import { shouldSkipStructuredUpsert } from "@/lib/homework/response-protect";
+import {
+  structuredResponseFingerprint,
+  structuredUpsertSkipReason,
+} from "@/lib/homework/response-protect";
 import { structuredResponsesSchema } from "@/lib/validations/homework";
 import type { ActionResult } from "@/lib/actions/auth";
 import {
@@ -589,14 +592,56 @@ export async function saveStudentStructuredResponsesAction(
     const incomingVersion =
       typeof resp.client_version === "number" ? resp.client_version : null;
 
-    if (
-      shouldSkipStructuredUpsert({
-        incomingEmpty,
-        existingPopulated,
-        incomingVersion,
-        existingVersion,
-      })
-    ) {
+    const skipReason = structuredUpsertSkipReason({
+      incomingEmpty,
+      existingPopulated,
+      incomingVersion,
+      existingVersion,
+    });
+
+    if (skipReason === "stale_version") {
+      const existingFp = structuredResponseFingerprint({
+        text_value: (existing?.text_value as string | null) ?? null,
+        numeric_value: (existing?.numeric_value as number | null) ?? null,
+        boolean_value: (existing?.boolean_value as boolean | null) ?? null,
+        json_value: existing?.json_value,
+        file_name: (existing?.file_name as string | null) ?? null,
+        storage_path: (existing?.storage_path as string | null) ?? null,
+        cells: Array.isArray(existing?.response_cells)
+          ? (existing.response_cells as Array<{
+              row_index: number;
+              col_index: number;
+              text_value?: string | null;
+              numeric_value?: number | null;
+              boolean_value?: boolean | null;
+            }>)
+          : [],
+      });
+      const incomingFp = structuredResponseFingerprint({
+        text_value: resp.text_value,
+        numeric_value: resp.numeric_value,
+        boolean_value: resp.boolean_value,
+        json_value: resp.json_value,
+        cells: resp.cells,
+      });
+      if (existingFp !== incomingFp) {
+        errors.push(
+          "A newer answer is already saved for one or more questions. Reload the page and try again — stale autosave was rejected.",
+        );
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[student-response-save] stale_version_rejected", {
+            submissionId: submission.id,
+            questionId: resp.question_id,
+            incomingVersion,
+            existingVersion,
+          });
+        }
+      }
+      // Identical content with an older version: safe no-op.
+      continue;
+    }
+
+    if (skipReason === "empty_overwrite") {
       continue;
     }
 
@@ -742,10 +787,26 @@ export async function submitStructuredHomeworkAction(
     return { error: "Submission is locked" };
   }
 
+  const submissionIdBefore = submission.id;
+
   const { count: responseCountBefore } = await supabase
     .from("student_responses")
     .select("id", { count: "exact", head: true })
     .eq("submission_id", submission.id);
+
+  // Always reload authoritative rows with no client cache assumptions.
+  const { data: storedFresh, error: reloadError } = await supabase
+    .from("student_responses")
+    .select(
+      "id, question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path, client_version, updated_at, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
+    )
+    .eq("submission_id", submission.id);
+
+  if (reloadError) {
+    return {
+      error: `Could not reload saved answers before submit: ${reloadError.message}`,
+    };
+  }
 
   if (process.env.NODE_ENV !== "production") {
     console.info("[submit] before", {
@@ -753,7 +814,55 @@ export async function submitStructuredHomeworkAction(
       status: submission.status,
       responseCount: responseCountBefore ?? 0,
       incomingResponseCount: responses.length,
+      reloadedResponseCount: storedFresh?.length ?? 0,
     });
+  }
+
+  // Confirm flushed client payload matches DB before status transition.
+  if (responses.length > 0) {
+    const byQuestion = new Map(
+      (storedFresh ?? []).map((row) => [String(row.question_id), row]),
+    );
+    for (const resp of responses) {
+      if (isEmptyStructuredPayload(resp)) continue;
+      const row = byQuestion.get(resp.question_id);
+      if (!row) {
+        return {
+          error:
+            "Submit aborted: a required answer was not found in the database after save. Reload and try again.",
+        };
+      }
+      const dbFp = structuredResponseFingerprint({
+        text_value: row.text_value as string | null,
+        numeric_value: row.numeric_value as number | null,
+        boolean_value: row.boolean_value as boolean | null,
+        json_value: row.json_value,
+        file_name: row.file_name as string | null,
+        storage_path: row.storage_path as string | null,
+        cells: Array.isArray(row.response_cells)
+          ? (row.response_cells as Array<{
+              row_index: number;
+              col_index: number;
+              text_value?: string | null;
+              numeric_value?: number | null;
+              boolean_value?: boolean | null;
+            }>)
+          : [],
+      });
+      const clientFp = structuredResponseFingerprint({
+        text_value: resp.text_value,
+        numeric_value: resp.numeric_value,
+        boolean_value: resp.boolean_value,
+        json_value: resp.json_value,
+        cells: resp.cells,
+      });
+      if (dbFp !== clientFp) {
+        return {
+          error:
+            "Submit aborted: saved answers do not match what you edited. Reload the page, confirm your answers, and submit again.",
+        };
+      }
+    }
   }
 
   // Completion is calculated from structured responses, never legacy written_response.
@@ -761,14 +870,7 @@ export async function submitStructuredHomeworkAction(
     try {
       const sections = await loadTemplateStructure(supabase, assignment.template_id);
       if (isStructuredAssignment(sections)) {
-        const { data: stored } = await supabase
-          .from("student_responses")
-          .select(
-            "question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
-          )
-          .eq("submission_id", submission.id);
-
-        const snapshots = (stored ?? []).map((row) => ({
+        const snapshots = (storedFresh ?? []).map((row) => ({
           question_id: row.question_id as string,
           text_value: row.text_value as string | null,
           numeric_value: row.numeric_value as number | null,
@@ -869,7 +971,7 @@ export async function submitStructuredHomeworkAction(
   if (!confirmed || !["submitted", "late"].includes(confirmed.status)) {
     return { error: "Could not finalise submission status" };
   }
-  if (confirmed.id !== submission.id) {
+  if (confirmed.id !== submissionIdBefore) {
     return { error: "Submission ID changed unexpectedly during submit" };
   }
 
@@ -888,6 +990,7 @@ export async function submitStructuredHomeworkAction(
   if (process.env.NODE_ENV !== "production") {
     console.info("[submit] after", {
       submissionId: confirmed.id,
+      submissionIdBefore,
       status: confirmed.status,
       responseCountBefore: responseCountBefore ?? 0,
       responseCountAfter: responseCountAfter ?? 0,
@@ -929,9 +1032,11 @@ export async function submitStructuredHomeworkAction(
   }
 
   revalidatePath(`/student/homework/${assignmentId}`);
+  revalidatePath(`/student/homework/assignments/${assignmentId}`);
   revalidatePath("/student/homework");
   revalidatePath("/student/dashboard");
   revalidatePath("/teacher/marking");
+  revalidatePath(`/teacher/marking/submissions/${submission.id}`);
   revalidatePath("/teacher/dashboard");
   return {
     success: late
@@ -1042,9 +1147,11 @@ export async function unsubmitStructuredHomeworkAction(
   }
 
   revalidatePath(`/student/homework/${assignmentId}`);
+  revalidatePath(`/student/homework/assignments/${assignmentId}`);
   revalidatePath("/student/homework");
   revalidatePath("/student/dashboard");
   revalidatePath("/teacher/marking");
+  revalidatePath(`/teacher/marking/submissions/${submission.id}`);
   return {
     success: "Homework unsubmitted. You can continue editing.",
     submissionId: submission.id,
