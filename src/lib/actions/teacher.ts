@@ -267,7 +267,11 @@ export async function saveAssignmentAction(
       instructions: formData.get("instructions") || "",
       due_at: formData.get("due_at") || undefined,
       release_at: formData.get("release_at") || undefined,
-      maximum_mark: formData.get("maximum_mark") || 30,
+      maximum_mark: (() => {
+        const raw = formData.get("maximum_mark");
+        if (raw === null || raw === "") return 0;
+        return raw;
+      })(),
       allow_text_submission:
         formData.get("allow_text_submission") === "on" ||
         formData.get("allow_text_submission") === "true",
@@ -358,7 +362,11 @@ export async function saveAssignmentAction(
     instructions: formData.get("instructions") || "",
     due_at: formData.get("due_at") || undefined,
     release_at: formData.get("release_at") || undefined,
-    maximum_mark: formData.get("maximum_mark") || 30,
+    maximum_mark: (() => {
+      const raw = formData.get("maximum_mark");
+      if (raw === null || raw === "") return 0;
+      return raw;
+    })(),
     allow_text_submission:
       formData.get("allow_text_submission") === "on" ||
       formData.get("allow_text_submission") === "true",
