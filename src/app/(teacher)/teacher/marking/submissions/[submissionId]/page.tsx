@@ -122,6 +122,8 @@ export default async function MarkSubmissionPage({
     listCommentBankItemsAction({
       templateId: assignment.template_id,
       classId: assignment.class_id,
+      // Phase 8: only pass administrator bank comments selected for this assignment.
+      selectedOnly: true,
     }),
     assignment.template_id
       ? loadFeedbackFieldsAction(assignment.template_id)

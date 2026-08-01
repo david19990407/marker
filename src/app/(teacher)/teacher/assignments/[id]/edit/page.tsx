@@ -5,12 +5,19 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AssignmentForm } from "@/components/teacher/assignment-form";
 import { AssignmentStampSelector } from "@/components/teacher/assignment-stamp-selector";
-import { AssignmentCommentBankImporter } from "@/components/teacher/assignment-comment-bank-importer";
+import { AssignmentCommentSelector } from "@/components/teacher/assignment-comment-selector";
 import {
   listMarkingStampsAction,
   loadAssignmentStampSelectionsAction,
 } from "@/lib/actions/marking-annotations";
-import { listCommentBanksAction } from "@/lib/actions/comment-banks";
+import {
+  listCommentBankItemsAction,
+  listCommentBanksAction,
+} from "@/lib/actions/comment-banks";
+import {
+  listCommentBankGroupsAction,
+  loadAssignmentCommentSelectionsAction,
+} from "@/lib/actions/comment-bank-groups";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import type { Assignment } from "@/lib/types";
@@ -74,7 +81,14 @@ export default async function EditAssignmentPage({
     .eq("id", assignment.class_id)
     .maybeSingle();
 
-  const [stampsResult, selectionsResult, banksResult] = await Promise.all([
+  const [
+    stampsResult,
+    selectionsResult,
+    banksResult,
+    itemsResult,
+    groupsResult,
+    commentSelectionResult,
+  ] = await Promise.all([
     listMarkingStampsAction({
       subject: classRow?.subject ?? null,
       assignmentId: id,
@@ -85,10 +99,30 @@ export default async function EditAssignmentPage({
       classId: assignment.class_id,
       subject: classRow?.subject ?? null,
     }),
+    listCommentBankItemsAction({
+      templateId: assignment.template_id,
+      classId: assignment.class_id,
+      subject: classRow?.subject ?? null,
+    }),
+    listCommentBankGroupsAction(),
+    assignment.template_id
+      ? loadAssignmentCommentSelectionsAction(assignment.template_id)
+      : Promise.resolve({ selectedItemIds: [] }),
   ]);
 
+  const commentItems = (itemsResult.items ?? []).filter((item) => item.is_active);
+  const commentGroups = (groupsResult.groups ?? []).filter((group) => group.is_active);
+  const commentBanks = (banksResult.banks ?? [])
+    .filter((bank) => bank.scope === "school" || bank.scope === "department")
+    .map((bank) => ({
+      ...bank,
+      groups: commentGroups.filter((group) => group.bank_id === bank.id),
+      items: commentItems.filter((item) => item.bank_id === bank.id),
+    }))
+    .filter((bank) => bank.items.length > 0);
+
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       <PageHeader
         title="Edit assignment"
         action={
@@ -110,10 +144,10 @@ export default async function EditAssignmentPage({
       </Card>
       {assignment.template_id ? (
         <Card>
-          <CardTitle className="mb-4">Add comment bank</CardTitle>
-          <AssignmentCommentBankImporter
+          <AssignmentCommentSelector
             templateId={assignment.template_id}
-            banks={banksResult.banks ?? []}
+            banks={commentBanks}
+            initialSelections={commentSelectionResult.selectedItemIds ?? []}
           />
         </Card>
       ) : null}

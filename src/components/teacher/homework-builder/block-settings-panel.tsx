@@ -929,9 +929,9 @@ function LinkedFeedbackComments({
           />
           {commentBanks.length > 0 ? (
             <p className="text-[11px] text-slate-400">
-              School banks available in Feedback stage:{" "}
+              Admin banks can be selected in the Feedback stage:{" "}
               {commentBanks.map((b) => b.name).join(", ")}. Link individual
-              assignment comments below.
+              assignment-specific comments below.
             </p>
           ) : null}
           <div className="max-h-48 space-y-1 overflow-auto">

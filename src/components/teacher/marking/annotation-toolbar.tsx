@@ -109,8 +109,8 @@ export function AnnotationToolbar({
       className={cn(
         "flex flex-col items-center gap-1 border border-slate-200 bg-white py-2 shadow-sm",
         docked
-          ? "h-full w-14 shrink-0 rounded-none border-y-0 border-l-0"
-          : "w-14 rounded-2xl shadow-lg",
+          ? "h-full w-14 min-w-14 shrink-0 rounded-none border-y-0 border-l-0"
+          : "w-14 min-w-14 rounded-2xl shadow-lg",
         collapsed && "py-1",
       )}
       aria-label="Annotation tools"
@@ -118,10 +118,12 @@ export function AnnotationToolbar({
         docked
           ? undefined
           : {
-              position: "fixed",
+              // Position relative to the marking workspace root, never the
+              // browser viewport (avoids sitting under the app sidebar).
+              position: "absolute",
               left: floatingPos.x,
               top: floatingPos.y,
-              zIndex: 60,
+              zIndex: 40,
             }
       }
     >

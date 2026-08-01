@@ -91,8 +91,11 @@ type CommentPayload = { id: string; text: string };
 const TOOLBAR_DOCKED_KEY = "marking:toolbar-docked";
 const TOOLBAR_COLLAPSED_KEY = "marking:toolbar-collapsed";
 const TOOLBAR_POS_KEY = "marking:toolbar-pos";
-const DEFAULT_FLOATING_POS = { x: 88, y: 96 };
+const DEFAULT_FLOATING_POS = { x: 56, y: 72 };
 const DEFAULT_COMMENT_BOX = { w: 0.24, h: 0.09 };
+const TOOLBAR_MIN_WIDTH = 56;
+const NAV_MIN_WIDTH = 220;
+const RIGHT_MIN_WIDTH = 300;
 
 function readStoredBoolean(key: string, fallback: boolean) {
   if (typeof window === "undefined") return fallback;
@@ -120,11 +123,22 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function clampToolbarPos(pos: { x: number; y: number }) {
-  if (typeof window === "undefined") return pos;
+/** Clamp floating toolbar to the marking workspace bounds (not the viewport). */
+function clampToolbarPos(
+  pos: { x: number; y: number },
+  workspace: HTMLElement | null,
+) {
+  if (!workspace) {
+    return {
+      x: Math.max(8, pos.x),
+      y: Math.max(8, pos.y),
+    };
+  }
+  const width = workspace.clientWidth;
+  const height = workspace.clientHeight;
   return {
-    x: clamp(pos.x, 8, Math.max(8, window.innerWidth - 72)),
-    y: clamp(pos.y, 8, Math.max(8, window.innerHeight - 72)),
+    x: clamp(pos.x, 8, Math.max(8, width - TOOLBAR_MIN_WIDTH - 8)),
+    y: clamp(pos.y, 8, Math.max(8, height - 72)),
   };
 }
 
@@ -303,9 +317,11 @@ export function DocumentMarkingWorkspace({
     readStoredBoolean(TOOLBAR_COLLAPSED_KEY, false),
   );
   const [floatingPos, setFloatingPos] = useState(readStoredFloatingPos);
+  const [fullscreen, setFullscreen] = useState(false);
   const [, startTransition] = useTransition();
   const undoRef = useRef(createUndoStack<SubmissionAnnotation[]>());
   const pendingSaves = useRef(0);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const annotationsRef = useRef(initialAnnotations);
 
@@ -421,6 +437,15 @@ export function DocumentMarkingWorkspace({
   useEffect(() => {
     window.localStorage.setItem(TOOLBAR_POS_KEY, JSON.stringify(floatingPos));
   }, [floatingPos]);
+
+  useEffect(() => {
+    function clampToWorkspace() {
+      setFloatingPos((prev) => clampToolbarPos(prev, workspaceRef.current));
+    }
+    clampToWorkspace();
+    window.addEventListener("resize", clampToWorkspace);
+    return () => window.removeEventListener("resize", clampToWorkspace);
+  }, [fullscreen, toolbarDocked]);
 
   const flushPending = useCallback(async () => {
     window.dispatchEvent(new Event("marking:save-before-nav"));
@@ -739,13 +764,17 @@ export function DocumentMarkingWorkspace({
       target.setPointerCapture(e.pointerId);
       const start = { x: e.clientX, y: e.clientY };
       const origin = floatingPos;
+      const workspace = workspaceRef.current;
 
       function onMove(ev: PointerEvent) {
         setFloatingPos(
-          clampToolbarPos({
-            x: origin.x + ev.clientX - start.x,
-            y: origin.y + ev.clientY - start.y,
-          }),
+          clampToolbarPos(
+            {
+              x: origin.x + ev.clientX - start.x,
+              y: origin.y + ev.clientY - start.y,
+            },
+            workspace,
+          ),
         );
       }
 
@@ -794,11 +823,18 @@ export function DocumentMarkingWorkspace({
           awarded_mark: Math.max(0, Number(selectedMark?.awarded_mark ?? 0) - 1),
         });
       }
+      if (e.key === "Escape" && fullscreen) setFullscreen(false);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedQuestionId, selectedMark, selectedBlock, circularThreshold]);
+  }, [
+    selectedQuestionId,
+    selectedMark,
+    selectedBlock,
+    circularThreshold,
+    fullscreen,
+  ]);
 
   const worksheetAnnotations = annotations.filter(
     (a) => a.target_kind === "worksheet" && !a.is_deleted,
@@ -816,7 +852,14 @@ export function DocumentMarkingWorkspace({
           : "Ready";
 
   return (
-    <div className="fixed inset-0 z-40 flex h-[100dvh] flex-col overflow-hidden bg-slate-100">
+    <div
+      ref={workspaceRef}
+      className={
+        fullscreen
+          ? "fixed inset-0 z-50 flex h-[100dvh] flex-col overflow-hidden bg-slate-100"
+          : "relative flex h-[calc(100dvh-4rem)] flex-col overflow-hidden bg-slate-100 -mx-4 -my-6 sm:-mx-6 lg:-mx-8"
+      }
+    >
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-900 px-4 py-3 text-white">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{studentName || "Student"}</p>
@@ -885,14 +928,61 @@ export function DocumentMarkingWorkspace({
           >
             Next student
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setFullscreen((v) => !v)}
+          >
+            {fullscreen ? "Exit full screen" : "Full screen"}
+          </Button>
         </div>
       </header>
 
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div
+        className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
+        style={{
+          gridTemplateColumns: toolbarDocked
+            ? `${TOOLBAR_MIN_WIDTH}px minmax(${leftOpen ? NAV_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`
+            : `minmax(${leftOpen ? NAV_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`,
+        }}
+      >
+        {toolbarDocked ? (
+          <AnnotationToolbar
+            tool={tool}
+            colour={colour}
+            stamps={stamps}
+            selectedStampId={selectedStampId}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            docked
+            collapsed={toolbarCollapsed}
+            floatingPos={floatingPos}
+            onToolChange={setTool}
+            onColourChange={setColour}
+            onStampSelect={setSelectedStampId}
+            onUndo={() => {
+              const prev = undoRef.current.undo();
+              if (prev) {
+                replaceAnnotations(prev);
+                syncUndoButtons();
+              }
+            }}
+            onRedo={() => {
+              const next = undoRef.current.redo();
+              if (next) {
+                replaceAnnotations(next);
+                syncUndoButtons();
+              }
+            }}
+            onToggleDock={() => setToolbarDocked(false)}
+            onToggleCollapse={() => setToolbarCollapsed((v) => !v)}
+            onFloatDragStart={handleFloatDragStart}
+          />
+        ) : null}
+
         {leftOpen ? (
           <aside
-            className="flex shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
-            style={{ width: leftWidth }}
+            className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
           >
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-2 py-2">
               <div className="flex min-w-0 gap-1">
@@ -1088,39 +1178,7 @@ export function DocumentMarkingWorkspace({
           </div>
         )}
 
-        <AnnotationToolbar
-          tool={tool}
-          colour={colour}
-          stamps={stamps}
-          selectedStampId={selectedStampId}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          docked={toolbarDocked}
-          collapsed={toolbarCollapsed}
-          floatingPos={floatingPos}
-          onToolChange={setTool}
-          onColourChange={setColour}
-          onStampSelect={setSelectedStampId}
-          onUndo={() => {
-            const prev = undoRef.current.undo();
-            if (prev) {
-              replaceAnnotations(prev);
-              syncUndoButtons();
-            }
-          }}
-          onRedo={() => {
-            const next = undoRef.current.redo();
-            if (next) {
-              replaceAnnotations(next);
-              syncUndoButtons();
-            }
-          }}
-          onToggleDock={() => setToolbarDocked((v) => !v)}
-          onToggleCollapse={() => setToolbarCollapsed((v) => !v)}
-          onFloatDragStart={handleFloatDragStart}
-        />
-
-        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="relative flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 text-xs">
             <Button
               type="button"
@@ -1221,10 +1279,7 @@ export function DocumentMarkingWorkspace({
         </main>
 
         {rightOpen ? (
-          <aside
-            className="flex shrink-0 flex-col overflow-hidden border-l border-slate-200 bg-white"
-            style={{ width: rightWidth }}
-          >
+          <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-slate-200 bg-white">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Marking
@@ -1401,13 +1456,49 @@ export function DocumentMarkingWorkspace({
         ) : (
           <button
             type="button"
-            className="w-8 shrink-0 border-l border-slate-200 bg-white text-xs"
+            className="flex w-10 min-w-10 shrink-0 items-start justify-center border-l border-slate-200 bg-white py-2 text-xs"
             onClick={() => setRightOpen(true)}
+            title="Expand marking panel"
+            aria-label="Expand marking panel"
           >
             ««
           </button>
         )}
       </div>
+
+      {!toolbarDocked ? (
+        <AnnotationToolbar
+          tool={tool}
+          colour={colour}
+          stamps={stamps}
+          selectedStampId={selectedStampId}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          docked={false}
+          collapsed={toolbarCollapsed}
+          floatingPos={floatingPos}
+          onToolChange={setTool}
+          onColourChange={setColour}
+          onStampSelect={setSelectedStampId}
+          onUndo={() => {
+            const prev = undoRef.current.undo();
+            if (prev) {
+              replaceAnnotations(prev);
+              syncUndoButtons();
+            }
+          }}
+          onRedo={() => {
+            const next = undoRef.current.redo();
+            if (next) {
+              replaceAnnotations(next);
+              syncUndoButtons();
+            }
+          }}
+          onToggleDock={() => setToolbarDocked(true)}
+          onToggleCollapse={() => setToolbarCollapsed((v) => !v)}
+          onFloatDragStart={handleFloatDragStart}
+        />
+      ) : null}
     </div>
   );
 }
