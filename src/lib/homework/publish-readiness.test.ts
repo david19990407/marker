@@ -13,7 +13,7 @@ describe("collectPublishWarnings", () => {
     const image = createBlock("image");
     const mcq = createBlock("multiple_choice");
     mcq.content = "Pick one";
-    mcq.mcq_options = [{ id: "only", label: "A", correct: false }];
+    mcq.mcq_options = [{ id: "only", text: "A", correct: false }];
     mcq.marking_mode = "automatic";
     section.blocks = [image, mcq];
 
@@ -33,10 +33,10 @@ describe("collectPublishWarnings", () => {
     mcq.content = "Which answer is correct?";
     mcq.marking_mode = "automatic";
     mcq.mcq_options = [
-      { id: "a", label: "A", correct: false },
-      { id: "b", label: "B", correct: true },
-      { id: "c", label: "C", correct: false },
-      { id: "d", label: "D", correct: false },
+      { id: "a", text: "A", correct: false },
+      { id: "b", text: "B", correct: true },
+      { id: "c", text: "C", correct: false },
+      { id: "d", text: "D", correct: false },
     ];
     section.blocks = [mcq];
     const warnings = collectPublishWarnings([section]);
@@ -49,8 +49,8 @@ describe("collectPublishWarnings", () => {
     mcq.content = "Discuss";
     mcq.marking_mode = "teacher_reviewed";
     mcq.mcq_options = [
-      { id: "a", label: "A", correct: false },
-      { id: "b", label: "B", correct: false },
+      { id: "a", text: "A", correct: false },
+      { id: "b", text: "B", correct: false },
     ];
     section.blocks = [mcq];
     expect(collectPublishWarnings([section]).filter((w) => w.blocking)).toHaveLength(
@@ -62,15 +62,27 @@ describe("collectPublishWarnings", () => {
     const draft = createBlock("multiple_choice");
     draft.content = "";
     draft.prompt = "";
-    draft.mcq_options = [
-      { id: "a", label: "", correct: false },
-      { id: "b", label: "", correct: false },
-    ];
     expect(isEmptyMcqDraft(draft)).toBe(true);
     const section = emptySection();
     section.blocks = [draft];
     expect(collectPublishWarnings([section]).filter((w) => w.blocking)).toHaveLength(
       0,
     );
+  });
+
+  it("ignores empty placeholder rows when counting non-empty answers", () => {
+    const section = emptySection();
+    const mcq = createBlock("multiple_choice");
+    mcq.content = "Pick";
+    mcq.mcq_options = [
+      { id: "a", text: "One", correct: true },
+      { id: "b", text: "", correct: false },
+      { id: "c", text: "Two", correct: false },
+      { id: "d", text: "   ", correct: false },
+    ];
+    section.blocks = [mcq];
+    expect(
+      collectPublishWarnings([section]).filter((w) => w.blocking),
+    ).toHaveLength(0);
   });
 });

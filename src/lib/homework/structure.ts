@@ -11,6 +11,12 @@ import type {
 } from "@/lib/types";
 import { RESPONSE_BLOCK_TYPES as RESPONSE_TYPES } from "@/lib/types";
 import {
+  getMcqOptionText,
+  normalizeMcqOption,
+  normalizeMcqOptions,
+  normalizeOptionLabelStyle,
+} from "@/lib/homework/mcq-options";
+import {
   linesToContent,
   migrateLegacyPassageLabels,
   normalizePassageConfig,
@@ -242,14 +248,17 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     }
 
     if (type === "multiple_choice" || type === "multiple_select") {
-      base.mcq_options = [
-        { id: newId(), label: "Option A", correct: true, feedback: "" },
-        { id: newId(), label: "Option B", correct: false, feedback: "" },
-      ];
-      base.choices = base.mcq_options.map((o) => o.label);
+      base.mcq_options = normalizeMcqOptions([
+        { id: newId(), text: "", correct: true, feedback: "" },
+        { id: newId(), text: "", correct: false, feedback: "" },
+        { id: newId(), text: "", correct: false, feedback: "" },
+        { id: newId(), text: "", correct: false, feedback: "" },
+      ]);
+      base.choices = base.mcq_options.map((o) => getMcqOptionText(o));
       base.correct_option_indexes = [0];
-      base.option_feedback = ["", ""];
+      base.option_feedback = ["", "", "", ""];
       base.shuffle_options = false;
+      base.option_label_style = "letters";
       base.marking_mode = "automatic";
     } else {
       base.choices = [];
@@ -283,19 +292,30 @@ export function emptySection(): BuilderSection {
 
 export function resolveMcqOptions(block: BuilderBlock): McqOption[] {
   if (block.mcq_options?.length) {
-    return block.mcq_options.map((o) => ({
-      ...o,
-      label: o.label ?? "",
-      feedback: o.feedback ?? "",
-      correct: !!o.correct,
-    }));
+    return normalizeMcqOptions(block.mcq_options);
   }
-  return (block.choices ?? []).map((label, i) => ({
-    id: `opt-${i}`,
-    label,
-    correct: (block.correct_option_indexes ?? []).includes(i),
-    feedback: block.option_feedback?.[i] ?? "",
-  }));
+  return (block.choices ?? []).map((choice, i) => {
+    if (typeof choice === "string") {
+      return normalizeMcqOption(
+        {
+          id: `opt-${i}`,
+          text: choice,
+          correct: (block.correct_option_indexes ?? []).includes(i),
+          feedback: block.option_feedback?.[i] ?? "",
+        },
+        i,
+      );
+    }
+    return normalizeMcqOption(
+      {
+        id: `opt-${i}`,
+        text: "",
+        correct: (block.correct_option_indexes ?? []).includes(i),
+        feedback: block.option_feedback?.[i] ?? "",
+      },
+      i,
+    );
+  });
 }
 
 export function normalizeNumericConfig(
@@ -356,19 +376,23 @@ export function normalizeMediaConfig(
 
 export function applyMcqOptions(block: BuilderBlock, options: McqOption[]): BuilderBlock {
   const multi = block.block_type === "multiple_select";
-  const correctIndexes = options
+  const normalised = normalizeMcqOptions(options);
+  const correctIndexes = normalised
     .map((o, i) => (o.correct ? i : -1))
     .filter((i) => i >= 0);
-  const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+  const correctTexts = normalised
+    .filter((o) => o.correct)
+    .map((o) => getMcqOptionText(o));
   return {
     ...block,
-    mcq_options: options,
-    choices: options.map((o) => o.label),
-    option_feedback: options.map((o) => o.feedback ?? ""),
+    mcq_options: normalised,
+    choices: normalised.map((o) => getMcqOptionText(o)),
+    option_feedback: normalised.map((o) => o.feedback ?? ""),
     correct_option_indexes: correctIndexes,
+    option_label_style: normalizeOptionLabelStyle(block.option_label_style),
     correct_answer: multi
-      ? correctLabels.join("\n") || null
-      : (correctLabels[0] ?? null),
+      ? correctTexts.join("\n") || null
+      : (correctTexts[0] ?? null),
   };
 }
 
@@ -428,6 +452,9 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
   if (b.linked_comment_bank_ids) {
     config.linked_comment_bank_ids = b.linked_comment_bank_ids;
   }
+  if (b.option_label_style) {
+    config.option_label_style = normalizeOptionLabelStyle(b.option_label_style);
+  }
 
   if (
     (b.block_type === "table" || b.block_type === "vocabulary_table") &&
@@ -449,7 +476,9 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     const correctIndexes = options
       .map((o, i) => (o.correct ? i : -1))
       .filter((i) => i >= 0);
-    const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+    const correctTexts = options
+      .filter((o) => o.correct)
+      .map((o) => getMcqOptionText(o));
     const isMulti = b.block_type === "multiple_select";
     const isMcq =
       b.block_type === "multiple_choice" || b.block_type === "multiple_select";
@@ -458,15 +487,22 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     payload.prompt = b.prompt ?? "";
     payload.max_marks = b.max_marks ?? null;
     payload.required = b.required ?? false;
-    // Persist full option objects so reopen/publish never drop correctness metadata.
+    // Persist full option objects; `text` is canonical answer content.
     payload.choices = isMcq
-      ? options.map((o) => ({
-          id: o.id,
-          label: o.label,
-          feedback: o.feedback ?? "",
-          is_correct: !!o.correct,
-        }))
-      : options.map((o) => ({ label: o.label }));
+      ? options.map((o) => {
+          const text = getMcqOptionText(o);
+          return {
+            id: o.id,
+            text,
+            label: text,
+            feedback: o.feedback ?? "",
+            is_correct: !!o.correct,
+          };
+        })
+      : options.map((o) => {
+          const text = getMcqOptionText(o);
+          return { text, label: text };
+        });
     payload.response_type = b.block_type;
     payload.teacher_note = b.teacher_note ?? null;
     payload.mark_scheme_note = b.mark_scheme_note ?? null;
@@ -476,10 +512,11 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     payload.min_value = b.min_value ?? null;
     payload.max_value = b.max_value ?? null;
     if (isMcq) {
+      config.option_label_style = normalizeOptionLabelStyle(b.option_label_style);
       payload.correct_answer = isMulti
-        ? { indexes: correctIndexes, labels: correctLabels }
+        ? { indexes: correctIndexes, labels: correctTexts }
         : {
-            value: correctLabels[0] ?? b.correct_answer ?? null,
+            value: correctTexts[0] ?? b.correct_answer ?? null,
             indexes: correctIndexes,
           };
     } else if (b.block_type === "numeric") {
@@ -609,6 +646,9 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     linked_comment_bank_ids: Array.isArray(cfg.linked_comment_bank_ids)
       ? (cfg.linked_comment_bank_ids as string[])
       : [],
+    option_label_style: normalizeOptionLabelStyle(
+      typeof cfg.option_label_style === "string" ? cfg.option_label_style : null,
+    ),
   };
 
   if (cfg.passage && typeof cfg.passage === "object") {
@@ -743,49 +783,64 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     if (Array.isArray(rawChoices)) {
       block.mcq_options = rawChoices.map((c, i) => {
         if (typeof c === "string") {
-          return {
-            id: `opt-${b.id}-${i}`,
-            label: c,
-            feedback: block.option_feedback?.[i] ?? "",
-            correct: correctIndexes.includes(i),
-          };
+          return normalizeMcqOption(
+            {
+              id: `opt-${b.id}-${i}`,
+              text: c,
+              feedback: block.option_feedback?.[i] ?? "",
+              correct: correctIndexes.includes(i),
+            },
+            i,
+            `opt-${b.id}-${i}`,
+          );
         }
         if (c && typeof c === "object") {
           const obj = c as Record<string, unknown>;
-          const label =
-            obj.label != null
-              ? String(obj.label)
-              : obj.text != null
-                ? String(obj.text)
-                : String(c);
+          const text =
+            obj.text != null
+              ? String(obj.text)
+              : obj.label != null
+                ? String(obj.label)
+                : "";
           const fromFlag =
             typeof obj.is_correct === "boolean"
               ? obj.is_correct
               : typeof obj.correct === "boolean"
                 ? obj.correct
                 : correctIndexes.includes(i);
-          return {
-            id: typeof obj.id === "string" && obj.id ? obj.id : `opt-${b.id}-${i}`,
-            label,
-            feedback:
-              typeof obj.feedback === "string"
-                ? obj.feedback
-                : (block.option_feedback?.[i] ?? ""),
-            correct: fromFlag,
-          };
+          return normalizeMcqOption(
+            {
+              id:
+                typeof obj.id === "string" && obj.id
+                  ? obj.id
+                  : `opt-${b.id}-${i}`,
+              text,
+              feedback:
+                typeof obj.feedback === "string"
+                  ? obj.feedback
+                  : (block.option_feedback?.[i] ?? ""),
+              correct: fromFlag,
+            },
+            i,
+            `opt-${b.id}-${i}`,
+          );
         }
-        return {
-          id: `opt-${b.id}-${i}`,
-          label: String(c),
-          feedback: block.option_feedback?.[i] ?? "",
-          correct: correctIndexes.includes(i),
-        };
+        return normalizeMcqOption(
+          {
+            id: `opt-${b.id}-${i}`,
+            text: String(c),
+            feedback: block.option_feedback?.[i] ?? "",
+            correct: correctIndexes.includes(i),
+          },
+          i,
+          `opt-${b.id}-${i}`,
+        );
       });
     } else {
       block.mcq_options = [];
     }
 
-    block.choices = block.mcq_options.map((o) => o.label);
+    block.choices = block.mcq_options.map((o) => getMcqOptionText(o));
     block.option_feedback = block.mcq_options.map((o) => o.feedback ?? "");
     block.correct_option_indexes = block.mcq_options
       .map((o, i) => (o.correct ? i : -1))
@@ -794,9 +849,11 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
       (bt === "multiple_choice" || bt === "multiple_select") &&
       !block.correct_answer
     ) {
-      const labels = block.mcq_options.filter((o) => o.correct).map((o) => o.label);
+      const texts = block.mcq_options
+        .filter((o) => o.correct)
+        .map((o) => getMcqOptionText(o));
       block.correct_answer =
-        bt === "multiple_choice" ? (labels[0] ?? null) : labels.join("\n") || null;
+        bt === "multiple_choice" ? (texts[0] ?? null) : texts.join("\n") || null;
     }
   }
 

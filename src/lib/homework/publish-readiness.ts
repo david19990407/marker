@@ -1,4 +1,5 @@
 import { mediaHasContent } from "@/lib/homework/visibility";
+import { mcqOptionHasText } from "@/lib/homework/mcq-options";
 import { resolveMcqOptions } from "@/lib/homework/structure";
 import type { BuilderBlock, BuilderSection } from "@/lib/types";
 
@@ -92,32 +93,26 @@ function warningsForBlock(block: BuilderBlock): PublishWarning[] {
       if (isEmptyMcqDraft(block)) return [];
 
       const options = resolveMcqOptions(block);
-      const nonEmpty = options.filter((o) => o.label.trim());
+      // Validate answer text only — never A/B/C identifiers.
+      const withText = options.filter((o) => mcqOptionHasText(o));
       const out: PublishWarning[] = [];
       const multi = block.block_type === "multiple_select";
       const automatic = block.marking_mode === "automatic";
 
-      if (nonEmpty.length < 2) {
+      if (withText.length < 2) {
         out.push({
           blockId: id,
           message:
-            nonEmpty.length === 0
+            withText.length === 0
               ? "Add at least two non-empty answer options."
-              : "Only one non-empty option exists — add at least two.",
-          blocking: true,
-        });
-      }
-      if (options.some((o) => !o.label.trim()) && options.length > 0) {
-        out.push({
-          blockId: id,
-          message: "Every option needs visible text (remove blank options).",
+              : "Only one non-empty answer option exists — add at least two.",
           blocking: true,
         });
       }
       if (automatic) {
-        const correctCount = options.filter((o) => o.correct && o.label.trim()).length;
+        const correctWithText = withText.filter((o) => o.correct);
         if (multi) {
-          if (correctCount < 1) {
+          if (correctWithText.length < 1) {
             out.push({
               blockId: id,
               message:
@@ -125,11 +120,11 @@ function warningsForBlock(block: BuilderBlock): PublishWarning[] {
               blocking: true,
             });
           }
-        } else if (correctCount !== 1) {
+        } else if (correctWithText.length !== 1) {
           out.push({
             blockId: id,
             message:
-              correctCount === 0
+              correctWithText.length === 0
                 ? "Mark exactly one correct option for automatic marking."
                 : "Single-choice questions must have exactly one correct option.",
             blocking: true,
@@ -180,7 +175,7 @@ function warningsForBlock(block: BuilderBlock): PublishWarning[] {
   }
 }
 
-/** Brand-new unused MCQ: no title and only default empty/placeholder options. */
+/** Brand-new unused MCQ: no title and no non-empty answer texts. */
 export function isEmptyMcqDraft(block: BuilderBlock): boolean {
   if (
     block.block_type !== "multiple_choice" &&
@@ -192,7 +187,5 @@ export function isEmptyMcqDraft(block: BuilderBlock): boolean {
   if (hasTitle) return false;
   const options = resolveMcqOptions(block);
   if (options.length === 0) return true;
-  // Default factory options ("Option A"/"Option B") with no teacher edit still count
-  // as drafts only when labels are empty — named defaults are intentional content.
-  return options.every((o) => !o.label.trim());
+  return options.every((o) => !mcqOptionHasText(o));
 }

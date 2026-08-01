@@ -18,11 +18,16 @@ import {
 import {
   labelsForOptionIds,
   selectedMcqOptionIds,
+  studentVisibleMcqOptions,
 } from "@/lib/homework/mcq-answers";
 import { formatMarkLabel } from "@/lib/homework/marks";
 import {
+  formatMcqOptionIdentifier,
+  getBlockOptionLabelStyle,
+  getMcqOptionText,
+} from "@/lib/homework/mcq-options";
+import {
   flattenStudentBlocks,
-  resolveMcqOptions,
   responseKey,
 } from "@/lib/homework/structure";
 import type {
@@ -581,7 +586,8 @@ function StudentAnswerSummary({
   }
 
   if (block.block_type === "multiple_choice" || block.block_type === "multiple_select") {
-    const options = resolveMcqOptions(block);
+    const labelStyle = getBlockOptionLabelStyle(block);
+    const options = studentVisibleMcqOptions(block);
     const selectedIds = new Set(selectedMcqOptionIds(block, response));
     const selectedLabels = labelsForOptionIds(block, Array.from(selectedIds));
     if (selectedIds.size === 0 && !response.text_value?.trim()) {
@@ -590,15 +596,18 @@ function StudentAnswerSummary({
     return (
       <div className="space-y-2">
         <ul className="space-y-1 text-sm text-slate-800">
-          {options.map((option) => (
-            <li key={option.id} className="flex items-center gap-2">
+          {options.map((option, index) => (
+            <li key={option.id} className="flex items-start gap-2">
               <span
-                className={`inline-block h-2.5 w-2.5 rounded-full ${
+                className={`mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
                   selectedIds.has(option.id) ? "bg-brand-600" : "bg-slate-300"
                 }`}
               />
+              <span className="min-w-[1.25rem] font-semibold tabular-nums text-slate-700">
+                {formatMcqOptionIdentifier(index, labelStyle)}
+              </span>
               <span className={selectedIds.has(option.id) ? "font-medium" : ""}>
-                {option.label}
+                {getMcqOptionText(option)}
               </span>
               {selectedIds.has(option.id) ? (
                 <span className="text-xs text-slate-400">selected</span>

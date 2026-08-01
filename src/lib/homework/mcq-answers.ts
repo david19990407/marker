@@ -1,3 +1,7 @@
+import {
+  getMcqOptionText,
+  mcqOptionHasText,
+} from "@/lib/homework/mcq-options";
 import { resolveMcqOptions } from "@/lib/homework/structure";
 import type { BuilderBlock, McqOption } from "@/lib/types";
 
@@ -23,7 +27,7 @@ export function buildMcqAnswerJson(optionIds: string[]): McqAnswerJson {
   };
 }
 
-/** Resolve selected option IDs from stored response (json preferred, labels fallback). */
+/** Resolve selected option IDs from stored response (json preferred, text fallback). */
 export function selectedMcqOptionIds(
   block: BuilderBlock,
   response?: {
@@ -39,19 +43,20 @@ export function selectedMcqOptionIds(
     return response.json_value.option_ids.filter((id) => allowed.has(id));
   }
 
-  // Legacy: labels stored in text_value (single or newline-separated).
-  const labels = (response.text_value ?? "")
+  // Legacy: answer texts stored in text_value (single or newline-separated).
+  const texts = (response.text_value ?? "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (labels.length === 0) return [];
+  if (texts.length === 0) return [];
 
-  const byLabel = new Map<string, McqOption>();
+  const byText = new Map<string, McqOption>();
   for (const option of options) {
-    if (!byLabel.has(option.label)) byLabel.set(option.label, option);
+    const text = getMcqOptionText(option).trim();
+    if (text && !byText.has(text)) byText.set(text, option);
   }
-  return labels
-    .map((label) => byLabel.get(label)?.id)
+  return texts
+    .map((text) => byText.get(text)?.id)
     .filter((id): id is string => Boolean(id));
 }
 
@@ -60,15 +65,22 @@ export function labelsForOptionIds(
   optionIds: string[],
 ): string[] {
   const options = resolveMcqOptions(block);
-  const byId = new Map(options.map((o) => [o.id, o.label]));
-  return optionIds.map((id) => byId.get(id)).filter((l): l is string => Boolean(l));
+  const byId = new Map(options.map((o) => [o.id, getMcqOptionText(o)]));
+  return optionIds
+    .map((id) => byId.get(id))
+    .filter((text): text is string => Boolean(text && text.trim()));
 }
 
 export function mcqTextValueFromIds(
   block: BuilderBlock,
   optionIds: string[],
 ): string | null {
-  const labels = labelsForOptionIds(block, optionIds);
-  if (labels.length === 0) return null;
-  return labels.join("\n");
+  const texts = labelsForOptionIds(block, optionIds);
+  if (texts.length === 0) return null;
+  return texts.join("\n");
+}
+
+/** Options with answer text — empty placeholder rows are omitted for students. */
+export function studentVisibleMcqOptions(block: BuilderBlock): McqOption[] {
+  return resolveMcqOptions(block).filter((o) => mcqOptionHasText(o));
 }

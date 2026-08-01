@@ -11,12 +11,17 @@ import { computePassageStartLines } from "@/lib/homework/passage-numbering";
 import {
   labelsForOptionIds,
   selectedMcqOptionIds,
+  studentVisibleMcqOptions,
 } from "@/lib/homework/mcq-answers";
+import {
+  formatMcqOptionIdentifier,
+  getBlockOptionLabelStyle,
+  getMcqOptionText,
+} from "@/lib/homework/mcq-options";
 import {
   isResponseType,
   normalizeMediaConfig,
   normalizeNumericConfig,
-  resolveMcqOptions,
   responseKey,
 } from "@/lib/homework/structure";
 import {
@@ -564,8 +569,9 @@ function BlockView({
   }
 
   if (block.block_type === "multiple_choice") {
+    const labelStyle = getBlockOptionLabelStyle(block);
     const options = maybeShuffleOptions(
-      resolveMcqOptions(block),
+      studentVisibleMcqOptions(block),
       mode,
       block,
       qid,
@@ -574,7 +580,9 @@ function BlockView({
       (current as { type: "mcq"; optionIds: string[] } | undefined)?.optionIds ??
       [];
     const selectedId = selectedIds[0] ?? "";
-    const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+    const correctLabels = options
+      .filter((o) => o.correct)
+      .map((o) => getMcqOptionText(o));
     const selectedLabels = labelsForOptionIds(block, selectedIds);
 
     return (
@@ -585,7 +593,7 @@ function BlockView({
         showGuidance={showGuidance}
       >
         <div className="space-y-2" role="radiogroup" aria-labelledby={fieldId}>
-          {options.map((option) => (
+          {options.map((option, index) => (
             <label
               key={option.id}
               className="flex items-start gap-3 text-[1.02rem] leading-7 text-slate-800"
@@ -601,7 +609,12 @@ function BlockView({
                 }
                 disabled={!editable}
               />
-              <span>{option.label}</span>
+              <span className="min-w-[1.25rem] font-semibold tabular-nums text-slate-700">
+                {formatMcqOptionIdentifier(index, labelStyle)}
+              </span>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap">
+                {getMcqOptionText(option)}
+              </span>
             </label>
           ))}
         </div>
@@ -617,8 +630,9 @@ function BlockView({
   }
 
   if (block.block_type === "multiple_select") {
+    const labelStyle = getBlockOptionLabelStyle(block);
     const options = maybeShuffleOptions(
-      resolveMcqOptions(block),
+      studentVisibleMcqOptions(block),
       mode,
       block,
       qid,
@@ -627,7 +641,9 @@ function BlockView({
       (current as { type: "mcq"; optionIds: string[] } | undefined)?.optionIds ??
         [],
     );
-    const correctLabels = options.filter((o) => o.correct).map((o) => o.label);
+    const correctLabels = options
+      .filter((o) => o.correct)
+      .map((o) => getMcqOptionText(o));
     const selectedLabels = labelsForOptionIds(block, Array.from(selectedIds));
 
     return (
@@ -638,7 +654,7 @@ function BlockView({
         showGuidance={showGuidance}
       >
         <div className="space-y-2" role="group" aria-labelledby={fieldId}>
-          {options.map((option) => (
+          {options.map((option, index) => (
             <label
               key={option.id}
               className="flex items-start gap-3 text-[1.02rem] leading-7 text-slate-800"
@@ -657,7 +673,12 @@ function BlockView({
                 }}
                 disabled={!editable}
               />
-              <span>{option.label}</span>
+              <span className="min-w-[1.25rem] font-semibold tabular-nums text-slate-700">
+                {formatMcqOptionIdentifier(index, labelStyle)}
+              </span>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap">
+                {getMcqOptionText(option)}
+              </span>
             </label>
           ))}
         </div>
@@ -1345,8 +1366,8 @@ function maybeShuffleOptions(
     return options;
   }
   return [...options].sort((a, b) => {
-    const ha = hashSeed(`${questionId}:${a.id}:${a.label}`);
-    const hb = hashSeed(`${questionId}:${b.id}:${b.label}`);
+    const ha = hashSeed(`${questionId}:${a.id}:${getMcqOptionText(a)}`);
+    const hb = hashSeed(`${questionId}:${b.id}:${getMcqOptionText(b)}`);
     return ha - hb || a.id.localeCompare(b.id);
   });
 }
