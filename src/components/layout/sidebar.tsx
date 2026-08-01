@@ -38,7 +38,7 @@ function navForRole(role: Profile["role"]): NavItem[] {
       { href: "/teacher/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { href: "/teacher/classes", label: "My Classes", icon: School },
       { href: "/teacher/assignments", label: "Assignments", icon: BookOpen },
-      { href: "/teacher/marking", label: "Marking Queue", icon: ClipboardList },
+      { href: "/teacher/marking", label: "Marking", icon: ClipboardList },
       { href: "/settings", label: "Settings", icon: Settings },
     ];
   }
