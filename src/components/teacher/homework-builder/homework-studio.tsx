@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,8 +8,11 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
+import type { ActionResult } from "@/lib/actions/auth";
 import { saveHomeworkStructureAction } from "@/lib/actions/homework-builder";
+import { publishHomeworkAction } from "@/lib/actions/teacher";
 import { calculateTotalMarks, formatMarks } from "@/lib/homework/marks";
+import { collectPublishWarnings } from "@/lib/homework/publish-readiness";
 import { createBlock, emptySection } from "@/lib/homework/structure";
 import type {
   Assignment,
@@ -247,7 +250,9 @@ export function HomeworkStudio({
         <StudentPreview sections={sections} />
       ) : null}
 
-      {activeStage === "publish" ? <PublishStage assignmentId={assignment.id} /> : null}
+      {activeStage === "publish" ? (
+        <PublishStage assignment={assignment} sections={sections} />
+      ) : null}
     </div>
   );
 }
@@ -316,19 +321,120 @@ function ClassesStage({ classNames }: { classNames: string[] }) {
   );
 }
 
-function PublishStage({ assignmentId }: { assignmentId: string }) {
+function toLocalInput(value: string | null | undefined) {
+  if (!value) return "";
+  const d = new Date(value);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function PublishStage({
+  assignment,
+  sections,
+}: {
+  assignment: Assignment;
+  sections: BuilderSection[];
+}) {
+  const bound = publishHomeworkAction.bind(null, assignment.id);
+  const [state, action, pending] = useActionState(bound, {} as ActionResult);
+  const warnings = collectPublishWarnings(sections);
+  const isPublished = assignment.status === "published";
+
   return (
     <Card className="space-y-4">
       <div>
-        <CardTitle>Publish and schedule</CardTitle>
+        <CardTitle>
+          {isPublished ? "Update published homework" : "Publish homework"}
+        </CardTitle>
         <p className="mt-1 text-sm text-slate-500">
-          Status, release date, due date, and publishing controls are managed on the
-          assignment edit page.
+          Homework is created as a draft automatically. Publish when the worksheet is
+          ready. A future release date schedules visibility; otherwise students see it
+          immediately.
         </p>
       </div>
-      <Link href={`/teacher/assignments/${assignmentId}/edit`}>
-        <Button>Open publish settings</Button>
-      </Link>
+
+      <div className="flex flex-wrap gap-2">
+        <Badge tone={isPublished ? "success" : "neutral"}>
+          {isPublished ? "Published" : "Draft"}
+        </Badge>
+      </div>
+
+      {warnings.length > 0 ? (
+        <div className="border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-950">
+          <p className="mb-1 font-medium">Before publishing</p>
+          <ul className="list-disc space-y-1 pl-5">
+            {warnings.slice(0, 8).map((w) => (
+              <li key={`${w.blockId}-${w.message}`}>{w.message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <form action={action} className="space-y-4">
+        {state.error ? (
+          <div className="border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {state.error}
+          </div>
+        ) : null}
+        {state.success ? (
+          <div className="border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {state.success}
+          </div>
+        ) : null}
+
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Due date
+          </span>
+          <Input
+            type="datetime-local"
+            name="due_at"
+            defaultValue={toLocalInput(assignment.due_at)}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Release date (optional)
+          </span>
+          <Input
+            type="datetime-local"
+            name="release_at"
+            defaultValue={toLocalInput(assignment.release_at)}
+          />
+          <span className="mt-1 block text-xs text-slate-400">
+            Leave empty to release immediately on publish.
+          </span>
+        </label>
+
+        {isPublished ? (
+          <label className="flex items-start gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              name="confirm_published_edit"
+              className="mt-1 accent-brand-600"
+            />
+            <span>
+              I understand these changes will update the active published homework
+              students can already see.
+            </span>
+          </label>
+        ) : null}
+
+        <div className="flex flex-wrap gap-3">
+          <Button type="submit" disabled={pending}>
+            {pending
+              ? "Publishing…"
+              : isPublished
+                ? "Update published homework"
+                : "Publish homework"}
+          </Button>
+          <Link href={`/teacher/assignments/${assignment.id}/edit`}>
+            <Button type="button" variant="outline">
+              Edit details
+            </Button>
+          </Link>
+        </div>
+      </form>
     </Card>
   );
 }

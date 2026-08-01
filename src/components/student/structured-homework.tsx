@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -12,13 +13,13 @@ import {
 import {
   saveStudentStructuredResponsesAction,
   submitStructuredHomeworkAction,
-  type StructuredResponseInput,
 } from "@/lib/actions/homework-builder";
 import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
 import {
   evaluateStructuredCompletion,
   type ResponseSnapshot,
 } from "@/lib/homework/completion";
+import { collectResponses } from "@/lib/homework/response-collect";
 import {
   flattenStudentBlocks,
   isResponseType,
@@ -57,6 +58,7 @@ export function StructuredHomework({
   submissionStatus = null,
   submittedAt = null,
 }: Props) {
+  const router = useRouter();
   const [values, setValues] = useState<Record<string, ResponseValue>>(() =>
     buildValuesFromResponses(sections, existingResponses),
   );
@@ -74,9 +76,11 @@ export function StructuredHomework({
     valuesRef.current = values;
   }, [values]);
 
+  const canEditAnswers = editable && !reviewMode;
+
   const autosave = useVersionedAutosave<Record<string, ResponseValue>>({
     delayMs: 1200,
-    enabled: editable,
+    enabled: canEditAnswers,
     save: async (current) => {
       const responses = collectResponses(current, sectionsRef.current);
       const result = await saveStudentStructuredResponsesAction(
@@ -88,7 +92,7 @@ export function StructuredHomework({
   });
 
   function setValue(questionId: string, value: ResponseValue) {
-    if (!editable) return;
+    if (!canEditAnswers) return;
     setValues((prev) => {
       const next = { ...prev, [questionId]: value };
       autosave.markDirty(next);
@@ -114,10 +118,23 @@ export function StructuredHomework({
     });
   }
 
+  async function goToReview() {
+    const ok = await autosave.flush();
+    if (!ok && autosave.hasUnsavedChanges()) {
+      setFlash({
+        type: "error",
+        msg: autosave.lastError ?? "Save your answers before reviewing",
+      });
+      return;
+    }
+    router.push(`/student/homework/${assignmentId}/review`);
+  }
+
   function valuesToSnapshots(
     current: Record<string, ResponseValue>,
+    sectionTree: BuilderSection[] = sections,
   ): ResponseSnapshot[] {
-    return collectResponses(current, sectionsRef.current).map((resp) => ({
+    return collectResponses(current, sectionTree).map((resp) => ({
       question_id: resp.question_id,
       text_value: resp.text_value ?? null,
       numeric_value: resp.numeric_value ?? null,
@@ -131,7 +148,7 @@ export function StructuredHomework({
     const nextErrors: Record<string, string> = {};
     const completion = evaluateStructuredCompletion(
       sections,
-      valuesToSnapshots(values),
+      valuesToSnapshots(values, sections),
     );
 
     for (const missing of completion.missingRequired) {
@@ -182,6 +199,8 @@ export function StructuredHomework({
       return;
     }
     startTransition(async () => {
+      // Flush any pending edits first (review is read-only, but keep safe).
+      await autosave.flush();
       const responses = collectResponses(valuesRef.current, sectionsRef.current);
       const result = await submitStructuredHomeworkAction(assignmentId, responses);
       if (result.error) {
@@ -192,9 +211,16 @@ export function StructuredHomework({
     });
   }
 
+  const completion = evaluateStructuredCompletion(
+    sections,
+    valuesToSnapshots(values, sections),
+  );
+  const worksheetMode =
+    canEditAnswers ? "student_editable" : "student_readonly";
+
   return (
     <div className="homework-worksheet mx-auto max-w-3xl space-y-8 px-1 sm:px-2">
-      {editable && (
+      {canEditAnswers && (
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             tone={
@@ -205,13 +231,9 @@ export function StructuredHomework({
           >
             {autosave.label}
           </Badge>
-          {!reviewMode && (
-            <Link href={`/student/homework/${assignmentId}/review`}>
-              <Button variant="outline" size="sm">
-                Review before submit
-              </Button>
-            </Link>
-          )}
+          <Button variant="outline" size="sm" onClick={() => void goToReview()}>
+            Review before submit
+          </Button>
         </div>
       )}
 
@@ -228,95 +250,75 @@ export function StructuredHomework({
         </div>
       )}
 
-      {reviewMode && editable && (
-        <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-          Review your answers below. Submit only when every required question is
-          complete.
+      {reviewMode ? (
+        <div className="space-y-2 border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          <p className="font-medium text-slate-900">
+            {editable
+              ? "Review your answers (read-only). Submit when every required question is complete."
+              : "Submitted answers (read-only)."}
+          </p>
+          <p>
+            Required answered: {completion.answeredRequiredCount}/
+            {completion.requiredCount}
+            {" · "}
+            All questions: {completion.answeredAssessableCount}/
+            {completion.assessableCount}
+          </p>
+          {completion.missingRequired.length > 0 ? (
+            <p className="text-rose-700">
+              Missing required:{" "}
+              {completion.missingRequired
+                .slice(0, 5)
+                .map((q) => q.label)
+                .join("; ")}
+            </p>
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       <StructuredWorksheetRenderer
         sections={sections}
-        mode={editable ? "student_editable" : "student_readonly"}
+        mode={worksheetMode}
         values={values}
         errors={errors}
         onValueChange={setValue}
         submissionMeta={
-          editable
-            ? null
-            : { status: submissionStatus, submittedAt: submittedAt }
+          worksheetMode === "student_readonly"
+            ? { status: submissionStatus, submittedAt: submittedAt }
+            : null
         }
       />
 
       {editable && (
         <div className="flex flex-wrap gap-3">
-          <Button onClick={handleSave} disabled={pending} variant="secondary">
-            {pending || autosave.status === "saving" ? "Saving…" : "Save progress"}
-          </Button>
-          {reviewMode ? (
-            <Button onClick={handleSubmit} disabled={pending}>
-              {pending ? "Submitting…" : "Submit homework"}
-            </Button>
+          {canEditAnswers ? (
+            <>
+              <Button onClick={handleSave} disabled={pending} variant="secondary">
+                {pending || autosave.status === "saving" ? "Saving…" : "Save progress"}
+              </Button>
+              <Button onClick={() => void goToReview()} disabled={pending}>
+                Review & submit
+              </Button>
+            </>
           ) : (
-            <Link href={`/student/homework/${assignmentId}/review`}>
-              <Button>Review & submit</Button>
-            </Link>
+            <>
+              <Link href={`/student/homework/${assignmentId}`}>
+                <Button variant="outline">Back to edit</Button>
+              </Link>
+              <Button onClick={handleSubmit} disabled={pending}>
+                {pending ? "Submitting…" : "Submit homework"}
+              </Button>
+            </>
           )}
         </div>
       )}
 
       {!editable && (
         <p className="text-sm text-slate-500">
-          This submission is locked and read-only
-          {!reviewMode ? (
-            <>
-              .{" "}
-              <Link
-                href={`/student/homework/${assignmentId}/review`}
-                className="text-brand-700 underline"
-              >
-                View review
-              </Link>
-            </>
-          ) : null}
-          .
+          This submission is locked and read-only.
         </p>
       )}
     </div>
   );
 }
 
-function collectResponses(
-  values: Record<string, ResponseValue>,
-  sections: BuilderSection[],
-): StructuredResponseInput[] {
-  const blocks = flattenStudentBlocks(sections).filter(
-    (b) => isResponseType(b.block_type) && b.question_id,
-  );
-  const out: StructuredResponseInput[] = [];
-
-  for (const block of blocks) {
-    const qid = block.question_id!;
-    const value = values[responseKey(block)];
-    if (!value) continue;
-
-    if (value.type === "text") {
-      out.push({ question_id: qid, text_value: value.text || null });
-    } else if (value.type === "numeric") {
-      out.push({ question_id: qid, numeric_value: value.numeric });
-    } else if (value.type === "bool") {
-      out.push({ question_id: qid, boolean_value: value.bool });
-    } else {
-      out.push({
-        question_id: qid,
-        cells: value.cells.map((c) => ({
-          row_index: c.row_index,
-          col_index: c.col_index,
-          text_value: c.text || null,
-        })),
-      });
-    }
-  }
-
-  return out;
-}

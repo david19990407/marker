@@ -175,9 +175,23 @@ export function createAutosaveController<T>(
       }
     },
     dispose() {
+      // Flush any debounced work before teardown so client navigations do not
+      // silently drop the latest answers. Fire-and-forget; callers that need
+      // confirmed persistence should await flush() before navigating.
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (
+        latestValue !== undefined &&
+        (status === "dirty" || status === "error")
+      ) {
+        void runSave(version).finally(() => {
+          disposed = true;
+        });
+        return;
+      }
       disposed = true;
-      if (timer) clearTimeout(timer);
-      timer = null;
     },
     hasUnsavedChanges() {
       return status === "dirty" || status === "saving" || status === "error";

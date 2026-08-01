@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPassageRows,
+  displayNumbersToIndexes,
   normalizePassageConfig,
+  parseManualLineNumberList,
   resolvePassageStart,
   shouldShowLineNumber,
 } from "./passage-numbering";
@@ -44,9 +46,9 @@ describe("passage numbering", () => {
       line_number_interval: 5,
       starting_line_number: 1,
     });
-    expect(shouldShowLineNumber(1, 1, config)).toBe(true);
-    expect(shouldShowLineNumber(2, 1, config)).toBe(false);
-    expect(shouldShowLineNumber(6, 1, config)).toBe(true);
+    expect(shouldShowLineNumber(0, 1, 1, config)).toBe(true);
+    expect(shouldShowLineNumber(1, 2, 1, config)).toBe(false);
+    expect(shouldShowLineNumber(5, 6, 1, config)).toBe(true);
 
     const manual = normalizePassageConfig({
       show_line_numbers: true,
@@ -55,9 +57,48 @@ describe("passage numbering", () => {
       starting_line_number: 1,
       manual_line_numbers: [2, 7, 15, 24],
     });
-    expect(shouldShowLineNumber(2, 1, manual)).toBe(true);
-    expect(shouldShowLineNumber(1, 1, manual)).toBe(false);
-    expect(shouldShowLineNumber(7, 1, manual)).toBe(true);
+    expect(shouldShowLineNumber(1, 2, 1, manual)).toBe(true);
+    expect(shouldShowLineNumber(0, 1, 1, manual)).toBe(false);
+    expect(shouldShowLineNumber(6, 7, 1, manual)).toBe(true);
+  });
+
+  it("prefers numbered_line_indexes over display numbers", () => {
+    const config = normalizePassageConfig({
+      show_line_numbers: true,
+      line_number_mode: "manual",
+      line_number_interval: 5,
+      starting_line_number: 1,
+      numbered_line_indexes: [0, 2],
+      manual_line_numbers: [99],
+    });
+    expect(shouldShowLineNumber(0, 1, 1, config)).toBe(true);
+    expect(shouldShowLineNumber(1, 2, 1, config)).toBe(false);
+    expect(shouldShowLineNumber(2, 3, 1, config)).toBe(true);
+  });
+
+  it("parses comma-separated manual lists without dropping values", () => {
+    expect(parseManualLineNumberList("1, 6, 11, 16").values).toEqual([
+      1, 6, 11, 16,
+    ]);
+    expect(parseManualLineNumberList("1,").values).toEqual([1]);
+    expect(parseManualLineNumberList("1, x").error).toMatch(/whole number/i);
+    expect(displayNumbersToIndexes([1, 6], 1, 20).indexes).toEqual([0, 5]);
+  });
+
+  it("supports custom labels on logical lines", () => {
+    const { rows } = buildPassageRows("A\nB\nC\nD", {
+      show_line_numbers: true,
+      line_number_mode: "manual",
+      line_number_interval: 5,
+      starting_line_number: 1,
+      numbered_line_indexes: [0, 2],
+      manual_line_labels: { "0": 1, "2": 20 },
+    });
+    expect(rows[0].showNumber).toBe(true);
+    expect(rows[0].displayNumber).toBe(1);
+    expect(rows[2].showNumber).toBe(true);
+    expect(rows[2].displayNumber).toBe(20);
+    expect(rows[1].showNumber).toBe(false);
   });
 
   it("resolves restart, continue, and custom starts", () => {
@@ -70,16 +111,10 @@ describe("passage numbering", () => {
     });
     expect(resolvePassageStart(base, 20)).toBe(10);
     expect(
-      resolvePassageStart(
-        { ...base, numbering_continuation: "restart" },
-        20,
-      ),
+      resolvePassageStart({ ...base, numbering_continuation: "restart" }, 20),
     ).toBe(1);
     expect(
-      resolvePassageStart(
-        { ...base, numbering_continuation: "continue" },
-        20,
-      ),
+      resolvePassageStart({ ...base, numbering_continuation: "continue" }, 20),
     ).toBe(21);
   });
 });

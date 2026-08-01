@@ -211,18 +211,24 @@ export function AssignmentForm({
         </label>
       ) : null}
 
-      <label className="block text-sm">
-        <span className="mb-1.5 block text-slate-500">Status</span>
-        <select
-          name="status"
-          defaultValue={assignment?.status ?? "draft"}
-          className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm"
-        >
-          <option value="draft">Draft</option>
-          <option value="published">Published</option>
-          {isEditing ? <option value="archived">Archived</option> : null}
-        </select>
-      </label>
+      {/* Status is managed by Publish homework — never a manual dropdown. */}
+      <input
+        type="hidden"
+        name="status"
+        value={assignment?.status ?? "draft"}
+      />
+      <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+        Status:{" "}
+        <span className="font-medium text-slate-900">
+          {assignment?.status === "published"
+            ? "Published"
+            : assignment?.status === "archived"
+              ? "Archived"
+              : "Draft"}
+        </span>
+        . Use <span className="font-medium">Publish homework</span> in Homework
+        Studio when the worksheet is ready.
+      </div>
 
       <label className="flex items-center gap-2 text-sm">
         <input

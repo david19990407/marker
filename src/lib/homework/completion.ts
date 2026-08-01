@@ -1,7 +1,7 @@
+import { selectedMcqOptionIds } from "@/lib/homework/mcq-answers";
 import {
   flattenStudentBlocks,
   isResponseType,
-  resolveMcqOptions,
   responseKey,
 } from "@/lib/homework/structure";
 import type { BuilderBlock, BuilderSection } from "@/lib/types";
@@ -147,15 +147,10 @@ export function isStructuredResponseAnswered(
 
   switch (block.block_type) {
     case "multiple_choice": {
-      const options = resolveMcqOptions(block).map((o) => o.label);
-      const text = response.text_value?.trim() ?? "";
-      return text.length > 0 && (options.length === 0 || options.includes(text));
+      return selectedMcqOptionIds(block, response).length === 1;
     }
     case "multiple_select": {
-      const selected = (response.text_value ?? "")
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const selected = selectedMcqOptionIds(block, response);
       return selected.length >= minSelectionsForBlock(block);
     }
     case "numeric":

@@ -449,9 +449,35 @@ export async function saveStudentStructuredResponsesAction(
     return { error: parsed.error.issues[0]?.message ?? "Invalid responses" };
   }
 
+  const questionIds = parsed.data.map((r) => r.question_id);
+  const { data: existingRows } = questionIds.length
+    ? await supabase
+        .from("student_responses")
+        .select(
+          "id, question_id, text_value, numeric_value, boolean_value, json_value, file_name, storage_path",
+        )
+        .eq("submission_id", submission.id)
+        .in("question_id", questionIds)
+    : { data: [] as Array<Record<string, unknown>> };
+
+  const existingByQuestion = new Map(
+    (existingRows ?? []).map((row) => [row.question_id as string, row]),
+  );
+
   const errors: string[] = [];
 
   for (const resp of parsed.data) {
+    const existing = existingByQuestion.get(resp.question_id);
+    const incomingEmpty = isEmptyStructuredPayload(resp);
+    const existingPopulated = existing
+      ? hasPopulatedStructuredRow(existing)
+      : false;
+
+    // Never let a stale/empty client snapshot wipe a populated answer.
+    if (incomingEmpty && existingPopulated) {
+      continue;
+    }
+
     const upsertRow: Omit<
       StudentResponse,
       "id" | "file_name" | "storage_path" | "created_at" | "updated_at"
@@ -595,7 +621,12 @@ export async function submitStructuredHomeworkAction(
     const rpcMissing = /could not find the function|schema cache/i.test(
       rpcError.message ?? "",
     );
-    if (!rpcMissing) {
+    const enumCastBug =
+      /submission_status|expression is of type text/i.test(
+        rpcError.message ?? "",
+      );
+    // Fall back when RPC is missing OR an older uncased RPC is still deployed.
+    if (!rpcMissing && !enumCastBug) {
       return { error: rpcError.message };
     }
 
@@ -716,4 +747,46 @@ export async function loadStudentResponsesAction(
   }));
 
   return { responses };
+}
+
+function isEmptyStructuredPayload(resp: StructuredResponseInput): boolean {
+  const hasText = Boolean(resp.text_value?.trim());
+  const hasNumeric =
+    resp.numeric_value != null && !Number.isNaN(Number(resp.numeric_value));
+  const hasBool = resp.boolean_value != null;
+  let hasJson = false;
+  if (resp.json_value != null && typeof resp.json_value === "object") {
+    const json = resp.json_value as { kind?: string; option_ids?: unknown[] };
+    if (json.kind === "mcq") {
+      hasJson = Array.isArray(json.option_ids) && json.option_ids.length > 0;
+    } else {
+      hasJson = true;
+    }
+  }
+  const hasCells = Boolean(
+    resp.cells?.some(
+      (c) =>
+        Boolean(c.text_value?.trim()) ||
+        c.numeric_value != null ||
+        c.boolean_value != null,
+    ),
+  );
+  return !hasText && !hasNumeric && !hasBool && !hasJson && !hasCells;
+}
+
+function hasPopulatedStructuredRow(row: Record<string, unknown>): boolean {
+  if (typeof row.text_value === "string" && row.text_value.trim()) return true;
+  if (row.numeric_value != null && !Number.isNaN(Number(row.numeric_value))) {
+    return true;
+  }
+  if (row.boolean_value != null) return true;
+  if (row.file_name || row.storage_path) return true;
+  if (row.json_value != null) {
+    const json = row.json_value as { kind?: string; option_ids?: unknown[] };
+    if (json.kind === "mcq" && Array.isArray(json.option_ids) && json.option_ids.length) {
+      return true;
+    }
+    if (typeof row.json_value === "object") return true;
+  }
+  return false;
 }

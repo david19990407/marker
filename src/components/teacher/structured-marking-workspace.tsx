@@ -16,6 +16,10 @@ import {
   type ResponseSnapshot,
 } from "@/lib/homework/completion";
 import {
+  labelsForOptionIds,
+  selectedMcqOptionIds,
+} from "@/lib/homework/mcq-answers";
+import {
   flattenStudentBlocks,
   resolveMcqOptions,
   responseKey,
@@ -474,35 +478,36 @@ function StudentAnswerSummary({
 
   if (block.block_type === "multiple_choice" || block.block_type === "multiple_select") {
     const options = resolveMcqOptions(block);
-    const selected =
-      block.block_type === "multiple_select"
-        ? new Set(
-            (response.text_value ?? "")
-              .split("\n")
-              .map((s) => s.trim())
-              .filter(Boolean),
-          )
-        : new Set(
-            response.text_value?.trim() ? [response.text_value.trim()] : [],
-          );
+    const selectedIds = new Set(selectedMcqOptionIds(block, response));
+    const selectedLabels = labelsForOptionIds(block, Array.from(selectedIds));
+    if (selectedIds.size === 0 && !response.text_value?.trim()) {
+      return <p className="text-sm text-slate-500">No response saved.</p>;
+    }
     return (
-      <ul className="space-y-1 text-sm text-slate-800">
-        {options.map((option) => (
-          <li key={option.id} className="flex items-center gap-2">
-            <span
-              className={`inline-block h-2.5 w-2.5 rounded-full ${
-                selected.has(option.label) ? "bg-brand-600" : "bg-slate-300"
-              }`}
-            />
-            <span className={selected.has(option.label) ? "font-medium" : ""}>
-              {option.label}
-            </span>
-            {selected.has(option.label) ? (
-              <span className="text-xs text-slate-400">selected</span>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+      <div className="space-y-2">
+        <ul className="space-y-1 text-sm text-slate-800">
+          {options.map((option) => (
+            <li key={option.id} className="flex items-center gap-2">
+              <span
+                className={`inline-block h-2.5 w-2.5 rounded-full ${
+                  selectedIds.has(option.id) ? "bg-brand-600" : "bg-slate-300"
+                }`}
+              />
+              <span className={selectedIds.has(option.id) ? "font-medium" : ""}>
+                {option.label}
+              </span>
+              {selectedIds.has(option.id) ? (
+                <span className="text-xs text-slate-400">selected</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        {selectedLabels.length ? (
+          <p className="text-xs text-slate-500">
+            Selected: {selectedLabels.join(", ")}
+          </p>
+        ) : null}
+      </div>
     );
   }
 

@@ -7,7 +7,16 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PassageView } from "@/components/shared/passage-view";
-import { normalizePassageConfig } from "@/lib/homework/passage-numbering";
+import {
+  computePassageStartLines,
+  displayNumbersToIndexes,
+  mergePassageWithPrevious,
+  movePassageLine,
+  normalizePassageConfig,
+  parseManualLineNumberList,
+  passageSourceLines,
+  splitPassageAt,
+} from "@/lib/homework/passage-numbering";
 import {
   BLOCK_TYPE_LABELS,
   RESPONSE_BLOCK_TYPES,
@@ -75,19 +84,25 @@ export function BlockSettingsPanel({
       </div>
 
       <div className="space-y-3">
-        <label className="block text-sm">
-          <span className="mb-1 block text-xs font-medium text-slate-500">
-            Student title
-          </span>
-          <Input
-            value={block.content}
-            onChange={(e) => set("content", e.target.value)}
-            placeholder={titlePlaceholder(block)}
-          />
-        </label>
+        {block.block_type !== "passage" ? (
+          <label className="block text-sm">
+            <span className="mb-1 block text-xs font-medium text-slate-500">
+              Student title
+            </span>
+            <Input
+              value={block.content}
+              onChange={(e) => set("content", e.target.value)}
+              placeholder={titlePlaceholder(block)}
+            />
+          </label>
+        ) : null}
 
         {block.block_type === "passage" ? (
-          <PassageFields block={block} onChange={onChange} />
+          <PassageFields
+            block={block}
+            allSections={allSections}
+            onChange={onChange}
+          />
         ) : block.block_type === "image" ||
           block.block_type === "embedded_video" ||
           block.block_type === "downloadable_resource" ? (
@@ -249,13 +264,25 @@ export function BlockSettingsPanel({
 
 function PassageFields({
   block,
+  allSections,
   onChange,
 }: {
   block: BuilderBlock;
+  allSections: BuilderSection[];
   onChange: (updater: BlockUpdater) => void;
 }) {
   const config = normalizePassageConfig(block.passageConfig);
   const mode = config.line_number_mode ?? "every_5";
+  const lines = passageSourceLines(block.content);
+  const start = Math.max(1, config.starting_line_number || 1);
+  const [manualDraft, setManualDraft] = useState(
+    (config.manual_line_numbers ?? []).join(", "),
+  );
+  const [manualError, setManualError] = useState<string | null>(null);
+  const startLineNumber = useMemo(
+    () => computePassageStartLines(allSections).get(block._id) ?? start,
+    [allSections, block._id, start],
+  );
 
   function patchConfig(patch: Partial<PassageConfig>) {
     onChange((prev) => {
@@ -265,6 +292,10 @@ function PassageFields({
       });
       return { ...prev, passageConfig: next };
     });
+  }
+
+  function setContent(next: string) {
+    onChange((prev) => ({ ...prev, content: next }));
   }
 
   function setMode(nextMode: PassageLineNumberMode) {
@@ -283,22 +314,62 @@ function PassageFields({
     });
   }
 
+  function applyManualList(raw: string) {
+    const parsed = parseManualLineNumberList(raw);
+    if (parsed.error) {
+      setManualError(parsed.error);
+      return;
+    }
+    const mapped = displayNumbersToIndexes(
+      parsed.values ?? [],
+      startLineNumber,
+      lines.length,
+    );
+    if (mapped.error) {
+      setManualError(mapped.error);
+      return;
+    }
+    setManualError(null);
+    setManualDraft((parsed.values ?? []).join(", "));
+    patchConfig({
+      manual_line_numbers: parsed.values ?? [],
+      numbered_line_indexes: mapped.indexes,
+    });
+  }
+
+  function toggleIndex(index: number, checked: boolean) {
+    const current = new Set(config.numbered_line_indexes ?? []);
+    if (checked) current.add(index);
+    else current.delete(index);
+    const indexes = [...current].sort((a, b) => a - b);
+    const displays = indexes.map((i) => startLineNumber + i);
+    setManualDraft(displays.join(", "));
+    setManualError(null);
+    patchConfig({
+      numbered_line_indexes: indexes,
+      manual_line_numbers: displays,
+    });
+  }
+
+  function setCustomLabel(index: number, raw: string) {
+    const labels = { ...(config.manual_line_labels ?? {}) };
+    if (!raw.trim()) {
+      delete labels[String(index)];
+    } else {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return;
+      labels[String(index)] = Math.floor(n);
+    }
+    patchConfig({ manual_line_labels: labels });
+  }
+
   return (
     <div className="space-y-3">
-      <label className="block text-sm">
-        <span className="mb-1 block text-xs font-medium text-slate-500">Passage text</span>
-        <Textarea
-          value={block.content}
-          onChange={(e) =>
-            onChange((prev) => ({ ...prev, content: e.target.value }))
-          }
-          placeholder="Paste or write the source text students will read. Each new line becomes a numbered line."
-          className="min-h-36"
-        />
-      </label>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-sm">
-          <span className="mb-1 block text-xs font-medium text-slate-500">Passage title</span>
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Passage title
+          </span>
           <Input
             value={config.title ?? ""}
             onChange={(e) => patchConfig({ title: e.target.value })}
@@ -315,6 +386,18 @@ function PassageFields({
         </label>
       </div>
 
+      <label className="block text-sm">
+        <span className="mb-1 block text-xs font-medium text-slate-500">
+          Passage text
+        </span>
+        <Textarea
+          value={block.content}
+          onChange={(e) => setContent(e.target.value)}
+          placeholder="Paste the extract. Press Enter for each logical line that can receive a number. Soft wrapping does not create numbers."
+          className="min-h-36"
+        />
+      </label>
+
       <div className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
           Line numbering
@@ -327,18 +410,18 @@ function PassageFields({
             onChange={(e) => setMode(e.target.value as PassageLineNumberMode)}
           >
             <option value="none">No line numbers</option>
-            <option value="every_line">Number every line</option>
-            <option value="every_5">Number every fifth line</option>
-            <option value="every_10">Number every tenth line</option>
+            <option value="every_line">Number every logical line</option>
+            <option value="every_5">Number every fifth logical line</option>
+            <option value="every_10">Number every tenth logical line</option>
             <option value="custom_interval">Custom interval</option>
-            <option value="manual">Manual numbering</option>
+            <option value="manual">Manual selection</option>
           </select>
         </label>
 
         {mode === "custom_interval" ? (
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-medium text-slate-500">
-              Show a number every
+              Interval
             </span>
             <Input
               type="number"
@@ -350,29 +433,6 @@ function PassageFields({
                 })
               }
             />
-          </label>
-        ) : null}
-
-        {mode === "manual" ? (
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs font-medium text-slate-500">
-              Visible line numbers
-            </span>
-            <Input
-              value={(config.manual_line_numbers ?? []).join(", ")}
-              onChange={(e) => {
-                const nums = e.target.value
-                  .split(/[\s,;]+/)
-                  .map((part) => Number(part.trim()))
-                  .filter((n) => Number.isFinite(n) && n > 0)
-                  .map((n) => Math.floor(n));
-                patchConfig({ manual_line_numbers: nums });
-              }}
-              placeholder="e.g. 1, 6, 11, 16, 21"
-            />
-            <span className="mt-1 block text-xs text-slate-400">
-              Enter the display numbers that should appear in the gutter.
-            </span>
           </label>
         ) : null}
 
@@ -400,7 +460,7 @@ function PassageFields({
             {(config.numbering_continuation ?? "custom_start") === "custom_start" ? (
               <label className="block text-sm">
                 <span className="mb-1 block text-xs font-medium text-slate-500">
-                  Start at
+                  Starting number
                 </span>
                 <Input
                   type="number"
@@ -408,7 +468,10 @@ function PassageFields({
                   value={config.starting_line_number}
                   onChange={(e) =>
                     patchConfig({
-                      starting_line_number: Math.max(1, Number(e.target.value) || 1),
+                      starting_line_number: Math.max(
+                        1,
+                        Number(e.target.value) || 1,
+                      ),
                     })
                   }
                 />
@@ -423,14 +486,123 @@ function PassageFields({
           </div>
         ) : null}
 
+        {mode === "manual" ? (
+          <div className="space-y-3">
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs font-medium text-slate-500">
+                Visible numbers (comma-separated)
+              </span>
+              <Input
+                value={manualDraft}
+                onChange={(e) => {
+                  setManualDraft(e.target.value);
+                  setManualError(null);
+                }}
+                onBlur={() => applyManualList(manualDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyManualList(manualDraft);
+                  }
+                }}
+                placeholder="e.g. 1, 6, 11, 16, 21"
+              />
+              {manualError ? (
+                <span className="mt-1 block text-xs text-rose-600">{manualError}</span>
+              ) : (
+                <span className="mt-1 block text-xs text-slate-400">
+                  Type the full list, then press Enter or leave the field. Soft wraps
+                  never create extra numbers.
+                </span>
+              )}
+            </label>
+
+            <div className="max-h-64 space-y-2 overflow-auto rounded-xl border border-slate-200 bg-white p-2">
+              {lines.map((line, index) => {
+                const checked = (config.numbered_line_indexes ?? []).includes(index);
+                const defaultLabel = startLineNumber + index;
+                const custom = config.manual_line_labels?.[String(index)];
+                return (
+                  <div
+                    key={index}
+                    className="grid gap-2 rounded-lg border border-slate-100 px-2 py-2 sm:grid-cols-[auto_1fr_72px_auto]"
+                  >
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => toggleIndex(index, e.target.checked)}
+                      />
+                      Show
+                    </label>
+                    <p className="truncate text-sm text-slate-800">
+                      <span className="mr-2 text-xs text-slate-400">#{index + 1}</span>
+                      {line || "(blank)"}
+                    </p>
+                    <Input
+                      type="number"
+                      min={1}
+                      disabled={!checked}
+                      value={custom ?? defaultLabel}
+                      onChange={(e) => setCustomLabel(index, e.target.value)}
+                      aria-label={`Label for line ${index + 1}`}
+                      className="h-8 text-xs"
+                    />
+                    <div className="flex flex-wrap gap-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={index === 0}
+                        onClick={() => setContent(movePassageLine(block.content, index, -1))}
+                      >
+                        Up
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={index === lines.length - 1}
+                        onClick={() => setContent(movePassageLine(block.content, index, 1))}
+                      >
+                        Down
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setContent(splitPassageAt(block.content, index))}
+                      >
+                        Split
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={index === 0}
+                        onClick={() =>
+                          setContent(mergePassageWithPrevious(block.content, index))
+                        }
+                      >
+                        Merge
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         <div className="space-y-2">
-          <p className="text-xs font-medium text-slate-500">Student preview</p>
-          <PassageView text={block.content} config={config} />
-          {mode !== "none" ? (
-            <p className="text-xs text-slate-400">
-              Teachers can reference these line numbers in marking guidance.
-            </p>
-          ) : null}
+          <p className="text-xs font-medium text-slate-500">
+            Student / marking preview
+          </p>
+          <PassageView
+            text={block.content}
+            config={config}
+            startLineNumber={startLineNumber}
+          />
         </div>
       </div>
     </div>
