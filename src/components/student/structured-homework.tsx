@@ -12,11 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { PassageView } from "@/components/shared/passage-view";
 import {
   saveStudentStructuredResponsesAction,
   submitStructuredHomeworkAction,
   type StructuredResponseInput,
 } from "@/lib/actions/homework-builder";
+import { useVersionedAutosave } from "@/hooks/use-versioned-autosave";
 import { flattenStudentBlocks, isResponseType, responseKey } from "@/lib/homework/structure";
 import type { BuilderSection, BuilderBlock, StudentResponse } from "@/lib/types";
 
@@ -48,8 +50,6 @@ type TableCellValues = {
 };
 type ResponseValue = TextValue | NumericValue | BoolValue | TableCellValues;
 
-type AutosaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
-
 export function StructuredHomework({
   assignmentId,
   sections,
@@ -62,54 +62,56 @@ export function StructuredHomework({
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<{ type: "success" | "error"; msg: string } | null>(null);
-  const [autosave, setAutosave] = useState<AutosaveStatus>("idle");
   const [pending, startTransition] = useTransition();
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestValues = useRef(values);
-  latestValues.current = values;
+  const sectionsRef = useRef(sections);
+  const valuesRef = useRef(values);
+  useEffect(() => {
+    sectionsRef.current = sections;
+  }, [sections]);
+  useEffect(() => {
+    valuesRef.current = values;
+  }, [values]);
+
+  const autosave = useVersionedAutosave<Record<string, ResponseValue>>({
+    delayMs: 1200,
+    enabled: editable,
+    save: async (current) => {
+      const responses = collectResponses(current, sectionsRef.current);
+      const result = await saveStudentStructuredResponsesAction(
+        assignmentId,
+        responses,
+      );
+      // Never overwrite local `values` from the server — local-first.
+      return result.error
+        ? { ok: false, error: result.error }
+        : { ok: true };
+    },
+  });
 
   function setValue(questionId: string, value: ResponseValue) {
     if (!editable) return;
-    setValues((prev) => ({ ...prev, [questionId]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [questionId]: value };
+      autosave.markDirty(next);
+      return next;
+    });
     setErrors((prev) => {
       if (!prev[questionId]) return prev;
       const next = { ...prev };
       delete next[questionId];
       return next;
     });
-    setAutosave("dirty");
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      void persist(latestValues.current, false);
-    }, 1500);
-  }
-
-  async function persist(current: Record<string, ResponseValue>, submitting: boolean) {
-    const responses = collectResponses(current, sections);
-    setAutosave("saving");
-    const result = submitting
-      ? await submitStructuredHomeworkAction(assignmentId, responses)
-      : await saveStudentStructuredResponsesAction(assignmentId, responses);
-
-    if (result.error) {
-      setAutosave("error");
-      setFlash({ type: "error", msg: result.error });
-      return false;
-    }
-    setAutosave("saved");
-    setFlash({
-      type: "success",
-      msg: submitting ? "Homework submitted" : "Progress saved",
-    });
-    setTimeout(() => setFlash(null), 3000);
-    setTimeout(() => setAutosave((s) => (s === "saved" ? "idle" : s)), 2000);
-    return true;
   }
 
   function handleSave() {
-    if (timer.current) clearTimeout(timer.current);
     startTransition(async () => {
-      await persist(values, false);
+      const ok = await autosave.flush();
+      setFlash(
+        ok
+          ? { type: "success", msg: "Progress saved" }
+          : { type: "error", msg: autosave.lastError ?? "Save failed" },
+      );
+      setTimeout(() => setFlash(null), 3000);
     });
   }
 
@@ -172,38 +174,29 @@ export function StructuredHomework({
       setFlash({ type: "error", msg: "Please complete required fields before submitting" });
       return;
     }
-    if (timer.current) clearTimeout(timer.current);
     startTransition(async () => {
-      const ok = await persist(values, true);
-      if (ok) {
-        window.location.href = `/student/homework/${assignmentId}`;
+      const responses = collectResponses(valuesRef.current, sectionsRef.current);
+      const result = await submitStructuredHomeworkAction(assignmentId, responses);
+      if (result.error) {
+        setFlash({ type: "error", msg: result.error });
+        return;
       }
+      window.location.href = `/student/homework/${assignmentId}`;
     });
   }
-
-  useEffect(() => {
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, []);
-
-  const autosaveLabel =
-    autosave === "dirty"
-      ? "Unsaved changes"
-      : autosave === "saving"
-        ? "Saving…"
-        : autosave === "saved"
-          ? "All changes saved"
-          : autosave === "error"
-            ? "Save failed"
-            : "Autosave ready";
 
   return (
     <div className="space-y-6">
       {editable && (
         <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={autosave === "dirty" || autosave === "error" ? "warning" : "neutral"}>
-            {autosaveLabel}
+          <Badge
+            tone={
+              autosave.status === "dirty" || autosave.status === "error"
+                ? "warning"
+                : "neutral"
+            }
+          >
+            {autosave.label}
           </Badge>
           {!reviewMode && (
             <Link href={`/student/homework/${assignmentId}/review`}>
@@ -249,7 +242,7 @@ export function StructuredHomework({
       {editable && (
         <div className="flex flex-wrap gap-3">
           <Button onClick={handleSave} disabled={pending} variant="secondary">
-            {pending && autosave === "saving" ? "Saving…" : "Save progress"}
+            {pending || autosave.status === "saving" ? "Saving…" : "Save progress"}
           </Button>
           {reviewMode ? (
             <Button onClick={handleSubmit} disabled={pending}>
@@ -380,6 +373,50 @@ function BlockView({
       );
     case "divider":
       return <hr className="border-slate-200" />;
+    case "passage":
+      return <PassageView text={block.content} config={block.passageConfig} />;
+    case "embedded_video": {
+      const url = block.external_url || block.content;
+      if (!url) return null;
+      const yt = url.match(
+        /(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/,
+      );
+      return (
+        <div className="space-y-2">
+          {(block.prompt || block.content) && !url.startsWith("http") ? (
+            <p className="text-sm font-medium text-slate-800">{block.prompt || block.content}</p>
+          ) : null}
+          <div className="aspect-video overflow-hidden rounded-2xl border border-slate-200 bg-black">
+            {yt ? (
+              <iframe
+                title={block.content || "Video"}
+                src={`https://www.youtube-nocookie.com/embed/${yt[1]}`}
+                className="h-full w-full"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            ) : (
+              <video
+                controls
+                className="h-full w-full"
+                src={url}
+                playsInline
+              >
+                {block.captions_text ? (
+                  <track kind="captions" srcLang="en" label="Captions" />
+                ) : null}
+              </video>
+            )}
+          </div>
+          {block.captions_text ? (
+            <details className="text-xs text-slate-600">
+              <summary>Transcript / captions</summary>
+              <p className="mt-2 whitespace-pre-wrap">{block.captions_text}</p>
+            </details>
+          ) : null}
+        </div>
+      );
+    }
     case "page_break":
       return (
         <div className="flex items-center gap-2" aria-hidden>
@@ -448,6 +485,9 @@ function BlockView({
     block.block_type === "numbered_question" ||
     block.block_type === "extended_writing"
   ) {
+    const text = (current as TextValue)?.text ?? "";
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+
     return (
       <QuestionShell
         block={block}
@@ -456,19 +496,29 @@ function BlockView({
         reviewMode={reviewMode}
       >
         {editable ? (
-          <Textarea
-            id={fieldId}
-            value={(current as TextValue)?.text ?? ""}
-            onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
-            className="min-h-28"
-            placeholder="Write your answer here…"
-            maxLength={block.char_limit ?? undefined}
-            aria-required={block.required}
-            aria-invalid={!!error}
-          />
+          <>
+            <Textarea
+              id={fieldId}
+              value={text}
+              onChange={(e) => onValueChange(qid, { type: "text", text: e.target.value })}
+              className="min-h-28"
+              placeholder="Write your answer here…"
+              maxLength={block.char_limit ?? undefined}
+              aria-required={block.required}
+              aria-invalid={!!error}
+            />
+            <p className="text-xs text-slate-400">
+              {block.word_limit != null
+                ? `${words} / ${block.word_limit} words`
+                : `${words} words`}
+              {block.char_limit != null
+                ? ` · ${text.length} / ${block.char_limit} characters`
+                : ""}
+            </p>
+          </>
         ) : (
           <p className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
-            {(current as TextValue)?.text || "—"}
+            {text || "—"}
           </p>
         )}
       </QuestionShell>
@@ -539,6 +589,39 @@ function BlockView({
                 value={choice}
                 checked={(current as TextValue)?.text === choice}
                 onChange={() => onValueChange(qid, { type: "text", text: choice })}
+                disabled={!editable}
+              />
+              {choice}
+            </label>
+          ))}
+        </div>
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "multiple_select") {
+    const selected = new Set(
+      ((current as TextValue)?.text ?? "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    return (
+      <QuestionShell block={block} fieldId={fieldId} error={error} reviewMode={reviewMode}>
+        <div className="space-y-1" role="group" aria-labelledby={fieldId}>
+          {(block.choices ?? []).map((choice, i) => (
+            <label key={i} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={selected.has(choice)}
+                onChange={(e) => {
+                  if (e.target.checked) selected.add(choice);
+                  else selected.delete(choice);
+                  onValueChange(qid, {
+                    type: "text",
+                    text: Array.from(selected).join("\n"),
+                  });
+                }}
                 disabled={!editable}
               />
               {choice}

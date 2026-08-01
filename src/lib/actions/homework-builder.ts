@@ -3,10 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
-import type { BuilderSection, StudentResponse } from "@/lib/types";
+import type { AssignmentCommentDraft, BuilderSection, StudentResponse } from "@/lib/types";
 import { cloneSection, structureToPayload } from "@/lib/homework/structure";
 import { structuredResponsesSchema } from "@/lib/validations/homework";
 import type { ActionResult } from "@/lib/actions/auth";
+import { assertSafeUpload, buildStoragePath } from "@/lib/utils/files";
 
 async function assertTeacher() {
   return requireProfile(["teacher", "admin"]);
@@ -17,7 +18,8 @@ async function assertTeacher() {
 export async function saveHomeworkStructureAction(
   templateId: string,
   sections: BuilderSection[],
-): Promise<ActionResult & { sections?: BuilderSection[] }> {
+  options?: { revalidate?: boolean },
+): Promise<ActionResult & { savedAt?: string }> {
   await assertTeacher();
   const supabase = await createClient();
 
@@ -30,12 +32,132 @@ export async function saveHomeworkStructureAction(
 
   if (error) return { error: error.message };
 
-  // Reload so client receives persisted question_ids
-  const { loadTemplateStructure } = await import("@/lib/homework/structure");
-  const reloaded = await loadTemplateStructure(supabase, templateId);
+  // Local-first autosave: never return reloaded structure (would wipe in-progress typing).
+  // Client IDs are preserved by the SQL upsert. Do not remount the builder.
+  if (options?.revalidate) {
+    revalidatePath(`/teacher/assignments`);
+  }
 
-  revalidatePath(`/teacher/assignments`);
-  return { success: "Structure saved", sections: reloaded };
+  return { success: "Structure saved", savedAt: new Date().toISOString() };
+}
+
+// ── Resources and mark schemes ───────────────────────────────────────────────
+
+export async function uploadMarkSchemeAction(
+  templateId: string,
+  formData: FormData,
+): Promise<ActionResult> {
+  const profile = await assertTeacher();
+  const supabase = await createClient();
+
+  const file = formData.get("file");
+  if (!(file instanceof File)) return { error: "Choose a PDF to upload" };
+
+  try {
+    const { mime, safeName } = assertSafeUpload(file, "assignment-resource");
+    if (mime !== "application/pdf" && !safeName.toLowerCase().endsWith(".pdf")) {
+      return { error: "Mark schemes must be PDF files" };
+    }
+
+    const path = buildStoragePath(
+      profile.id,
+      templateId,
+      "mark-schemes",
+      `${crypto.randomUUID()}-${safeName}`,
+    );
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { error: uploadError } = await supabase.storage
+      .from("assignment-resources")
+      .upload(path, buffer, { contentType: "application/pdf", upsert: false });
+    if (uploadError) return { error: uploadError.message };
+
+    const { error } = await supabase.from("assignment_mark_schemes").insert({
+      template_id: templateId,
+      title: safeName.replace(/\.pdf$/i, ""),
+      storage_path: path,
+      file_name: safeName,
+      mime_type: "application/pdf",
+      file_size_bytes: file.size,
+      created_by: profile.id,
+    });
+    if (error) return { error: error.message };
+
+    return { success: "Mark scheme uploaded" };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Upload failed" };
+  }
+}
+
+// ── Assignment-specific feedback comments ───────────────────────────────────
+
+export async function saveAssignmentCommentsAction(
+  templateId: string,
+  comments: AssignmentCommentDraft[],
+): Promise<ActionResult & { savedAt?: string }> {
+  await assertTeacher();
+  const supabase = await createClient();
+
+  const ids = comments.map((comment) => comment._id);
+  let deleteQuery = supabase
+    .from("assignment_comments")
+    .delete()
+    .eq("template_id", templateId);
+
+  if (ids.length > 0) {
+    deleteQuery = deleteQuery.not("id", "in", `(${ids.join(",")})`);
+  }
+
+  const { error: deleteError } = await deleteQuery;
+  if (deleteError) return { error: deleteError.message };
+
+  if (comments.length > 0) {
+    const rows = comments.map((comment, index) => ({
+      id: comment._id,
+      template_id: templateId,
+      short_label: comment.short_label.trim() || "Untitled comment",
+      full_comment: comment.full_comment,
+      category: comment.category || null,
+      linked_question_id: comment.linked_question_id || null,
+      mark_range_min: comment.mark_range_min ?? null,
+      mark_range_max: comment.mark_range_max ?? null,
+      is_active: comment.is_active,
+      sort_order: index,
+      available_for_drag_drop: comment.available_for_drag_drop,
+      available_for_overall: comment.available_for_overall,
+      available_for_question: comment.available_for_question,
+    }));
+
+    const { error: upsertError } = await supabase
+      .from("assignment_comments")
+      .upsert(rows, { onConflict: "id" });
+    if (upsertError) return { error: upsertError.message };
+  }
+
+  return { success: "Feedback comments saved", savedAt: new Date().toISOString() };
+}
+
+export async function saveCommentBankLinksAction(
+  templateId: string,
+  commentBankIds: string[],
+): Promise<ActionResult> {
+  await assertTeacher();
+  const supabase = await createClient();
+
+  const { error: deleteError } = await supabase
+    .from("assignment_comment_bank_links")
+    .delete()
+    .eq("template_id", templateId);
+  if (deleteError) return { error: deleteError.message };
+
+  const uniqueIds = [...new Set(commentBankIds)].filter(Boolean);
+  if (uniqueIds.length > 0) {
+    const { error: insertError } = await supabase
+      .from("assignment_comment_bank_links")
+      .insert(uniqueIds.map((comment_bank_id) => ({ template_id: templateId, comment_bank_id })));
+    if (insertError) return { error: insertError.message };
+  }
+
+  return { success: "Comment bank links saved" };
 }
 
 // ── Copy section from another template ───────────────────────────────────────
@@ -237,9 +359,10 @@ export async function saveStudentStructuredResponsesAction(
 
   if (errors.length > 0) return { error: errors[0] };
 
-  revalidatePath(`/student/homework/${assignmentId}`);
-  revalidatePath(`/student/homework/${assignmentId}/review`);
-  return { success: "Responses saved" };
+  // Local-first: do not revalidatePath on autosave (prevents remount / text loss).
+  return { success: "Responses saved", savedAt: new Date().toISOString() } as ActionResult & {
+    savedAt: string;
+  };
 }
 
 export async function submitStructuredHomeworkAction(

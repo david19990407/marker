@@ -6,52 +6,62 @@ import { Badge } from "@/components/ui/badge";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import { CopyAssignmentButton } from "@/components/teacher/copy-assignment-button";
+import {
+  sortTeacherAssignments,
+  teacherBucket,
+} from "@/lib/homework/ordering";
+import { currentTimeMs } from "@/lib/utils/time";
 
-export default async function TeacherAssignmentsPage() {
+export default async function TeacherAssignmentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ filter?: string }>;
+}) {
   const profile = await requireProfile(["teacher", "admin"]);
+  const { filter } = await searchParams;
   const supabase = await createClient();
 
-  // Load assignments from classes the teacher is a member of via class_teachers
   const { data: ctRows } = await supabase
     .from("class_teachers")
     .select("class_id")
     .eq("teacher_id", profile.id);
 
-  const classIdSet = new Set([
-    ...(ctRows ?? []).map((r) => r.class_id),
-  ]);
+  const classIdSet = new Set((ctRows ?? []).map((r) => r.class_id));
 
-  // Also include legacy teacher_id-based assignments
   const { data: legacyAssignments } = await supabase
     .from("assignments")
-    .select("id, title, status, due_at, class_id, template_id, classes(name)")
-    .eq("teacher_id", profile.id)
-    .order("created_at", { ascending: false });
+    .select(
+      "id, title, status, due_at, release_at, updated_at, created_at, class_id, template_id, classes(name, subject, year_group)",
+    )
+    .eq("teacher_id", profile.id);
 
-  let assignments: typeof legacyAssignments = legacyAssignments ?? [];
+  let assignments = legacyAssignments ?? [];
 
   if (classIdSet.size > 0) {
-    const classIds = Array.from(classIdSet);
     const { data: classBasedAssignments } = await supabase
       .from("assignments")
-      .select("id, title, status, due_at, class_id, template_id, classes(name)")
-      .in("class_id", classIds)
-      .order("created_at", { ascending: false });
+      .select(
+        "id, title, status, due_at, release_at, updated_at, created_at, class_id, template_id, classes(name, subject, year_group)",
+      )
+      .in("class_id", Array.from(classIdSet));
 
-    // Merge and deduplicate
     const merged = new Map<string, NonNullable<typeof classBasedAssignments>[number]>();
     for (const a of [...(classBasedAssignments ?? []), ...(legacyAssignments ?? [])]) {
       if (!merged.has(a.id)) merged.set(a.id, a);
     }
-    assignments = Array.from(merged.values()).sort(
-      (a, b) =>
-        (b as { created_at?: string }).created_at?.localeCompare(
-          (a as { created_at?: string }).created_at ?? "",
-        ) ?? 0,
-    );
+    assignments = Array.from(merged.values());
   }
 
-  const ids = assignments.map((a) => a.id);
+  const nowMs = currentTimeMs();
+  let ordered = sortTeacherAssignments(assignments, nowMs);
+
+  if (filter && filter !== "all") {
+    ordered = ordered.filter((a) => teacherBucket(a, nowMs) === filter);
+  } else {
+    ordered = ordered.filter((a) => teacherBucket(a, nowMs) !== "archived");
+  }
+
+  const ids = ordered.map((a) => a.id);
   const { data: submissions } = ids.length
     ? await supabase
         .from("submissions")
@@ -67,42 +77,54 @@ export default async function TeacherAssignmentsPage() {
     counts.set(s.assignment_id, current);
   });
 
-  // Count deployments per template (how many classes share the same template)
-  const templateDeploymentCounts = new Map<string, number>();
-  for (const a of assignments) {
-    if (a.template_id) {
-      templateDeploymentCounts.set(
-        a.template_id,
-        (templateDeploymentCounts.get(a.template_id) ?? 0) + 1,
-      );
-    }
-  }
+  const filters = [
+    { id: "all", label: "Active lists" },
+    { id: "draft", label: "Draft" },
+    { id: "scheduled", label: "Scheduled" },
+    { id: "active", label: "Active" },
+    { id: "closed", label: "Closed" },
+    { id: "archived", label: "Archived" },
+  ];
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Assignments"
+        title="Homework"
         description="Create, publish and track homework for your classes."
         action={
           <Link href="/teacher/assignments/new">
-            <Button>New assignment</Button>
+            <Button>Create and build homework</Button>
           </Link>
         }
       />
-      {!assignments?.length ? (
+
+      <div className="flex flex-wrap gap-2">
+        {filters.map((f) => (
+          <Link key={f.id} href={`/teacher/assignments?filter=${f.id}`}>
+            <Badge
+              tone={
+                (!filter && f.id === "all") || filter === f.id
+                  ? "brand"
+                  : "neutral"
+              }
+            >
+              {f.label}
+            </Badge>
+          </Link>
+        ))}
+      </div>
+
+      {!ordered.length ? (
         <Card>
-          <p className="text-sm text-slate-500">No assignments have been created</p>
+          <p className="text-sm text-slate-500">No homework matches this filter</p>
         </Card>
       ) : (
         <div className="space-y-3">
-          {assignments.map((a) => {
-            const className = Array.isArray(a.classes)
-              ? a.classes[0]?.name
-              : (a.classes as { name: string } | null)?.name;
-            const c = counts.get(a.id) ?? { total: 0, unmarked: 0 };
-            const deploymentCount = a.template_id
-              ? (templateDeploymentCounts.get(a.template_id) ?? 1)
-              : 1;
+          {ordered.map((a) => {
+            const classObj = Array.isArray(a.classes) ? a.classes[0] : a.classes;
+            const className = classObj?.name;
+            const bucket = teacherBucket(a, nowMs);
+            const count = counts.get(a.id);
             return (
               <Card
                 key={a.id}
@@ -110,40 +132,32 @@ export default async function TeacherAssignmentsPage() {
               >
                 <div>
                   <div className="mb-1 flex flex-wrap gap-2">
-                    <Badge
-                      tone={
-                        a.status === "published"
-                          ? "success"
-                          : a.status === "draft"
-                            ? "warning"
-                            : "neutral"
-                      }
-                    >
-                      {a.status}
-                    </Badge>
                     <Badge tone="neutral">{className ?? "Class"}</Badge>
-                    {deploymentCount > 1 ? (
-                      <Badge tone="brand">{deploymentCount} classes</Badge>
-                    ) : null}
+                    <Badge>{bucket}</Badge>
+                    <Badge tone="neutral">{a.status}</Badge>
                   </div>
                   <h2 className="font-semibold text-slate-900">{a.title}</h2>
                   <p className="text-xs text-slate-500">
-                    Due{" "}
+                    Release{" "}
+                    {a.release_at
+                      ? new Date(a.release_at).toLocaleString("en-GB")
+                      : "—"}
+                    {" · Due "}
                     {a.due_at
                       ? new Date(a.due_at).toLocaleString("en-GB")
-                      : "—"}{" "}
-                    · {c.total} submissions · {c.unmarked} unmarked
+                      : "—"}
+                    {count
+                      ? ` · ${count.total} submissions · ${count.unmarked} to mark`
+                      : ""}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <Link href={`/teacher/assignments/${a.id}/builder`}>
+                    <Button size="sm">Builder</Button>
+                  </Link>
                   <Link href={`/teacher/assignments/${a.id}`}>
                     <Button size="sm" variant="secondary">
                       Open
-                    </Button>
-                  </Link>
-                  <Link href={`/teacher/assignments/${a.id}/export`}>
-                    <Button size="sm" variant="outline">
-                      Export CSV
                     </Button>
                   </Link>
                   <CopyAssignmentButton assignmentId={a.id} />

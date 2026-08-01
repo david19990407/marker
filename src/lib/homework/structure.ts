@@ -14,15 +14,28 @@ export function newId(): string {
   return crypto.randomUUID();
 }
 
-/** Duplicate a block as new content (clears persisted question id). */
+/** Duplicate a block as new content with fresh stable IDs. */
 export function cloneBlock(block: BuilderBlock): BuilderBlock {
+  const isResponse = isResponseType(block.block_type);
   return {
     ...block,
     _id: newId(),
-    question_id: null,
+    question_id: isResponse ? newId() : null,
     cells: block.cells?.map((c) => ({ ...c })),
     choices: block.choices ? [...block.choices] : undefined,
-    tableConfig: block.tableConfig ? { ...block.tableConfig, col_labels: [...block.tableConfig.col_labels] } : undefined,
+    mcq_options: block.mcq_options?.map((o) => ({ ...o, id: newId() })),
+    option_feedback: block.option_feedback ? [...block.option_feedback] : undefined,
+    correct_option_indexes: block.correct_option_indexes
+      ? [...block.correct_option_indexes]
+      : undefined,
+    passage_block_ids: block.passage_block_ids ? [...block.passage_block_ids] : undefined,
+    linked_comment_bank_ids: block.linked_comment_bank_ids
+      ? [...block.linked_comment_bank_ids]
+      : undefined,
+    passageConfig: block.passageConfig ? { ...block.passageConfig } : undefined,
+    tableConfig: block.tableConfig
+      ? { ...block.tableConfig, col_labels: [...block.tableConfig.col_labels] }
+      : undefined,
   };
 }
 
@@ -89,13 +102,15 @@ export function createVocabularyTableBlock(): BuilderBlock {
 
   return {
     _id: newId(),
-    question_id: null,
+    question_id: newId(),
     block_type: "vocabulary_table",
     content: "Vocabulary",
     teacher_only: false,
     prompt: "Complete the vocabulary table",
     max_marks: null,
+    marks_apply: true,
     required: false,
+    table_marks_mode: "none",
     tableConfig: {
       rows,
       cols,
@@ -111,31 +126,66 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     return createVocabularyTableBlock();
   }
 
-  const isTeacherOnly = type === "mark_scheme" || type === "teacher_review";
+  const isTeacherOnly = isTeacherOnlyType(type);
   const base: BuilderBlock = {
     _id: newId(),
-    question_id: null,
+    question_id: isResponseType(type) ? newId() : null,
     block_type: type,
     content: "",
     teacher_only: isTeacherOnly,
     student_visible: !isTeacherOnly,
     review_only: type === "teacher_review",
     allow_attachments: type === "file_upload",
+    marks_apply: isResponseType(type) && type !== "teacher_review",
   };
+
+  if (type === "passage") {
+    base.content = "";
+    base.prompt = "";
+    base.passageConfig = {
+      title: "",
+      source_reference: "",
+      show_line_numbers: true,
+      line_number_interval: 5,
+      starting_line_number: 1,
+    };
+  }
+
+  if (type === "embedded_video") {
+    base.external_url = "";
+    base.captions_text = "";
+    base.allow_download = false;
+  }
 
   if (isResponseType(type)) {
     base.prompt = "";
-    base.max_marks = null;
-    base.required = false;
-    base.choices = type === "multiple_choice" ? ["Option A", "Option B"] : [];
+    base.max_marks = type === "teacher_review" ? null : 1;
+    base.required = type !== "teacher_review";
     base.teacher_note = null;
     base.mark_scheme_note = null;
     base.word_limit = null;
     base.char_limit = null;
+    base.suggested_minutes = null;
     base.min_value = null;
     base.max_value = null;
     base.correct_answer = null;
-    base.comment_bank_key = null;
+    base.passage_block_ids = [];
+    base.linked_comment_bank_ids = [];
+    base.marking_mode = "teacher_reviewed";
+
+    if (type === "multiple_choice" || type === "multiple_select") {
+      base.mcq_options = [
+        { id: newId(), label: "Option A", correct: true, feedback: "" },
+        { id: newId(), label: "Option B", correct: false, feedback: "" },
+      ];
+      base.choices = base.mcq_options.map((o) => o.label);
+      base.correct_option_indexes = [0];
+      base.option_feedback = ["", ""];
+      base.shuffle_options = false;
+      base.marking_mode = "automatic";
+    } else {
+      base.choices = [];
+    }
   }
 
   if (type === "table") {
@@ -146,6 +196,7 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     base.prompt = "";
     base.max_marks = null;
     base.required = false;
+    base.table_marks_mode = "none";
   }
 
   return base;
@@ -167,7 +218,13 @@ export function isResponseType(t: AssignmentBlockType): boolean {
 }
 
 export function isTeacherOnlyType(t: AssignmentBlockType): boolean {
-  return t === "mark_scheme" || t === "teacher_review";
+  return (
+    t === "mark_scheme" ||
+    t === "teacher_review" ||
+    t === "teacher_instruction" ||
+    t === "moderation_note" ||
+    t === "staff_resource"
+  );
 }
 
 export function responseKey(block: BuilderBlock): string {
@@ -176,30 +233,7 @@ export function responseKey(block: BuilderBlock): string {
 
 // ── Payload serialisation ────────────────────────────────────────────────────
 
-type BlockPayload = {
-  id: string;
-  question_id?: string | null;
-  block_type: AssignmentBlockType;
-  content: string;
-  teacher_only: boolean;
-  prompt?: string;
-  max_marks?: number | null;
-  required?: boolean;
-  choices?: unknown[];
-  response_type?: string;
-  teacher_note?: string | null;
-  mark_scheme_note?: string | null;
-  word_limit?: number | null;
-  char_limit?: number | null;
-  allow_attachments?: boolean;
-  min_value?: number | null;
-  max_value?: number | null;
-  correct_answer?: unknown;
-  comment_bank_key?: string | null;
-  review_only?: boolean;
-  cells?: TableCellDef[];
-  config?: Record<string, unknown>;
-};
+type BlockPayload = Record<string, unknown>;
 
 type SectionPayload = {
   id: string;
@@ -209,19 +243,46 @@ type SectionPayload = {
 };
 
 function blockToPayload(b: BuilderBlock): BlockPayload {
+  const config: Record<string, unknown> = {};
+
+  if (b.passageConfig) config.passage = b.passageConfig;
+  if (b.external_url) config.external_url = b.external_url;
+  if (b.captions_text) config.captions_text = b.captions_text;
+  if (b.allow_download != null) config.allow_download = b.allow_download;
+  if (b.linked_comment_bank_ids) {
+    config.linked_comment_bank_ids = b.linked_comment_bank_ids;
+  }
+
+  if (
+    (b.block_type === "table" || b.block_type === "vocabulary_table") &&
+    b.tableConfig
+  ) {
+    Object.assign(config, b.tableConfig as unknown as Record<string, unknown>);
+  }
+
   const payload: BlockPayload = {
     id: b._id,
     block_type: b.block_type,
     content: b.content,
     teacher_only: b.teacher_only || b.student_visible === false,
+    config,
   };
 
   if (isResponseType(b.block_type)) {
+    const options = b.mcq_options?.length
+      ? b.mcq_options
+      : (b.choices ?? []).map((label, i) => ({
+          id: `opt-${i}`,
+          label,
+          correct: (b.correct_option_indexes ?? []).includes(i),
+          feedback: b.option_feedback?.[i] ?? "",
+        }));
+
     payload.question_id = b.question_id ?? null;
     payload.prompt = b.prompt ?? "";
     payload.max_marks = b.max_marks ?? null;
     payload.required = b.required ?? false;
-    payload.choices = b.choices?.map((c) => ({ label: c })) ?? [];
+    payload.choices = options.map((o) => ({ label: o.label }));
     payload.response_type = b.block_type;
     payload.teacher_note = b.teacher_note ?? null;
     payload.mark_scheme_note = b.mark_scheme_note ?? null;
@@ -233,15 +294,21 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
     payload.correct_answer = b.correct_answer
       ? { value: b.correct_answer }
       : null;
-    payload.comment_bank_key = b.comment_bank_key ?? null;
     payload.review_only = b.review_only ?? b.block_type === "teacher_review";
+    payload.marks_apply = b.marks_apply ?? true;
+    payload.marking_mode = b.marking_mode ?? "teacher_reviewed";
+    payload.shuffle_options = b.shuffle_options ?? false;
+    payload.suggested_minutes = b.suggested_minutes ?? null;
+    payload.passage_block_ids = b.passage_block_ids ?? [];
+    payload.option_feedback = options.map((o) => o.feedback ?? "");
+    payload.correct_option_indexes = options
+      .map((o, i) => (o.correct ? i : -1))
+      .filter((i) => i >= 0);
+    payload.table_marks_mode = b.table_marks_mode ?? "none";
+    payload.table_total_marks = b.table_total_marks ?? null;
   }
 
-  if (
-    (b.block_type === "table" || b.block_type === "vocabulary_table") &&
-    b.tableConfig
-  ) {
-    payload.config = { ...(b.tableConfig as unknown as Record<string, unknown>) };
+  if (b.block_type === "table" || b.block_type === "vocabulary_table") {
     payload.cells = b.cells ?? [];
   }
 
@@ -290,6 +357,15 @@ type DbBlock = {
     correct_answer?: unknown;
     comment_bank_key?: string | null;
     review_only?: boolean | null;
+    marks_apply?: boolean | null;
+    marking_mode?: string | null;
+    shuffle_options?: boolean | null;
+    suggested_minutes?: number | null;
+    passage_block_ids?: unknown;
+    option_feedback?: unknown;
+    correct_option_indexes?: unknown;
+    table_marks_mode?: string | null;
+    table_total_marks?: number | null;
   }> | null;
   assignment_table_cells: Array<{
     row_index: number;
@@ -313,6 +389,7 @@ type DbSection = {
 function dbBlockToBuilder(b: DbBlock): BuilderBlock {
   const bt = b.block_type as AssignmentBlockType;
   const q = b.assignment_questions?.[0] ?? null;
+  const cfg = b.config ?? {};
   const block: BuilderBlock = {
     _id: b.id,
     question_id: q?.id ?? null,
@@ -320,7 +397,26 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     content: b.content,
     teacher_only: b.teacher_only,
     student_visible: !b.teacher_only,
+    external_url: typeof cfg.external_url === "string" ? cfg.external_url : null,
+    captions_text: typeof cfg.captions_text === "string" ? cfg.captions_text : null,
+    allow_download: typeof cfg.allow_download === "boolean" ? cfg.allow_download : true,
+    linked_comment_bank_ids: Array.isArray(cfg.linked_comment_bank_ids)
+      ? (cfg.linked_comment_bank_ids as string[])
+      : [],
   };
+
+  if (cfg.passage && typeof cfg.passage === "object") {
+    const p = cfg.passage as Record<string, unknown>;
+    block.passageConfig = {
+      title: typeof p.title === "string" ? p.title : "",
+      source_reference: typeof p.source_reference === "string" ? p.source_reference : "",
+      show_line_numbers: p.show_line_numbers !== false,
+      line_number_interval:
+        typeof p.line_number_interval === "number" ? p.line_number_interval : 5,
+      starting_line_number:
+        typeof p.starting_line_number === "number" ? p.starting_line_number : 1,
+    };
+  }
 
   if (q) {
     block.prompt = q.prompt;
@@ -334,7 +430,25 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     block.min_value = q.min_value != null ? Number(q.min_value) : null;
     block.max_value = q.max_value != null ? Number(q.max_value) : null;
     block.review_only = q.review_only ?? bt === "teacher_review";
-    block.comment_bank_key = q.comment_bank_key ?? null;
+    block.marks_apply = q.marks_apply ?? true;
+    block.marking_mode =
+      q.marking_mode === "automatic" ? "automatic" : "teacher_reviewed";
+    block.shuffle_options = q.shuffle_options ?? false;
+    block.suggested_minutes = q.suggested_minutes ?? null;
+    block.table_marks_mode =
+      (q.table_marks_mode as BuilderBlock["table_marks_mode"]) ?? "none";
+    block.table_total_marks =
+      q.table_total_marks != null ? Number(q.table_total_marks) : null;
+    block.passage_block_ids = Array.isArray(q.passage_block_ids)
+      ? (q.passage_block_ids as string[])
+      : [];
+    block.correct_option_indexes = Array.isArray(q.correct_option_indexes)
+      ? (q.correct_option_indexes as number[])
+      : [];
+    block.option_feedback = Array.isArray(q.option_feedback)
+      ? (q.option_feedback as string[])
+      : [];
+
     if (q.correct_answer && typeof q.correct_answer === "object" && q.correct_answer !== null) {
       const ca = q.correct_answer as Record<string, unknown>;
       block.correct_answer = ca.value != null ? String(ca.value) : null;
@@ -343,6 +457,7 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     } else {
       block.correct_answer = null;
     }
+
     const rawChoices = q.choices;
     if (Array.isArray(rawChoices)) {
       block.choices = rawChoices.map((c) => {
@@ -355,10 +470,16 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
     } else {
       block.choices = [];
     }
+
+    block.mcq_options = (block.choices ?? []).map((label, i) => ({
+      id: newId(),
+      label,
+      feedback: block.option_feedback?.[i] ?? "",
+      correct: (block.correct_option_indexes ?? []).includes(i),
+    }));
   }
 
   if ((bt === "table" || bt === "vocabulary_table") && b.config) {
-    const cfg = b.config;
     block.tableConfig = {
       rows: typeof cfg.rows === "number" ? cfg.rows : 3,
       cols: typeof cfg.cols === "number" ? cfg.cols : 2,
@@ -414,10 +535,20 @@ export async function loadTemplateStructure(
   supabase: SupabaseClient<any>,
   templateId: string,
 ): Promise<BuilderSection[]> {
-  const { data, error } = await supabase
-    .from("assignment_sections")
-    .select(
-      `id, template_id, parent_section_id, title, sort_order,
+  const fullSelect = `id, template_id, parent_section_id, title, sort_order,
+       assignment_blocks (
+         id, section_id, block_type, sort_order, content, config, teacher_only,
+         assignment_questions (
+           id, prompt, max_marks, required, response_type, choices, sort_order,
+           teacher_note, mark_scheme_note, word_limit, char_limit, allow_attachments,
+           min_value, max_value, correct_answer, comment_bank_key, review_only,
+           marks_apply, marking_mode, shuffle_options, suggested_minutes,
+           passage_block_ids, option_feedback, correct_option_indexes,
+           table_marks_mode, table_total_marks
+         ),
+         assignment_table_cells (row_index, col_index, cell_type, label, marks, read_only)
+       )`;
+  const legacySelect = `id, template_id, parent_section_id, title, sort_order,
        assignment_blocks (
          id, section_id, block_type, sort_order, content, config, teacher_only,
          assignment_questions (
@@ -426,10 +557,23 @@ export async function loadTemplateStructure(
            min_value, max_value, correct_answer, comment_bank_key, review_only
          ),
          assignment_table_cells (row_index, col_index, cell_type, label, marks, read_only)
-       )`,
-    )
+       )`;
+
+  let { data, error } = await supabase
+    .from("assignment_sections")
+    .select(fullSelect)
     .eq("template_id", templateId)
     .order("sort_order");
+
+  if (error) {
+    const fallback = await supabase
+      .from("assignment_sections")
+      .select(legacySelect)
+      .eq("template_id", templateId)
+      .order("sort_order");
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) throw new Error(error.message);
 

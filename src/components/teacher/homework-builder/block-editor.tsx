@@ -210,31 +210,19 @@ function BlockFields({
       )}
 
       {isResponse && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs text-slate-500">Maximum mark</span>
-            <Input
-              type="number"
-              min={0}
-              step={0.5}
-              value={block.max_marks ?? ""}
-              onChange={(e) =>
-                set("max_marks", e.target.value ? Number(e.target.value) : null)
-              }
-              placeholder="—"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs text-slate-500">
-              Comment bank key (for later)
-            </span>
-            <Input
-              value={block.comment_bank_key ?? ""}
-              onChange={(e) => set("comment_bank_key", e.target.value || null)}
-              placeholder="optional-key"
-            />
-          </label>
-        </div>
+        <label className="block text-sm">
+          <span className="mb-1 block text-xs text-slate-500">Maximum mark</span>
+          <Input
+            type="number"
+            min={0}
+            step={0.5}
+            value={block.max_marks ?? ""}
+            onChange={(e) =>
+              set("max_marks", e.target.value ? Number(e.target.value) : null)
+            }
+            placeholder="—"
+          />
+        </label>
       )}
 
       {isResponse && (

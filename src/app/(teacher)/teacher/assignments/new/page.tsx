@@ -39,7 +39,7 @@ export default async function NewAssignmentPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <PageHeader
-        title="Create assignment"
+        title="Create and build homework"
         action={
           <Link href="/teacher/assignments">
             <Button variant="outline">Back</Button>
@@ -48,10 +48,8 @@ export default async function NewAssignmentPage() {
       />
       <Card>
         <p className="mb-4 text-sm text-slate-600">
-          Create a draft or publish to one or more classes, then open the{" "}
-          <strong>Homework builder</strong> to add sections, questions, tables and
-          vocabulary worksheets. You can schedule a release date and set shared or
-          per-class due dates below.
+          Choose the classes and dates, then continue into the worksheet builder.
+          Marks are calculated from the questions you add.
         </p>
         <AssignmentForm classes={allClasses} />
       </Card>
