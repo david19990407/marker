@@ -1,16 +1,19 @@
 import { notFound } from "next/navigation";
-import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { FeedbackForm } from "@/components/teacher/feedback-form";
-import { MarkingSubmissionNav } from "@/components/teacher/marking-submission-nav";
+import { DocumentMarkingWorkspace } from "@/components/teacher/marking/document-marking-workspace";
 import {
   LegacyMarkingPanels,
-  StructuredMarkingWorkspace,
   type MarkingResponse,
 } from "@/components/teacher/structured-marking-workspace";
 import { listCommentBankItemsAction } from "@/lib/actions/comment-banks";
 import { loadFeedbackFieldsAction } from "@/lib/actions/feedback-fields";
+import {
+  listMarkingStampsAction,
+  loadAssignmentStampSelectionsAction,
+  loadQuestionMarksAction,
+  loadSubmissionAnnotationsAction,
+} from "@/lib/actions/marking-annotations";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
 import { pickAuthoritativeResponsesByQuestion } from "@/lib/homework/response-protect";
@@ -26,8 +29,32 @@ import type {
   FeedbackFieldValue,
 } from "@/lib/feedback/types";
 import type { Feedback } from "@/lib/types";
+import type { MarkingStamp } from "@/lib/marking/annotation-types";
 
 export const dynamic = "force-dynamic";
+
+async function loadAssignmentBundle(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  submissionId: string,
+) {
+  const withPhase8 = await supabase
+    .from("submissions")
+    .select(
+      "*, student:profiles!submissions_student_id_fkey(display_name, email), assignments!inner(id, title, maximum_mark, teacher_id, instructions, template_id, class_id, allow_text_submission, allow_file_submission, allow_decimal_question_marks, circular_mark_threshold, annotation_default_visibility, classes(name, subject))",
+    )
+    .eq("id", submissionId)
+    .maybeSingle();
+
+  if (!withPhase8.error) return withPhase8;
+
+  return supabase
+    .from("submissions")
+    .select(
+      "*, student:profiles!submissions_student_id_fkey(display_name, email), assignments!inner(id, title, maximum_mark, teacher_id, instructions, template_id, class_id, allow_text_submission, allow_file_submission, classes(name, subject))",
+    )
+    .eq("id", submissionId)
+    .maybeSingle();
+}
 
 export default async function MarkSubmissionPage({
   params,
@@ -42,13 +69,10 @@ export default async function MarkSubmissionPage({
   const unmarkedOnly = filter === "unmarked";
   const supabase = await createClient();
 
-  const { data: submission } = await supabase
-    .from("submissions")
-    .select(
-      "*, student:profiles!submissions_student_id_fkey(display_name, email), assignments!inner(id, title, maximum_mark, teacher_id, instructions, template_id, class_id, allow_text_submission, allow_file_submission)",
-    )
-    .eq("id", submissionId)
-    .maybeSingle();
+  const { data: submission } = await loadAssignmentBundle(
+    supabase,
+    submissionId,
+  );
 
   const assignment = Array.isArray(submission?.assignments)
     ? submission?.assignments[0]
@@ -62,28 +86,54 @@ export default async function MarkSubmissionPage({
   );
   if (!canMark) notFound();
 
-  const [{ data: feedback }, nav, commentItemsResult, fieldsResult] =
-    await Promise.all([
-      supabase
-        .from("feedback")
-        .select("*")
-        .eq("submission_id", submissionId)
-        .maybeSingle(),
-      loadSubmissionNavigation(
-        supabase,
-        profile,
-        assignment.id,
-        submissionId,
-        unmarkedOnly,
-      ),
-      listCommentBankItemsAction({
-        templateId: assignment.template_id,
-        classId: assignment.class_id,
-      }),
-      assignment.template_id
-        ? loadFeedbackFieldsAction(assignment.template_id)
-        : Promise.resolve({ fields: [] as AssignmentFeedbackField[] }),
-    ]);
+  const classRel = (
+    assignment as {
+      classes?:
+        | { name?: string; subject?: string }
+        | { name?: string; subject?: string }[];
+    }
+  ).classes;
+  const classRow = Array.isArray(classRel) ? classRel[0] : classRel;
+  const className = classRow?.name ?? null;
+  const subject = classRow?.subject ?? null;
+
+  const [
+    { data: feedback },
+    nav,
+    commentItemsResult,
+    fieldsResult,
+    annotationsResult,
+    questionMarksResult,
+    stampsResult,
+    stampSelectionsResult,
+  ] = await Promise.all([
+    supabase
+      .from("feedback")
+      .select("*")
+      .eq("submission_id", submissionId)
+      .maybeSingle(),
+    loadSubmissionNavigation(
+      supabase,
+      profile,
+      assignment.id,
+      submissionId,
+      unmarkedOnly,
+    ),
+    listCommentBankItemsAction({
+      templateId: assignment.template_id,
+      classId: assignment.class_id,
+    }),
+    assignment.template_id
+      ? loadFeedbackFieldsAction(assignment.template_id)
+      : Promise.resolve({ fields: [] as AssignmentFeedbackField[] }),
+    loadSubmissionAnnotationsAction(submissionId),
+    loadQuestionMarksAction(submissionId),
+    listMarkingStampsAction({
+      subject,
+      assignmentId: assignment.id,
+    }),
+    loadAssignmentStampSelectionsAction(assignment.id),
+  ]);
 
   let feedbackFieldValues: FeedbackFieldValue[] = [];
   if (feedback?.id) {
@@ -262,37 +312,66 @@ export default async function MarkSubmissionPage({
   const navItems = nav?.items ?? [];
   const navIndex = nav?.index ?? -1;
   const navTotal = nav?.total ?? 0;
+  const prevSubmissionId =
+    navIndex > 0 ? navItems[navIndex - 1]?.submissionId ?? null : null;
+  const nextSubmissionId =
+    navIndex >= 0 && navIndex < navTotal - 1
+      ? navItems[navIndex + 1]?.submissionId ?? null
+      : null;
+
+  const selectedStampIds = new Set(
+    (stampSelectionsResult.selections ?? [])
+      .filter((s) => s.enabled)
+      .map((s) => s.stamp_id),
+  );
+  const activeStamps = (stampsResult.stamps ?? []).filter(
+    (stamp) => selectedStampIds.size === 0 || selectedStampIds.has(stamp.id),
+  );
+
+  // Keep archived stamps that historical annotations still reference.
+  const annotationStampIds = Array.from(
+    new Set(
+      (annotationsResult.annotations ?? [])
+        .map((a) => a.stamp_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+  let stampsForWorkspace: MarkingStamp[] = activeStamps;
+  if (annotationStampIds.length) {
+    const missing = annotationStampIds.filter(
+      (id) => !stampsForWorkspace.some((s) => s.id === id),
+    );
+    if (missing.length) {
+      const archived = await listMarkingStampsAction({
+        includeArchived: true,
+      });
+      const extras = (archived.stamps ?? []).filter((s) =>
+        missing.includes(s.id),
+      );
+      stampsForWorkspace = [...stampsForWorkspace, ...extras];
+    }
+  }
+
+  const circularThreshold = Number(
+    (assignment as { circular_mark_threshold?: number }).circular_mark_threshold ??
+      10,
+  );
+  const allowDecimalMarks = Boolean(
+    (assignment as { allow_decimal_question_marks?: boolean })
+      .allow_decimal_question_marks,
+  );
+  const annotationDefaultVisibility =
+    (assignment as { annotation_default_visibility?: "teacher_only" | "student_visible" })
+      .annotation_default_visibility ?? "teacher_only";
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title={student?.display_name ?? "Student work"}
-        description={assignment.title}
-      />
-
-      <MarkingSubmissionNav
-        assignmentId={assignment.id}
-        classId={assignment.class_id}
-        currentId={submissionId}
-        items={navItems}
-        index={navIndex}
-        total={navTotal}
-        studentName={student?.display_name ?? "Student"}
-        submittedAt={submission.submitted_at}
-        status={submission.status}
-        unmarkedOnly={unmarkedOnly}
-      />
-
-      <div className="flex flex-wrap gap-2">
-        <Badge>{submission.status}</Badge>
-        <Badge tone={isStructured ? "brand" : "neutral"}>
-          {isStructured ? "Structured worksheet" : "Legacy submission"}
-        </Badge>
-      </div>
-
+    <div className="space-y-4">
       {isStructured && structuredSections ? (
-        <StructuredMarkingWorkspace
+        <DocumentMarkingWorkspace
           submissionId={submissionId}
+          assignmentId={assignment.id}
+          classId={assignment.class_id}
+          className={className}
           maximumMark={Number(assignment.maximum_mark)}
           feedback={(feedback as Feedback | null) ?? null}
           sections={structuredSections}
@@ -306,7 +385,19 @@ export default async function MarkSubmissionPage({
           commentBankItems={commentBankItems}
           studentName={student?.display_name ?? ""}
           assignmentTitle={assignment.title}
-          legacyWrittenResponse={submission.written_response}
+          submissionStatus={submission.status}
+          submittedAt={submission.submitted_at}
+          navIndex={navIndex}
+          navTotal={navTotal}
+          prevSubmissionId={prevSubmissionId}
+          nextSubmissionId={nextSubmissionId}
+          unmarkedOnly={unmarkedOnly}
+          initialAnnotations={annotationsResult.annotations ?? []}
+          initialQuestionMarks={questionMarksResult.marks ?? []}
+          stamps={stampsForWorkspace}
+          circularThreshold={circularThreshold}
+          allowDecimalMarks={allowDecimalMarks}
+          annotationDefaultVisibility={annotationDefaultVisibility}
           legacyFileName={submission.file_name}
           legacyStoragePath={submission.storage_path}
         />

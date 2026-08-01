@@ -79,6 +79,8 @@ export function StructuredWorksheetRenderer({
   onValueChange,
   showTeacherGuidance = false,
   submissionMeta,
+  selectedQuestionId = null,
+  onSelectQuestion,
 }: {
   sections: BuilderSection[];
   mode: WorksheetMode;
@@ -87,6 +89,8 @@ export function StructuredWorksheetRenderer({
   onValueChange?: (questionId: string, value: WorksheetResponseValue) => void;
   showTeacherGuidance?: boolean;
   submissionMeta?: { status?: string | null; submittedAt?: string | null } | null;
+  selectedQuestionId?: string | null;
+  onSelectQuestion?: (questionId: string) => void;
 }) {
   const visibilityMode: VisibilityMode =
     mode === "teacher_marking" ? "teacher_marking" : "student";
@@ -162,6 +166,8 @@ export function StructuredWorksheetRenderer({
               showGuidance={showGuidance && !isStudentMode}
               passageStarts={passageStarts}
               depth={0}
+              selectedQuestionId={selectedQuestionId}
+              onSelectQuestion={onSelectQuestion}
             />
           ))
         )}
@@ -252,6 +258,8 @@ function SectionView({
   showGuidance,
   passageStarts,
   depth = 0,
+  selectedQuestionId = null,
+  onSelectQuestion,
 }: {
   section: BuilderSection;
   mode: WorksheetMode;
@@ -262,6 +270,8 @@ function SectionView({
   showGuidance: boolean;
   passageStarts: Map<string, number>;
   depth?: number;
+  selectedQuestionId?: string | null;
+  onSelectQuestion?: (questionId: string) => void;
 }) {
   const visibilityMode: VisibilityMode =
     mode === "teacher_marking" ? "teacher_marking" : "student";
@@ -283,19 +293,39 @@ function SectionView({
           {section.title}
         </HeadingTag>
       ) : null}
-      {blocks.map((block) => (
-        <BlockView
-          key={block._id}
-          block={block}
-          mode={mode}
-          values={values}
-          error={errors[responseKey(block)]}
-          onValueChange={onValueChange}
-          editable={editable}
-          showGuidance={showGuidance}
-          startLineNumber={passageStarts.get(block._id)}
-        />
-      ))}
+      {blocks.map((block) => {
+        const selected =
+          mode === "teacher_marking" &&
+          Boolean(block.question_id) &&
+          selectedQuestionId === block.question_id;
+        const body = (
+          <BlockView
+            block={block}
+            mode={mode}
+            values={values}
+            error={errors[responseKey(block)]}
+            onValueChange={onValueChange}
+            editable={editable}
+            showGuidance={showGuidance}
+            startLineNumber={passageStarts.get(block._id)}
+          />
+        );
+        if (mode !== "teacher_marking" || !block.question_id) return body;
+        return (
+          <div
+            key={block._id}
+            data-question-id={block.question_id}
+            className={`rounded-xl transition ${
+              selected
+                ? "ring-2 ring-slate-900 ring-offset-2"
+                : "hover:ring-1 hover:ring-slate-300"
+            }`}
+            onClick={() => onSelectQuestion?.(block.question_id!)}
+          >
+            {body}
+          </div>
+        );
+      })}
       {section.subsections.map((sub) => (
         <div key={sub._id} className="border-l border-slate-200 pl-5">
           <SectionView
@@ -308,6 +338,8 @@ function SectionView({
             showGuidance={showGuidance}
             passageStarts={passageStarts}
             depth={depth + 1}
+            selectedQuestionId={selectedQuestionId}
+            onSelectQuestion={onSelectQuestion}
           />
         </div>
       ))}
