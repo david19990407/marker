@@ -62,7 +62,7 @@ export default async function HomeworkBuilderPage({
       supabase
         .from("assignment_comments")
         .select(
-          "id, short_label, full_comment, category, linked_question_id, mark_range_min, mark_range_max, is_active, sort_order, available_for_drag_drop, available_for_overall, available_for_question",
+          "id, short_label, full_comment, category, linked_question_id, linked_question_ids, linked_section_id, mark_range_min, mark_range_max, is_active, sort_order, available_for_drag_drop, available_for_overall, available_for_question, available_for_annotation, assessment_objective",
         )
         .eq("template_id", assignment.template_id)
         .order("sort_order", { ascending: true }),
@@ -82,7 +82,19 @@ export default async function HomeworkBuilderPage({
   const markSchemes = (markSchemesRes.data ?? []).filter(
     (r) => (r as { archived?: boolean }).archived !== true,
   );
-  const comments = commentsRes.data ?? [];
+  // Prefer extended comment columns; fall back if migration not applied yet.
+  let comments: Array<Record<string, unknown>> = (commentsRes.data ??
+    []) as Array<Record<string, unknown>>;
+  if (commentsRes.error) {
+    const fallback = await supabase
+      .from("assignment_comments")
+      .select(
+        "id, short_label, full_comment, category, linked_question_id, mark_range_min, mark_range_max, is_active, sort_order, available_for_drag_drop, available_for_overall, available_for_question",
+      )
+      .eq("template_id", assignment.template_id)
+      .order("sort_order", { ascending: true });
+    comments = (fallback.data ?? []) as Array<Record<string, unknown>>;
+  }
   const commentBanks = banksRes.data ?? [];
   const commentBankLinks = linksRes.data ?? [];
 
@@ -90,22 +102,41 @@ export default async function HomeworkBuilderPage({
     ? assignment.classes[0]?.name
     : assignment.classes?.name;
 
-  const initialComments = comments.map((comment) => ({
-    _id: comment.id,
-    short_label: comment.short_label,
-    full_comment: comment.full_comment,
-    category: comment.category ?? "",
-    linked_question_id: comment.linked_question_id,
-    mark_range_min:
-      comment.mark_range_min != null ? Number(comment.mark_range_min) : null,
-    mark_range_max:
-      comment.mark_range_max != null ? Number(comment.mark_range_max) : null,
-    is_active: comment.is_active ?? true,
-    sort_order: comment.sort_order ?? 0,
-    available_for_drag_drop: comment.available_for_drag_drop ?? true,
-    available_for_overall: comment.available_for_overall ?? true,
-    available_for_question: comment.available_for_question ?? true,
-  })) satisfies AssignmentCommentDraft[];
+  const initialComments = comments.map((comment) => {
+    const linkedIds = Array.isArray(comment.linked_question_ids)
+      ? (comment.linked_question_ids as string[])
+      : comment.linked_question_id
+        ? [String(comment.linked_question_id)]
+        : [];
+    return {
+      _id: String(comment.id),
+      short_label: String(comment.short_label ?? ""),
+      full_comment: String(comment.full_comment ?? ""),
+      category: String(comment.category ?? ""),
+      linked_question_id: comment.linked_question_id
+        ? String(comment.linked_question_id)
+        : null,
+      linked_question_ids: linkedIds,
+      linked_section_id:
+        typeof comment.linked_section_id === "string"
+          ? comment.linked_section_id
+          : null,
+      mark_range_min:
+        comment.mark_range_min != null ? Number(comment.mark_range_min) : null,
+      mark_range_max:
+        comment.mark_range_max != null ? Number(comment.mark_range_max) : null,
+      is_active: Boolean(comment.is_active ?? true),
+      sort_order: Number(comment.sort_order ?? 0),
+      available_for_drag_drop: Boolean(comment.available_for_drag_drop ?? true),
+      available_for_overall: Boolean(comment.available_for_overall ?? true),
+      available_for_question: Boolean(comment.available_for_question ?? true),
+      available_for_annotation: Boolean(comment.available_for_annotation),
+      assessment_objective:
+        typeof comment.assessment_objective === "string"
+          ? comment.assessment_objective
+          : null,
+    } satisfies AssignmentCommentDraft;
+  });
 
   return (
     <div className="space-y-6">

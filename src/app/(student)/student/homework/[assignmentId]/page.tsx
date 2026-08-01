@@ -164,6 +164,7 @@ export default async function StudentAssignmentPage({
             editable={editable}
             submissionStatus={submission?.status ?? null}
             submittedAt={submission?.submitted_at ?? null}
+            allowUnsubmit
           />
         </Card>
       ) : (

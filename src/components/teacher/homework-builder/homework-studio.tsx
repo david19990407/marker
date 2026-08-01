@@ -236,7 +236,8 @@ export function HomeworkStudio({
         />
       ) : null}
 
-      {activeStage === "feedback" ? (
+      {/* Keep mounted so comment state / autosave never remounts from stale SSR props. */}
+      <div className={activeStage === "feedback" ? "contents" : "hidden"}>
         <FeedbackStage
           templateId={assignment.template_id}
           sections={sections}
@@ -244,7 +245,7 @@ export function HomeworkStudio({
           commentBanks={commentBanks}
           linkedCommentBankIds={linkedCommentBankIds}
         />
-      ) : null}
+      </div>
 
       {activeStage === "preview" ? (
         <StudentPreview sections={sections} />
@@ -367,6 +368,12 @@ function PublishStage({
               <li key={`${w.blockId}-${w.message}`}>{w.message}</li>
             ))}
           </ul>
+          {warnings.some((w) => w.blocking) ? (
+            <p className="mt-2 text-xs font-medium text-amber-900">
+              Fix blocking issues (especially multiple-choice options) before
+              publishing.
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -421,7 +428,10 @@ function PublishStage({
         ) : null}
 
         <div className="flex flex-wrap gap-3">
-          <Button type="submit" disabled={pending}>
+          <Button
+            type="submit"
+            disabled={pending || warnings.some((w) => w.blocking)}
+          >
             {pending
               ? "Publishing…"
               : isPublished

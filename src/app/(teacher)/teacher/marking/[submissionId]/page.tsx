@@ -86,6 +86,22 @@ export default async function MarkSubmissionPage({
     storage_path: string;
   }> = [];
   let commentBanks: Array<{ id: string; name: string }> = [];
+  let assignmentComments: Array<{
+    _id: string;
+    short_label: string;
+    full_comment: string;
+    category: string;
+    linked_question_id?: string | null;
+    linked_question_ids?: string[];
+    linked_section_id?: string | null;
+    is_active: boolean;
+    available_for_question: boolean;
+    available_for_overall: boolean;
+    available_for_annotation?: boolean;
+    mark_range_min?: number | null;
+    mark_range_max?: number | null;
+    assessment_objective?: string | null;
+  }> = [];
 
   if (assignment.template_id) {
     try {
@@ -96,29 +112,54 @@ export default async function MarkSubmissionPage({
       if (isStructuredAssignment(sections)) {
         structuredSections = sections;
 
-        const [{ data: responses }, { data: resourceRows }, { data: schemeRows }, { data: bankLinks }] =
-          await Promise.all([
-            supabase
-              .from("student_responses")
-              .select(
-                "*, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
-              )
-              .eq("submission_id", submissionId),
-            supabase
-              .from("assignment_resources")
-              .select("id, file_name, storage_path")
-              .eq("assignment_id", assignment.id),
-            supabase
-              .from("assignment_mark_schemes")
-              .select("id, title, file_name, storage_path")
-              .eq("template_id", assignment.template_id),
-            supabase
-              .from("assignment_comment_bank_links")
-              .select(
-                "comment_bank_id, school_default_comment_banks(id, name)",
-              )
-              .eq("template_id", assignment.template_id),
-          ]);
+        const [
+          { data: responses },
+          { data: resourceRows },
+          { data: schemeRows },
+          { data: bankLinks },
+          commentsResult,
+        ] = await Promise.all([
+          supabase
+            .from("student_responses")
+            .select(
+              "*, response_cells(row_index, col_index, text_value, numeric_value, boolean_value)",
+            )
+            .eq("submission_id", submissionId),
+          supabase
+            .from("assignment_resources")
+            .select("id, file_name, storage_path")
+            .eq("assignment_id", assignment.id),
+          supabase
+            .from("assignment_mark_schemes")
+            .select("id, title, file_name, storage_path")
+            .eq("template_id", assignment.template_id),
+          supabase
+            .from("assignment_comment_bank_links")
+            .select(
+              "comment_bank_id, school_default_comment_banks(id, name)",
+            )
+            .eq("template_id", assignment.template_id),
+          supabase
+            .from("assignment_comments")
+            .select(
+              "id, short_label, full_comment, category, linked_question_id, linked_question_ids, linked_section_id, mark_range_min, mark_range_max, is_active, available_for_question, available_for_overall, available_for_annotation, assessment_objective",
+            )
+            .eq("template_id", assignment.template_id)
+            .order("sort_order", { ascending: true }),
+        ]);
+
+        let commentRows: Array<Record<string, unknown>> = (commentsResult.data ??
+          []) as Array<Record<string, unknown>>;
+        if (commentsResult.error) {
+          const { data: legacyComments } = await supabase
+            .from("assignment_comments")
+            .select(
+              "id, short_label, full_comment, category, linked_question_id, mark_range_min, mark_range_max, is_active, available_for_question, available_for_overall",
+            )
+            .eq("template_id", assignment.template_id)
+            .order("sort_order", { ascending: true });
+          commentRows = (legacyComments ?? []) as Array<Record<string, unknown>>;
+        }
 
         structuredResponses = (responses ?? []).map((r) => ({
           ...(r as MarkingResponse),
@@ -136,6 +177,38 @@ export default async function MarkSubmissionPage({
               : null;
           })
           .filter((b): b is { id: string; name: string } => Boolean(b));
+        assignmentComments = commentRows.map((row) => {
+          const linkedIds = Array.isArray(row.linked_question_ids)
+            ? (row.linked_question_ids as string[])
+            : row.linked_question_id
+              ? [String(row.linked_question_id)]
+              : [];
+          return {
+            _id: String(row.id),
+            short_label: String(row.short_label ?? ""),
+            full_comment: String(row.full_comment ?? ""),
+            category: String(row.category ?? ""),
+            linked_question_id: row.linked_question_id
+              ? String(row.linked_question_id)
+              : null,
+            linked_question_ids: linkedIds,
+            linked_section_id: row.linked_section_id
+              ? String(row.linked_section_id)
+              : null,
+            is_active: Boolean(row.is_active),
+            available_for_question: Boolean(row.available_for_question),
+            available_for_overall: Boolean(row.available_for_overall),
+            available_for_annotation: Boolean(row.available_for_annotation),
+            mark_range_min:
+              row.mark_range_min == null ? null : Number(row.mark_range_min),
+            mark_range_max:
+              row.mark_range_max == null ? null : Number(row.mark_range_max),
+            assessment_objective:
+              typeof row.assessment_objective === "string"
+                ? row.assessment_objective
+                : null,
+          };
+        });
       }
     } catch {
       structuredSections = null;
@@ -178,6 +251,7 @@ export default async function MarkSubmissionPage({
           resources={resources}
           markSchemes={markSchemes}
           commentBanks={commentBanks}
+          assignmentComments={assignmentComments}
           legacyWrittenResponse={submission.written_response}
           legacyFileName={submission.file_name}
           legacyStoragePath={submission.storage_path}
