@@ -179,9 +179,11 @@ export default async function StudentDashboardPage() {
     let hasRecentFeedback = false;
     for (const a of classAssignments) {
       const sub = submissionByAssignment.get(a.id);
-      const done =
+      // Submitted/late/marked count as complete. Returned stays active for rework.
+      const done = Boolean(
         sub &&
-        ["submitted", "late", "marked", "returned"].includes(sub.status);
+          ["submitted", "late", "marked"].includes(sub.status),
+      );
       if (!done) {
         active += 1;
         if (a.due_at && new Date(a.due_at).getTime() < nowMs) overdue += 1;
