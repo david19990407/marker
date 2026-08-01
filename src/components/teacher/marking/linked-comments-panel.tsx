@@ -110,7 +110,7 @@ export function LinkedCommentsPanel({
         id: item.id,
         label: item.short_label || item.title,
         text: item.full_text,
-        group: item.category || "General",
+        group: item.group_name || item.category || "General",
         bank: item.bank_name || "Comment bank",
         priority: isLinked ? 0 : 1,
       });
