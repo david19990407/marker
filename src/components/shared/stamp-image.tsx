@@ -12,13 +12,13 @@ export function StampImage({
   alt: string;
   className?: string;
 }) {
-  const [url, setUrl] = useState<string | null>(null);
+  const path = storagePath?.trim() || "";
+  const [loaded, setLoaded] = useState<{ path: string; url: string } | null>(
+    null,
+  );
 
   useEffect(() => {
-    if (!storagePath) {
-      setUrl(null);
-      return;
-    }
+    if (!path) return;
     let cancelled = false;
     async function load() {
       try {
@@ -27,28 +27,28 @@ export function StampImage({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             bucket: "marking-stamps",
-            path: storagePath,
+            path,
           }),
         });
         const json = (await res.json()) as { url?: string };
-        if (!cancelled) setUrl(json.url ?? null);
+        if (!cancelled && json.url) {
+          setLoaded({ path, url: json.url });
+        }
       } catch {
-        if (!cancelled) setUrl(null);
+        // Keep placeholder on failure.
       }
     }
     void load();
     return () => {
       cancelled = true;
     };
-  }, [storagePath]);
+  }, [path]);
 
-  if (!storagePath || !url) {
+  const url = loaded?.path === path ? loaded.url : null;
+
+  if (!path || !url) {
     return (
-      <span
-        className={className}
-        aria-label={alt}
-        title={alt}
-      >
+      <span className={className} aria-label={alt} title={alt}>
         ★
       </span>
     );
@@ -56,11 +56,6 @@ export function StampImage({
 
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={url}
-      alt={alt}
-      className={className}
-      draggable={false}
-    />
+    <img src={url} alt={alt} className={className} draggable={false} />
   );
 }

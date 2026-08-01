@@ -61,6 +61,7 @@ export async function listAllStampsAction(): Promise<
 }
 
 export async function uploadMarkingStampAction(
+  _prev: ActionResult,
   formData: FormData,
 ): Promise<ActionResult & { stamp?: MarkingStamp }> {
   const profile = await assertAdmin();

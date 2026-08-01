@@ -47,7 +47,6 @@ import {
 import { createUndoStack } from "@/lib/marking/undo-stack";
 import type {
   AssignmentCommentDraft,
-  BuilderBlock,
   BuilderSection,
   Feedback,
 } from "@/lib/types";
@@ -202,11 +201,17 @@ export function DocumentMarkingWorkspace({
     "idle",
   );
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [undoTick, setUndoTick] = useState(0);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [, startTransition] = useTransition();
   const undoRef = useRef(createUndoStack<SubmissionAnnotation[]>());
   const pendingSaves = useRef(0);
   const paperRef = useRef<HTMLDivElement>(null);
+
+  function syncUndoButtons() {
+    setCanUndo(undoRef.current.canUndo());
+    setCanRedo(undoRef.current.canRedo());
+  }
 
   const responseMap = useMemo(() => {
     const map = new Map<string, MarkingResponse>();
@@ -364,7 +369,7 @@ export function DocumentMarkingWorkspace({
       undo: () => previous,
       redo: () => next,
     });
-    setUndoTick((n) => n + 1);
+    syncUndoButtons();
     startTransition(() => {
       void persistAnnotation(created, previous);
     });
@@ -780,8 +785,8 @@ export function DocumentMarkingWorkspace({
           colour={colour}
           stamps={stamps}
           selectedStampId={selectedStampId}
-          canUndo={undoTick >= 0 && undoRef.current.canUndo()}
-          canRedo={undoTick >= 0 && undoRef.current.canRedo()}
+          canUndo={canUndo}
+          canRedo={canRedo}
           onToolChange={setTool}
           onColourChange={setColour}
           onStampSelect={setSelectedStampId}
@@ -789,14 +794,14 @@ export function DocumentMarkingWorkspace({
             const prev = undoRef.current.undo();
             if (prev) {
               setAnnotations(prev);
-              setUndoTick((n) => n + 1);
+              syncUndoButtons();
             }
           }}
           onRedo={() => {
             const next = undoRef.current.redo();
             if (next) {
               setAnnotations(next);
-              setUndoTick((n) => n + 1);
+              syncUndoButtons();
             }
           }}
         />
@@ -906,7 +911,7 @@ export function DocumentMarkingWorkspace({
                         undo: () => previous,
                         redo: () => next,
                       });
-                      setUndoTick((n) => n + 1);
+                      syncUndoButtons();
                       startTransition(async () => {
                         pendingSaves.current += 1;
                         try {
