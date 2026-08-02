@@ -41,9 +41,14 @@ function mapStamp(row: Record<string, unknown>, usageCount = 0): MarkingStamp {
     is_internal: Boolean(row.is_internal),
     sort_order: Number(row.sort_order ?? 0),
     archived_at: (row.archived_at as string | null) ?? null,
+    archived_by: (row.archived_by as string | null) ?? null,
     asset_version: Number(row.asset_version ?? 1),
     current_asset_id: (row.current_asset_id as string | null) ?? null,
+    default_opacity:
+      row.default_opacity == null ? 1 : Number(row.default_opacity),
     usage_count: usageCount,
+    created_at: (row.created_at as string | null) ?? null,
+    updated_at: (row.updated_at as string | null) ?? null,
   };
 }
 
@@ -225,6 +230,7 @@ export async function updateMarkingStampAction(
     default_size_pct?: number;
     default_width_px?: number;
     default_height_px?: number;
+    default_opacity?: number;
     subject_restriction?: string | null;
     teacher_restriction_ids?: string[];
     assignment_restriction_ids?: string[];

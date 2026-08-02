@@ -242,6 +242,7 @@ export default async function StudentAssignmentPage({
       maximum_mark: Number(row.maximum_mark ?? 0),
       review_state:
         (row.review_state as QuestionMarkRecord["review_state"]) ?? null,
+      not_attempted: Boolean(row.not_attempted),
       marking_status:
         (row.marking_status as QuestionMarkRecord["marking_status"]) ??
         "unmarked",
@@ -298,6 +299,8 @@ export default async function StudentAssignmentPage({
         archived_at: (row.archived_at as string | null) ?? null,
         asset_version: Number(row.asset_version ?? 1),
         current_asset_id: (row.current_asset_id as string | null) ?? null,
+        default_opacity:
+          row.default_opacity == null ? 1 : Number(row.default_opacity),
       }));
     }
   }
@@ -391,6 +394,7 @@ export default async function StudentAssignmentPage({
           <StructuredHomework
             key={`${assignmentId}-${submission?.status ?? "none"}-${editable ? "edit" : "ro"}`}
             assignmentId={assignmentId}
+            submissionId={submission?.id ?? null}
             sections={structuredSections}
             existingResponses={existingResponses}
             editable={editable}
@@ -482,7 +486,9 @@ export default async function StudentAssignmentPage({
                   {releasedQuestionMarks.map((mark) => (
                     <li key={mark.question_id}>
                       Question {mark.question_id.slice(0, 8)}…:{" "}
-                      {mark.awarded_mark ?? "—"} / {mark.maximum_mark}
+                      {mark.not_attempted
+                        ? "Not attempted"
+                        : `${mark.awarded_mark ?? "—"} / ${mark.maximum_mark}`}
                       {mark.question_feedback ? (
                         <span className="mt-1 block whitespace-pre-wrap text-xs text-slate-500">
                           {mark.question_feedback}

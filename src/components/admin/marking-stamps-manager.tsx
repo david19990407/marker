@@ -230,7 +230,7 @@ function MarkingStampsManagerInner({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [stamps, setStamps] = useState(initialStamps);
+  const [localStamps, setLocalStamps] = useState<MarkingStamp[] | null>(null);
   const [state, action, pending] = useActionState<UploadState, FormData>(
     uploadMarkingStampAction,
     initialUpload,
@@ -249,19 +249,23 @@ function MarkingStampsManagerInner({
   const pageSize = parsePageSize(searchParams.get("pageSize"));
   const sort = parseSort(searchParams.get("sort"));
 
-  useEffect(() => {
-    setStamps(initialStamps);
-  }, [initialStamps]);
-
-  useEffect(() => {
-    if (state.stamp) {
-      setStamps((prev) =>
-        prev.some((s) => s.id === state.stamp!.id)
-          ? prev.map((s) => (s.id === state.stamp!.id ? state.stamp! : s))
-          : [...prev, state.stamp!],
-      );
+  const stamps = useMemo(() => {
+    const base = localStamps ?? initialStamps;
+    if (!state.stamp) return base;
+    if (base.some((s) => s.id === state.stamp!.id)) {
+      return base.map((s) => (s.id === state.stamp!.id ? state.stamp! : s));
     }
-  }, [state.stamp]);
+    return [...base, state.stamp];
+  }, [initialStamps, localStamps, state.stamp]);
+
+  const setStamps = (
+    updater: MarkingStamp[] | ((prev: MarkingStamp[]) => MarkingStamp[]),
+  ) => {
+    setLocalStamps((prev) => {
+      const current = prev ?? initialStamps;
+      return typeof updater === "function" ? updater(current) : updater;
+    });
+  };
 
   function updateParams(
     updates: Record<string, string | null | undefined>,

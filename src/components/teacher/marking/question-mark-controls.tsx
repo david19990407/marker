@@ -8,6 +8,7 @@ import {
   type QuestionMarkRecord,
   type QuestionReviewState,
 } from "@/lib/marking/annotation-types";
+import { formatAwardedMarkBadge } from "@/lib/marking/question-marks";
 
 export function QuestionMarkControls({
   questionId,
@@ -55,12 +56,28 @@ export function QuestionMarkControls({
       ? questionLabel.trim()
       : "";
 
+  const badge = formatAwardedMarkBadge(record, maximumMark);
+  const badgeAria =
+    record?.not_attempted
+      ? `Not attempted out of ${maximumMark}`
+      : record?.awarded_mark != null && record.marking_status === "marked"
+        ? `Awarded ${record.awarded_mark} out of ${maximumMark} marks`
+        : `No mark awarded out of ${maximumMark}`;
+
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-3xl font-bold leading-none text-slate-900">
-          Q{questionIndex + 1}
-        </p>
+        <div className="flex items-end gap-3">
+          <p className="text-3xl font-bold leading-none text-slate-900">
+            Q{questionIndex + 1}
+          </p>
+          <span
+            aria-label={badgeAria}
+            className="mb-0.5 inline-flex min-w-[3.25rem] items-center justify-center rounded-md border border-slate-300 bg-slate-50 px-2 py-1 text-sm font-semibold tabular-nums text-slate-900"
+          >
+            {badge}
+          </span>
+        </div>
         {title ? (
           <p className="mt-1 truncate text-sm font-medium text-slate-800">
             {title}
@@ -82,6 +99,7 @@ export function QuestionMarkControls({
               ["reviewed", "Reviewed"],
               ["not_reviewed", "Not reviewed"],
               ["flag_follow_up", "Flag for follow-up"],
+              ["not_attempted", "Not attempted"],
             ] as const
           ).map(([value, label]) => (
             <Button

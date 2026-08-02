@@ -77,8 +77,13 @@ function mapStamp(row: Record<string, unknown>): MarkingStamp {
     is_internal: Boolean(row.is_internal),
     sort_order: Number(row.sort_order ?? 0),
     archived_at: (row.archived_at as string | null) ?? null,
+    archived_by: (row.archived_by as string | null) ?? null,
     asset_version: Number(row.asset_version ?? 1),
     current_asset_id: (row.current_asset_id as string | null) ?? null,
+    default_opacity:
+      row.default_opacity == null ? 1 : Number(row.default_opacity),
+    created_at: (row.created_at as string | null) ?? null,
+    updated_at: (row.updated_at as string | null) ?? null,
   };
 }
 
@@ -91,6 +96,7 @@ function mapQuestionMark(row: Record<string, unknown>): QuestionMarkRecord {
     awarded_mark: row.awarded_mark == null ? null : Number(row.awarded_mark),
     maximum_mark: Number(row.maximum_mark ?? 0),
     review_state: (row.review_state as QuestionMarkRecord["review_state"]) ?? null,
+    not_attempted: Boolean(row.not_attempted),
     marking_status:
       (row.marking_status as QuestionMarkRecord["marking_status"]) ?? "unmarked",
     question_feedback: (row.question_feedback as string | null) ?? null,
@@ -249,6 +255,7 @@ export async function saveQuestionMarkAction(
             override_mark: payload.override_mark,
             override_reason: payload.override_reason,
             flagged: payload.flagged,
+            not_attempted: payload.not_attempted ?? false,
             client_version: payload.client_version,
           },
           { onConflict: "submission_id,question_id" },

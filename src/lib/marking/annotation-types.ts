@@ -68,9 +68,13 @@ export interface MarkingStamp {
   is_internal: boolean;
   sort_order: number;
   archived_at: string | null;
+  archived_by?: string | null;
   asset_version: number;
   current_asset_id: string | null;
+  default_opacity: number;
   usage_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AssignmentStampSelection {
@@ -111,6 +115,8 @@ export interface QuestionMarkRecord {
   awarded_mark: number | null;
   maximum_mark: number;
   review_state: QuestionReviewState | null;
+  /** Distinct from awarded_mark = 0 (attempted but scored zero). */
+  not_attempted: boolean;
   marking_status: QuestionMarkingStatus;
   question_feedback: string | null;
   teacher_only_note: string | null;

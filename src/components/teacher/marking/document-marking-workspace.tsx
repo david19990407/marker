@@ -37,11 +37,10 @@ import {
 import { releaseSubmissionFeedbackAction } from "@/lib/actions/feedback-release";
 import {
   evaluateStructuredCompletion,
-  isAssessableStudentBlock,
   type ResponseSnapshot,
 } from "@/lib/homework/completion";
 import { formatMarkLabel } from "@/lib/homework/marks";
-import { flattenStudentBlocks } from "@/lib/homework/structure";
+import { expandAssessableBlocks } from "@/lib/marking/expand-assessable";
 import type {
   AssignmentFeedbackField,
   CommentBankItem,
@@ -286,7 +285,7 @@ export function DocumentMarkingWorkspace({
   void commentBanks;
 
   const assessable = useMemo(
-    () => flattenStudentBlocks(sections).filter(isAssessableStudentBlock),
+    () => expandAssessableBlocks(sections),
     [sections],
   );
   const questionIds = useMemo(
@@ -754,6 +753,7 @@ export function DocumentMarkingWorkspace({
       awarded_mark: existing?.awarded_mark ?? null,
       maximum_mark: Number(block.max_marks ?? 0),
       review_state: existing?.review_state ?? null,
+      not_attempted: existing?.not_attempted ?? false,
       marking_status: existing?.marking_status ?? "unmarked",
       question_feedback: existing?.question_feedback ?? null,
       teacher_only_note: existing?.teacher_only_note ?? null,
@@ -764,12 +764,24 @@ export function DocumentMarkingWorkspace({
       client_version: (existing?.client_version ?? 0) + 1,
       ...patch,
     };
+
+    // Selecting a numeric mark clears NA; selecting NA clears the numeric mark.
+    if (patch.not_attempted === true) {
+      next.not_attempted = true;
+      next.awarded_mark = 0;
+      next.review_state = "not_attempted";
+    } else if (patch.awarded_mark != null || patch.not_attempted === false) {
+      next.not_attempted = false;
+      if (next.review_state === "not_attempted") next.review_state = null;
+    }
+
     next.marking_status = deriveMarkingStatus({
       mode: next.marking_mode,
       awardedMark: next.awarded_mark,
       reviewState: next.review_state,
       feedback: next.question_feedback,
       flagged: next.flagged,
+      notAttempted: next.not_attempted,
     });
 
     const mutationId = ++markMutationSeq.current;
@@ -782,13 +794,18 @@ export function DocumentMarkingWorkspace({
     });
 
     if (
+      patch.not_attempted === true &&
+      !existing?.not_attempted &&
+      (mode === "numeric" || mode === "auto_mcq" || mode === "reviewed")
+    ) {
+      setMarkFlash({ value: "NA", token: Date.now() });
+    } else if (
       patch.awarded_mark != null &&
-      patch.awarded_mark !== existing?.awarded_mark &&
+      (patch.awarded_mark !== existing?.awarded_mark || existing?.not_attempted) &&
       (mode === "numeric" || mode === "auto_mcq")
     ) {
       setMarkFlash({
-        awarded: patch.awarded_mark,
-        maximum: next.maximum_mark,
+        value: patch.awarded_mark,
         token: Date.now(),
       });
     }
@@ -1837,8 +1854,14 @@ export function DocumentMarkingWorkspace({
             <VerticalMarkStrip
               maximumMark={Number(selectedBlock.max_marks ?? 0)}
               awarded={selectedMark?.awarded_mark ?? null}
+              notAttempted={Boolean(selectedMark?.not_attempted)}
               allowDecimals={allowDecimalMarks}
-              onAward={(mark) => updateMark({ awarded_mark: mark })}
+              onAward={(mark) =>
+                updateMark({ awarded_mark: mark, not_attempted: false })
+              }
+              onNotAttempted={() =>
+                updateMark({ not_attempted: true, awarded_mark: 0 })
+              }
             />
           ) : (
             <div className="w-14 shrink-0 border-l border-slate-200 bg-slate-50" />

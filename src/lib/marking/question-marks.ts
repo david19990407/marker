@@ -13,6 +13,13 @@ export function inferMarkingMode(block: BuilderBlock): QuestionMarkingMode {
   ) {
     return "auto_mcq";
   }
+  if (
+    block.block_type === "scanned_homework_upload" &&
+    (block.scannedUploadConfig?.subquestions?.length ?? 0) > 0
+  ) {
+    // Container itself is not marked when subquestions exist.
+    return "not_applicable";
+  }
   if (block.max_marks == null || Number(block.max_marks) <= 0) {
     return "comment_only";
   }
@@ -25,9 +32,11 @@ export function deriveMarkingStatus(input: {
   reviewState: QuestionMarkRecord["review_state"];
   feedback: string | null;
   flagged: boolean;
+  notAttempted?: boolean;
 }): QuestionMarkingStatus {
   if (input.flagged) return "flagged";
   if (input.mode === "not_applicable") return "not_applicable";
+  if (input.notAttempted) return "marked";
   if (input.mode === "numeric" || input.mode === "auto_mcq") {
     return input.awardedMark == null ? "unmarked" : "marked";
   }
@@ -47,19 +56,41 @@ export function isQuestionMarkingComplete(
   record: QuestionMarkRecord | undefined,
 ): boolean {
   if (!record) return false;
-  // Flag status is preserved historically but no longer treated as completion.
   return record.marking_status === "marked";
 }
 
-/** Display like `3/4`, `0/1`, or `-/4` when unmarked. */
+/**
+ * Teacher-facing progress label.
+ * Examples: `3/4`, `0/1`, `NA/8`, or `-/4` when unmarked.
+ */
 export function formatQuestionMarkProgress(
   record: QuestionMarkRecord | undefined,
   maximumMark: number,
 ): string {
   const max = Number(maximumMark ?? 0);
   if (!isQuestionMarkingComplete(record)) return `-/${max}`;
+  if (record?.not_attempted) return `NA/${max}`;
   const awarded = Number(record?.awarded_mark ?? record?.override_mark ?? 0);
   return `${awarded}/${max}`;
+}
+
+/** Compact awarded badge beside Qn — same rules as progress, for panel heading. */
+export function formatAwardedMarkBadge(
+  record: QuestionMarkRecord | undefined,
+  maximumMark: number,
+): string {
+  return formatQuestionMarkProgress(record, maximumMark);
+}
+
+/** Student-facing released mark text. */
+export function formatStudentReleasedMark(
+  record: Pick<QuestionMarkRecord, "awarded_mark" | "maximum_mark" | "not_attempted"> | undefined,
+): string {
+  if (!record) return "—";
+  if (record.not_attempted) return "Not attempted";
+  const max = Number(record.maximum_mark ?? 0);
+  if (record.awarded_mark == null) return `—/${max}`;
+  return `${record.awarded_mark}/${max}`;
 }
 
 export function sumAwardedMarks(
@@ -71,7 +102,10 @@ export function sumAwardedMarks(
   for (const row of records) {
     if (!isQuestionMarkingComplete(row)) continue;
     markedCount += 1;
-    awarded += Number(row.awarded_mark ?? row.override_mark ?? 0);
+    // NA contributes zero; zero mark also contributes zero.
+    awarded += row.not_attempted
+      ? 0
+      : Number(row.awarded_mark ?? row.override_mark ?? 0);
     maximumCompleted += Number(row.maximum_mark ?? 0);
   }
   return { awarded, maximumCompleted, markedCount };

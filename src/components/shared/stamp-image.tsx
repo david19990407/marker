@@ -8,10 +8,18 @@ const urlCache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<string | null>>();
 const decodedPaths = new Set<string>();
 
-const CACHE_TTL_MS = 50 * 60_000;
+/** Refresh signed URLs a few minutes before they expire. */
+const REFRESH_SKEW_MS = 5 * 60_000;
+/** Fallback TTL when the API omits expiresAt (must stay below signed URL lifetime). */
+const FALLBACK_TTL_MS = 50 * 60_000;
 
 function cacheKey(bucket: string, path: string) {
   return `${bucket}:${path}`;
+}
+
+function isFresh(entry: CacheEntry | undefined): boolean {
+  if (!entry) return false;
+  return Date.now() < entry.expiresAt - REFRESH_SKEW_MS;
 }
 
 export function getCachedStampUrl(path: string | null | undefined): string | null {
@@ -20,10 +28,11 @@ export function getCachedStampUrl(path: string | null | undefined): string | nul
   const key = cacheKey("marking-stamps", trimmed);
   const hit = urlCache.get(key);
   if (!hit) return null;
-  if (Date.now() > hit.expiresAt) {
+  if (Date.now() >= hit.expiresAt) {
     urlCache.delete(key);
     return null;
   }
+  if (!isFresh(hit)) return null;
   return hit.url;
 }
 
@@ -33,10 +42,15 @@ export function isStampImageReady(path: string | null | undefined): boolean {
   return decodedPaths.has(trimmed) && Boolean(getCachedStampUrl(trimmed));
 }
 
-function writeCache(bucket: string, path: string, url: string) {
+function writeCache(
+  bucket: string,
+  path: string,
+  url: string,
+  expiresAt?: number,
+) {
   urlCache.set(cacheKey(bucket, path), {
     url,
-    expiresAt: Date.now() + CACHE_TTL_MS,
+    expiresAt: expiresAt ?? Date.now() + FALLBACK_TTL_MS,
   });
 }
 
@@ -58,9 +72,19 @@ async function fetchSignedUrl(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bucket, path }),
       });
-      const json = (await res.json()) as { url?: string };
+      const json = (await res.json()) as {
+        url?: string;
+        expiresAt?: number;
+        expiresIn?: number;
+      };
       if (json.url) {
-        writeCache(bucket, path, json.url);
+        const expiresAt =
+          typeof json.expiresAt === "number"
+            ? json.expiresAt
+            : typeof json.expiresIn === "number"
+              ? Date.now() + json.expiresIn * 1000
+              : undefined;
+        writeCache(bucket, path, json.url, expiresAt);
         return json.url;
       }
       return null;
@@ -108,10 +132,20 @@ export async function prefetchStampUrls(
           paths: missing,
         }),
       });
-      const json = (await res.json()) as { urls?: Record<string, string> };
+      const json = (await res.json()) as {
+        urls?: Record<string, string>;
+        expiresAt?: number;
+        expiresIn?: number;
+      };
+      const expiresAt =
+        typeof json.expiresAt === "number"
+          ? json.expiresAt
+          : typeof json.expiresIn === "number"
+            ? Date.now() + json.expiresIn * 1000
+            : undefined;
       if (json.urls) {
         for (const [path, url] of Object.entries(json.urls)) {
-          if (url) writeCache("marking-stamps", path, url);
+          if (url) writeCache("marking-stamps", path, url, expiresAt);
         }
       }
     } catch {
@@ -124,7 +158,8 @@ export async function prefetchStampUrls(
   const ready: string[] = [];
   await Promise.all(
     unique.map(async (path) => {
-      const url = getCachedStampUrl(path) ?? (await fetchSignedUrl("marking-stamps", path));
+      const url =
+        getCachedStampUrl(path) ?? (await fetchSignedUrl("marking-stamps", path));
       if (!url) return;
       const ok = await decodeImage(url);
       if (ok) {
@@ -143,12 +178,15 @@ export function StampImage({
   geometry,
   alt,
   className,
+  opacity,
 }: {
   storagePath?: string | null | undefined;
   stamp?: { storage_path?: string | null } | null;
   geometry?: Record<string, unknown> | null;
   alt: string;
   className?: string;
+  /** 0–1 opacity override (placement snapshot or default). */
+  opacity?: number;
 }) {
   const snapshotPath =
     typeof geometry?.storage_path === "string" ? geometry.storage_path : null;
@@ -159,6 +197,13 @@ export function StampImage({
   );
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(() => isStampImageReady(path));
+
+  const snapshotOpacity =
+    typeof geometry?.opacity === "number"
+      ? geometry.opacity
+      : typeof opacity === "number"
+        ? opacity
+        : 1;
 
   useEffect(() => {
     if (!path) return;
@@ -200,6 +245,21 @@ export function StampImage({
     };
   }, [path, retryToken]);
 
+  // Proactively refresh before signed URL expiry while mounted.
+  useEffect(() => {
+    if (!path) return;
+    const key = cacheKey("marking-stamps", path);
+    const entry = urlCache.get(key);
+    if (!entry) return;
+    const refreshIn = Math.max(5_000, entry.expiresAt - Date.now() - REFRESH_SKEW_MS);
+    const timer = window.setTimeout(() => {
+      void fetchSignedUrl("marking-stamps", path).then((next) => {
+        if (next) setUrl(next);
+      });
+    }, refreshIn);
+    return () => window.clearTimeout(timer);
+  }, [path, url]);
+
   if (!path) {
     return (
       <span
@@ -221,6 +281,8 @@ export function StampImage({
         title="Stamp unavailable — retry"
         onClick={(e) => {
           e.stopPropagation();
+          urlCache.delete(cacheKey("marking-stamps", path));
+          decodedPaths.delete(path);
           setRetryToken((n) => n + 1);
         }}
       >
@@ -230,7 +292,6 @@ export function StampImage({
   }
 
   if (!url || !ready) {
-    // Transparent placeholder — never show a generic star.
     return (
       <span
         className={className}
@@ -247,8 +308,10 @@ export function StampImage({
       alt={alt}
       className={className}
       draggable={false}
+      style={{ opacity: Math.min(1, Math.max(0.1, snapshotOpacity)) }}
       onError={() => {
         decodedPaths.delete(path);
+        urlCache.delete(cacheKey("marking-stamps", path));
         setFailed(true);
         setReady(false);
       }}

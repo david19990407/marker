@@ -200,6 +200,7 @@ export type AssignmentBlockType =
   | "tick_box"
   | "teacher_review"
   | "file_upload"
+  | "scanned_homework_upload"
   | "image"
   | "embedded_video"
   | "downloadable_resource"
@@ -223,6 +224,7 @@ export const RESPONSE_BLOCK_TYPES: AssignmentBlockType[] = [
   "tick_box",
   "teacher_review",
   "file_upload",
+  "scanned_homework_upload",
   "table",
   "vocabulary_table",
 ];
@@ -242,6 +244,7 @@ export const BLOCK_TYPE_LABELS: Record<AssignmentBlockType, string> = {
   tick_box: "Tick box",
   teacher_review: "Teacher review only",
   file_upload: "File upload",
+  scanned_homework_upload: "Scanned homework upload",
   image: "Image",
   embedded_video: "Embedded video",
   downloadable_resource: "Downloadable resource",
@@ -365,6 +368,55 @@ export interface TableConfig {
   col_labels: string[];
 }
 
+export type ScannedUploadSubquestion = {
+  id: string;
+  question_label: string;
+  title: string;
+  description: string;
+  maximum_mark: number;
+  is_required: boolean;
+  include_in_total: boolean;
+  marking_guidance: string;
+  display_order: number;
+};
+
+export type ScannedUploadConfig = {
+  maximum_files: number;
+  maximum_file_size_bytes: number;
+  allowed_mime_types: string[];
+  combine_images_to_pdf: boolean;
+  allow_images: boolean;
+  allow_pdf: boolean;
+  allow_docx: boolean;
+  allow_replacement: boolean;
+  mark_scheme_storage_path?: string | null;
+  mark_scheme_file_name?: string | null;
+  /** Mode B attached questions; empty means Mode A (single overall mark). */
+  subquestions: ScannedUploadSubquestion[];
+  /** Set on synthetic Mode B marking rows to point at the upload block. */
+  parent_block_id?: string | null;
+};
+
+export function defaultScannedUploadConfig(): ScannedUploadConfig {
+  return {
+    maximum_files: 5,
+    maximum_file_size_bytes: 15 * 1024 * 1024,
+    allowed_mime_types: [
+      "application/pdf",
+      "image/jpeg",
+      "image/png",
+    ],
+    combine_images_to_pdf: true,
+    allow_images: true,
+    allow_pdf: true,
+    allow_docx: false,
+    allow_replacement: true,
+    mark_scheme_storage_path: null,
+    mark_scheme_file_name: null,
+    subquestions: [],
+  };
+}
+
 /** Client-side mutable builder block */
 export interface BuilderBlock {
   _id: string;
@@ -416,6 +468,7 @@ export interface BuilderBlock {
   /** For table/vocabulary_table */
   tableConfig?: TableConfig;
   cells?: TableCellDef[];
+  scannedUploadConfig?: ScannedUploadConfig;
 }
 
 export type BuilderStage =
