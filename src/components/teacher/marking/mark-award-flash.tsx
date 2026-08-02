@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { formatMarksLabel } from "@/lib/marking/annotation-types";
 
 export type MarkFlashPayload = {
@@ -8,6 +8,16 @@ export type MarkFlashPayload = {
   maximum: number;
   token: number;
 };
+
+function subscribeReducedMotion(onChange: () => void) {
+  const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+
+function getReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 /**
  * Temporary centre-of-viewer mark confirmation.
@@ -18,30 +28,13 @@ export function MarkAwardFlash({
 }: {
   flash: MarkFlashPayload | null;
 }) {
-  const [visible, setVisible] = useState(false);
-  const [reducedMotion, setReducedMotion] = useState(false);
+  const reducedMotion = useSyncExternalStore(
+    subscribeReducedMotion,
+    getReducedMotion,
+    () => false,
+  );
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReducedMotion(mq.matches);
-    const onChange = () => setReducedMotion(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-
-  useEffect(() => {
-    if (!flash) {
-      setVisible(false);
-      return;
-    }
-    setVisible(true);
-    const hideMs = reducedMotion ? 500 : 800;
-    const timer = window.setTimeout(() => setVisible(false), hideMs);
-    return () => window.clearTimeout(timer);
-  }, [flash, reducedMotion]);
-
-  if (!flash || !visible) return null;
+  if (!flash) return null;
 
   return (
     <div

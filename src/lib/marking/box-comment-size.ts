@@ -15,12 +15,18 @@ export function measureBoxCommentText(
   minWidthPx = BOX_COMMENT_MIN_WIDTH_PX,
 ): { widthPx: number; heightPx: number } {
   if (typeof document === "undefined") {
-    const lines = Math.max(1, text.split("\n").length);
     const widthPx = Math.min(
       maxWidthPx,
-      Math.max(minWidthPx, Math.min(220, 8 + text.length * 6)),
+      Math.max(minWidthPx, Math.min(maxWidthPx, 8 + text.length * 6)),
     );
-    return { widthPx, heightPx: Math.max(22, lines * 14 + BOX_COMMENT_PAD_Y * 2) };
+    const charsPerLine = Math.max(12, Math.floor((widthPx - BOX_COMMENT_PAD_X * 2) / 6));
+    const softLines = text.split("\n").reduce((sum, line) => {
+      return sum + Math.max(1, Math.ceil(Math.max(1, line.length) / charsPerLine));
+    }, 0);
+    return {
+      widthPx,
+      heightPx: Math.max(22, softLines * 14 + BOX_COMMENT_PAD_Y * 2),
+    };
   }
 
   const probe = document.createElement("div");

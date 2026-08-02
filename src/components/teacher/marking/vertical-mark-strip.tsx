@@ -70,7 +70,7 @@ export function VerticalMarkStrip({
       </div>
       <div
         ref={stripRef}
-        role="listbox"
+        role="group"
         aria-label={`Award mark out of ${maximumMark}`}
         tabIndex={0}
         onKeyDown={onKeyDown}
@@ -85,8 +85,6 @@ export function VerticalMarkStrip({
                 key={n}
                 ref={selected ? selectedRef : undefined}
                 type="button"
-                role="option"
-                aria-selected={selected}
                 aria-pressed={selected}
                 aria-label={`Award ${n} out of ${maximumMark}`}
                 title={`Award ${formatMarksLabel(n)}`}

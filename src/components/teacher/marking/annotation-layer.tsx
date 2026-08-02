@@ -8,8 +8,10 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
+  type SetStateAction,
 } from "react";
 import { StampImage } from "@/components/shared/stamp-image";
 import {
@@ -72,6 +74,108 @@ const boxTextStyle: CSSProperties = {
   wordBreak: "break-word",
   overflowWrap: "anywhere",
 };
+
+function InlineBoxCommentEditor({
+  annotationId,
+  initialText,
+  annotation,
+  canvasRef,
+  onInlineTextChange,
+  onLiveGeometry,
+  onCommit,
+  onEndInlineEdit,
+}: {
+  annotationId: string;
+  initialText: string;
+  annotation: SubmissionAnnotation;
+  canvasRef: RefObject<HTMLDivElement | null>;
+  onInlineTextChange: (id: string, text: string) => void;
+  onLiveGeometry: Dispatch<SetStateAction<GeometryPatch | null>>;
+  onCommit: (id: string, patch: GeometryPatch) => void;
+  onEndInlineEdit: (id: string, cancel?: boolean) => void;
+}) {
+  const editRef = useRef<HTMLTextAreaElement | null>(null);
+  const [draftText, setDraftText] = useState(initialText);
+
+  useLayoutEffect(() => {
+    const el = editRef.current;
+    if (!el) return;
+    el.focus();
+    const len = el.value.length;
+    try {
+      el.setSelectionRange(len, len);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  return (
+    <textarea
+      ref={editRef}
+      data-box-comment-editor="true"
+      value={draftText}
+      aria-label="Box comment text"
+      className="block w-full resize-none border-0 bg-transparent p-0 outline-none"
+      style={
+        {
+          ...boxTextStyle,
+          minHeight: 16,
+          height: "100%",
+          fieldSizing: "content",
+        } as CSSProperties
+      }
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraftText(next);
+        onInlineTextChange(annotationId, next);
+        const canvas = canvasRef.current?.getBoundingClientRect();
+        if (!canvas) return;
+        const preferred =
+          typeof annotation.geometry?.preferred_w_norm === "number"
+            ? (annotation.geometry.preferred_w_norm as number)
+            : annotation.w_norm;
+        const sized = resizeBoxCommentForText(
+          next,
+          annotation.x_norm,
+          annotation.y_norm,
+          preferred,
+          canvas.width,
+          canvas.height,
+        );
+        onLiveGeometry({
+          x_norm: sized.x_norm,
+          y_norm: sized.y_norm,
+          w_norm: sized.w_norm,
+          h_norm: sized.h_norm,
+          text_content: next,
+          geometry: {
+            ...(annotation.geometry ?? {}),
+            preferred_w_norm: sized.w_norm,
+          },
+        });
+      }}
+      onBlur={() => {
+        onLiveGeometry((current) => {
+          if (current) onCommit(annotationId, current);
+          return null;
+        });
+        onEndInlineEdit(annotationId, false);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          setDraftText(initialText);
+          onLiveGeometry(null);
+          onEndInlineEdit(annotationId, true);
+        }
+        e.stopPropagation();
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    />
+  );
+}
 
 function HorizontalResizeEdge({
   side,
@@ -144,7 +248,6 @@ function AnnotationItem({
   onDelete: (id: string) => void;
 }) {
   const elRef = useRef<HTMLDivElement | null>(null);
-  const editRef = useRef<HTMLTextAreaElement | null>(null);
   const dragRef = useRef<{
     mode: DragMode;
     startX: number;
@@ -156,33 +259,16 @@ function AnnotationItem({
     text: string;
   } | null>(null);
   const [live, setLive] = useState<GeometryPatch | null>(null);
-  const [draftText, setDraftText] = useState(annotation.text_content ?? "");
 
-  const collapsed = readCollapsed(annotation);
+  const collapsed = readCollapsed(annotation.geometry);
   const isBox = annotation.annotation_type === "area_comment";
-  const isBubble = annotation.annotation_type === "speech_bubble";
+  const isBubble = annotation.annotation_type === "text_comment";
   const isStamp = annotation.annotation_type === "stamp";
   const isHighlight = annotation.annotation_type === "text_highlight";
   const interactive = tool === "select";
   const display = live
     ? { ...annotation, ...live }
     : annotation;
-
-  useEffect(() => {
-    if (!editing) setDraftText(annotation.text_content ?? "");
-  }, [annotation.text_content, editing]);
-
-  useLayoutEffect(() => {
-    if (!editing || !editRef.current) return;
-    const el = editRef.current;
-    el.focus();
-    const len = el.value.length;
-    try {
-      el.setSelectionRange(len, len);
-    } catch {
-      /* ignore */
-    }
-  }, [editing]);
 
   const beginDrag = useCallback(
     (e: ReactPointerEvent, mode: DragMode) => {
@@ -408,67 +494,16 @@ function AnnotationItem({
             style={{ backgroundColor: outlineColour }}
           />
           {editing ? (
-            <textarea
-              ref={editRef}
-              data-box-comment-editor="true"
-              value={draftText}
-              aria-label="Box comment text"
-              className="block w-full resize-none border-0 bg-transparent p-0 outline-none"
-              style={{
-                ...boxTextStyle,
-                minHeight: 16,
-                height: "100%",
-                fieldSizing: "content",
-              } as CSSProperties}
-              onChange={(e) => {
-                const next = e.target.value;
-                setDraftText(next);
-                onInlineTextChange(annotation.id, next);
-                const canvas = canvasRef.current?.getBoundingClientRect();
-                if (!canvas) return;
-                const preferred =
-                  typeof annotation.geometry?.preferred_w_norm === "number"
-                    ? (annotation.geometry.preferred_w_norm as number)
-                    : annotation.w_norm;
-                const sized = resizeBoxCommentForText(
-                  next,
-                  annotation.x_norm,
-                  annotation.y_norm,
-                  preferred,
-                  canvas.width,
-                  canvas.height,
-                );
-                setLive({
-                  x_norm: sized.x_norm,
-                  y_norm: sized.y_norm,
-                  w_norm: sized.w_norm,
-                  h_norm: sized.h_norm,
-                  text_content: next,
-                  geometry: {
-                    ...(annotation.geometry ?? {}),
-                    preferred_w_norm: sized.w_norm,
-                  },
-                });
-              }}
-              onBlur={() => {
-                setLive((current) => {
-                  if (current) onCommit(annotation.id, current);
-                  return null;
-                });
-                onEndInlineEdit(annotation.id, false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDraftText(annotation.text_content ?? "");
-                  setLive(null);
-                  onEndInlineEdit(annotation.id, true);
-                }
-                e.stopPropagation();
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
+            <InlineBoxCommentEditor
+              key={`box-edit-${annotation.id}`}
+              annotationId={annotation.id}
+              initialText={annotation.text_content ?? ""}
+              annotation={annotation}
+              canvasRef={canvasRef}
+              onInlineTextChange={onInlineTextChange}
+              onLiveGeometry={setLive}
+              onCommit={onCommit}
+              onEndInlineEdit={onEndInlineEdit}
             />
           ) : (
             <p style={boxTextStyle}>{annotation.text_content || ""}</p>
@@ -616,8 +651,8 @@ export function AnnotationLayer({
         }
         if (!text) return;
         e.preventDefault();
-        const norm = pointerToNorm(e.clientX, e.clientY, rootRef.current);
         const rect = rootRef.current.getBoundingClientRect();
+        const norm = pointerToNorm(e.clientX, e.clientY, rect);
         const placed = placeBoxCommentAtPoint(
           norm.x,
           norm.y,
@@ -645,8 +680,8 @@ export function AnnotationLayer({
         onSelect(null);
         if (tool === "select" || tool === "delete") return;
 
-        const norm = pointerToNorm(e.clientX, e.clientY, rootRef.current);
         const rect = rootRef.current.getBoundingClientRect();
+        const norm = pointerToNorm(e.clientX, e.clientY, rect);
 
         if (tool === "stamp" && selectedStampId) {
           const stamp = stamps.find((s) => s.id === selectedStampId);
@@ -718,14 +753,16 @@ export function AnnotationLayer({
       }}
       onPointerMove={(e) => {
         if (!dragStart.current || !rootRef.current) return;
-        const norm = pointerToNorm(e.clientX, e.clientY, rootRef.current);
+        const rect = rootRef.current.getBoundingClientRect();
+        const norm = pointerToNorm(e.clientX, e.clientY, rect);
         setDraftBox(dragBoxFromPoints(dragStart.current, norm));
       }}
       onPointerUp={(e) => {
         if (!dragStart.current || !rootRef.current) return;
         const start = dragStart.current;
         dragStart.current = null;
-        const norm = pointerToNorm(e.clientX, e.clientY, rootRef.current);
+        const rect = rootRef.current.getBoundingClientRect();
+        const norm = pointerToNorm(e.clientX, e.clientY, rect);
         const box = dragBoxFromPoints(start, norm);
         setDraftBox(null);
         try {

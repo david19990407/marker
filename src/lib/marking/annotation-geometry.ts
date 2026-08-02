@@ -43,6 +43,23 @@ export function dragBoxFromPoints(start: PointNorm, end: PointNorm): BoxNorm {
   };
 }
 
+/** Clamp a normalised rect so it stays fully inside the 0–1 canvas. */
+export function clampNormRect(box: BoxNorm): {
+  x_norm: number;
+  y_norm: number;
+  w_norm: number;
+  h_norm: number;
+} {
+  const w = clamp01(box.w);
+  const h = clamp01(box.h);
+  return {
+    x_norm: Math.min(1 - w, Math.max(0, box.x)),
+    y_norm: Math.min(1 - h, Math.max(0, box.y)),
+    w_norm: w,
+    h_norm: h,
+  };
+}
+
 /**
  * Exact percentage styles for overlays. Does not inflate tiny boxes with a
  * minimum percentage — stored geometry must match the teacher's drag.

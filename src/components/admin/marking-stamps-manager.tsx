@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState, useTransition } from "react";
+import { useActionState, useMemo, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StampImage } from "@/components/shared/stamp-image";
@@ -17,7 +17,8 @@ import {
 import type { ActionResult } from "@/lib/actions/auth";
 import type { MarkingStamp } from "@/lib/marking/annotation-types";
 
-const initial: ActionResult = {};
+type UploadState = ActionResult & { stamp?: MarkingStamp };
+const initial: UploadState = {};
 
 type ConfirmState =
   | null
@@ -74,7 +75,7 @@ export function MarkingStampsManager({
   subjects: string[];
 }) {
   const [stamps, setStamps] = useState(initialStamps);
-  const [state, action, pending] = useActionState(
+  const [state, action, pending] = useActionState<UploadState, FormData>(
     uploadMarkingStampAction,
     initial,
   );
@@ -83,19 +84,13 @@ export function MarkingStampsManager({
   const [edit, setEdit] = useState<EditState | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (state.stamp) {
-      setStamps((prev) => {
-        if (prev.some((s) => s.id === state.stamp!.id)) return prev;
-        return [...prev, state.stamp!];
-      });
-    }
-  }, [state.stamp]);
-
-  const ordered = useMemo(
-    () => [...stamps].sort((a, b) => a.sort_order - b.sort_order),
-    [stamps],
-  );
+  const ordered = useMemo(() => {
+    const list =
+      state.stamp && !stamps.some((s) => s.id === state.stamp!.id)
+        ? [...stamps, state.stamp]
+        : stamps;
+    return [...list].sort((a, b) => a.sort_order - b.sort_order);
+  }, [stamps, state.stamp]);
 
   function openEdit(stamp: MarkingStamp) {
     setMenuOpenId(null);
