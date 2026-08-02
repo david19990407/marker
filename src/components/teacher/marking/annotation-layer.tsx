@@ -30,6 +30,11 @@ import {
   resizeBoxCommentWidth,
 } from "@/lib/marking/box-comment-size";
 import {
+  applyNormBoxStyle,
+  clampNormBox,
+  createRafScheduler,
+} from "@/lib/marking/annotation-drag";
+import {
   annotationStyle,
   type AnnotationTool,
   type MarkingStamp,
@@ -79,7 +84,7 @@ function InlineBoxCommentEditor({
   initialText,
   annotation,
   canvasRef,
-  onInlineTextChange,
+  hostRef,
   onLiveGeometry,
   onCommit,
   onEndInlineEdit,
@@ -88,18 +93,20 @@ function InlineBoxCommentEditor({
   initialText: string;
   annotation: SubmissionAnnotation;
   canvasRef: RefObject<HTMLDivElement | null>;
-  onInlineTextChange: (id: string, text: string) => void;
+  hostRef: RefObject<HTMLDivElement | null>;
   onLiveGeometry: Dispatch<SetStateAction<GeometryPatch | null>>;
   onCommit: (id: string, patch: GeometryPatch) => void;
   onEndInlineEdit: (id: string, cancel?: boolean) => void;
 }) {
   const editRef = useRef<HTMLTextAreaElement | null>(null);
   const [draftText, setDraftText] = useState(initialText);
+  const latestPatch = useRef<GeometryPatch | null>(null);
+  const rafRef = useRef(createRafScheduler());
 
   useLayoutEffect(() => {
     const el = editRef.current;
     if (!el) return;
-    el.focus();
+    el.focus({ preventScroll: true });
     const len = el.value.length;
     try {
       el.setSelectionRange(len, len);
@@ -107,6 +114,40 @@ function InlineBoxCommentEditor({
       /* ignore */
     }
   }, []);
+
+  useEffect(() => () => rafRef.current.cancel(), []);
+
+  function resizeForText(next: string) {
+    const canvas = canvasRef.current?.getBoundingClientRect();
+    if (!canvas) return;
+    const preferred =
+      typeof annotation.geometry?.preferred_w_norm === "number"
+        ? (annotation.geometry.preferred_w_norm as number)
+        : annotation.w_norm;
+    const sized = resizeBoxCommentForText(
+      next,
+      annotation.x_norm,
+      annotation.y_norm,
+      preferred,
+      canvas.width,
+      canvas.height,
+    );
+    const patch: GeometryPatch = {
+      x_norm: sized.x_norm,
+      y_norm: sized.y_norm,
+      w_norm: sized.w_norm,
+      h_norm: sized.h_norm,
+      text_content: next,
+      geometry: {
+        ...(annotation.geometry ?? {}),
+        preferred_w_norm: sized.w_norm,
+        text_snapshot: next,
+      },
+    };
+    latestPatch.current = patch;
+    applyNormBoxStyle(hostRef.current, patch);
+    rafRef.current.schedule(() => onLiveGeometry(patch));
+  }
 
   return (
     <textarea
@@ -126,38 +167,24 @@ function InlineBoxCommentEditor({
       onChange={(e) => {
         const next = e.target.value;
         setDraftText(next);
-        onInlineTextChange(annotationId, next);
-        const canvas = canvasRef.current?.getBoundingClientRect();
-        if (!canvas) return;
-        const preferred =
-          typeof annotation.geometry?.preferred_w_norm === "number"
-            ? (annotation.geometry.preferred_w_norm as number)
-            : annotation.w_norm;
-        const sized = resizeBoxCommentForText(
-          next,
-          annotation.x_norm,
-          annotation.y_norm,
-          preferred,
-          canvas.width,
-          canvas.height,
-        );
-        onLiveGeometry({
-          x_norm: sized.x_norm,
-          y_norm: sized.y_norm,
-          w_norm: sized.w_norm,
-          h_norm: sized.h_norm,
-          text_content: next,
-          geometry: {
-            ...(annotation.geometry ?? {}),
-            preferred_w_norm: sized.w_norm,
-          },
-        });
+        // Keep typing local — do not push text into parent worksheet state per keystroke.
+        resizeForText(next);
       }}
       onBlur={() => {
-        onLiveGeometry((current) => {
-          if (current) onCommit(annotationId, current);
-          return null;
-        });
+        rafRef.current.cancel();
+        const patch = latestPatch.current ?? {
+          x_norm: annotation.x_norm,
+          y_norm: annotation.y_norm,
+          w_norm: annotation.w_norm,
+          h_norm: annotation.h_norm,
+          text_content: draftText,
+          geometry: {
+            ...(annotation.geometry ?? {}),
+            text_snapshot: draftText,
+          },
+        };
+        onCommit(annotationId, { ...patch, text_content: draftText });
+        onLiveGeometry(null);
         onEndInlineEdit(annotationId, false);
       }}
       onKeyDown={(e) => {
@@ -166,12 +193,17 @@ function InlineBoxCommentEditor({
           e.stopPropagation();
           setDraftText(initialText);
           onLiveGeometry(null);
+          latestPatch.current = null;
           onEndInlineEdit(annotationId, true);
+          return;
         }
         e.stopPropagation();
       }}
       onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => {
+        // Must not preventDefault — that blocks caret placement / typing.
+        e.stopPropagation();
+      }}
     />
   );
 }
@@ -228,7 +260,6 @@ function AnnotationItem({
   onCommit,
   onToggleCollapse,
   onBeginInlineEdit,
-  onInlineTextChange,
   onEndInlineEdit,
   onDelete,
 }: {
@@ -242,7 +273,6 @@ function AnnotationItem({
   onCommit: (id: string, patch: GeometryPatch) => void;
   onToggleCollapse: (id: string) => void;
   onBeginInlineEdit: (id: string) => void;
-  onInlineTextChange: (id: string, text: string) => void;
   onEndInlineEdit: (id: string, cancel?: boolean) => void;
   onDelete: (id: string) => void;
 }) {
@@ -256,8 +286,11 @@ function AnnotationItem({
     ow: number;
     oh: number;
     text: string;
+    pointerId: number;
   } | null>(null);
+  const latestLive = useRef<GeometryPatch | null>(null);
   const [live, setLive] = useState<GeometryPatch | null>(null);
+  const rafRef = useRef(createRafScheduler());
 
   const collapsed = readCollapsed(annotation.geometry);
   const isBox = annotation.annotation_type === "area_comment";
@@ -269,34 +302,41 @@ function AnnotationItem({
     ? { ...annotation, ...live }
     : annotation;
 
+  useEffect(() => () => rafRef.current.cancel(), []);
+
+  const publishLive = useCallback((patch: GeometryPatch) => {
+    latestLive.current = patch;
+    applyNormBoxStyle(elRef.current, patch);
+    rafRef.current.schedule(() => setLive(patch));
+  }, []);
+
   const beginDrag = useCallback(
     (e: ReactPointerEvent, mode: DragMode) => {
       if (!interactive || editing) return;
       e.stopPropagation();
       e.preventDefault();
-      onSelect(annotation.id);
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      if (!selected) onSelect(annotation.id);
+      const target = elRef.current ?? (e.currentTarget as HTMLElement);
+      target.setPointerCapture(e.pointerId);
       dragRef.current = {
         mode,
         startX: e.clientX,
         startY: e.clientY,
-        ox: annotation.x_norm,
-        oy: annotation.y_norm,
-        ow: annotation.w_norm,
-        oh: annotation.h_norm,
+        ox: (live ?? annotation).x_norm,
+        oy: (live ?? annotation).y_norm,
+        ow: (live ?? annotation).w_norm,
+        oh: (live ?? annotation).h_norm,
         text: annotation.text_content ?? "",
+        pointerId: e.pointerId,
       };
     },
     [
-      annotation.h_norm,
-      annotation.id,
-      annotation.text_content,
-      annotation.w_norm,
-      annotation.x_norm,
-      annotation.y_norm,
+      annotation,
       editing,
       interactive,
+      live,
       onSelect,
+      selected,
     ],
   );
 
@@ -310,22 +350,26 @@ function AnnotationItem({
       const dy = (e.clientY - drag.startY) / Math.max(1, rect.height);
 
       if (drag.mode === "move") {
-        setLive({
-          x_norm: Math.min(1 - drag.ow, Math.max(0, drag.ox + dx)),
-          y_norm: Math.min(1 - drag.oh, Math.max(0, drag.oy + dy)),
-          w_norm: drag.ow,
-          h_norm: drag.oh,
-        });
+        publishLive(
+          clampNormBox({
+            x_norm: drag.ox + dx,
+            y_norm: drag.oy + dy,
+            w_norm: drag.ow,
+            h_norm: drag.oh,
+          }),
+        );
         return;
       }
 
       if (drag.mode === "resize-se" && isStamp) {
-        setLive({
-          x_norm: drag.ox,
-          y_norm: drag.oy,
-          w_norm: Math.min(0.9, Math.max(0.04, drag.ow + dx)),
-          h_norm: Math.min(0.9, Math.max(0.04, drag.oh + dy)),
-        });
+        publishLive(
+          clampNormBox({
+            x_norm: drag.ox,
+            y_norm: drag.oy,
+            w_norm: Math.min(0.9, Math.max(0.04, drag.ow + dx)),
+            h_norm: Math.min(0.9, Math.max(0.04, drag.oh + dy)),
+          }),
+        );
         return;
       }
 
@@ -343,7 +387,7 @@ function AnnotationItem({
           rect.height,
           drag.mode === "resize-left" ? "right" : "left",
         );
-        setLive({
+        publishLive({
           x_norm: sized.x_norm,
           y_norm: sized.y_norm,
           w_norm: sized.w_norm,
@@ -355,7 +399,7 @@ function AnnotationItem({
         });
       }
     },
-    [annotation.geometry, canvasRef, isBox, isStamp],
+    [annotation.geometry, canvasRef, isBox, isStamp, publishLive],
   );
 
   const endDrag = useCallback(
@@ -363,15 +407,24 @@ function AnnotationItem({
       const drag = dragRef.current;
       if (!drag) return;
       dragRef.current = null;
+      rafRef.current.cancel();
       try {
-        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        const target = elRef.current ?? (e.currentTarget as HTMLElement);
+        target.releasePointerCapture(drag.pointerId);
       } catch {
         /* ignore */
       }
-      setLive((current) => {
-        if (current) onCommit(annotation.id, current);
-        return null;
-      });
+      const current = latestLive.current;
+      latestLive.current = null;
+      if (current) {
+        // Keep the committed geometry visible until parent state catches up.
+        setLive(current);
+        onCommit(annotation.id, current);
+        // Clear local overlay on next frame so React props take over.
+        requestAnimationFrame(() => setLive(null));
+      } else {
+        setLive(null);
+      }
     },
     [annotation.id, onCommit],
   );
@@ -494,12 +547,11 @@ function AnnotationItem({
           />
           {editing ? (
             <InlineBoxCommentEditor
-              key={`box-edit-${annotation.id}`}
               annotationId={annotation.id}
               initialText={annotation.text_content ?? ""}
               annotation={annotation}
               canvasRef={canvasRef}
-              onInlineTextChange={onInlineTextChange}
+              hostRef={elRef}
               onLiveGeometry={setLive}
               onCommit={onCommit}
               onEndInlineEdit={onEndInlineEdit}
@@ -573,6 +625,53 @@ function AnnotationItem({
 
 const MemoAnnotationItem = memo(AnnotationItem);
 
+function buildStampCreateDraft(
+  stamp: MarkingStamp,
+  norm: { x: number; y: number },
+  rect: DOMRect,
+): CreateDraft {
+  const imageWidth = stamp.default_width_px || 64;
+  const imageHeight = stamp.default_height_px || 64;
+  const opacity =
+    typeof stamp.default_opacity === "number"
+      ? Math.min(1, Math.max(0.1, stamp.default_opacity))
+      : 1;
+  const widthPx = Math.min(
+    300,
+    Math.max(16, imageWidth || (stamp.default_size_pct / 100) * rect.width),
+  );
+  const aspect = imageHeight > 0 ? imageWidth / imageHeight : 1;
+  const heightPx = widthPx / Math.max(0.01, aspect);
+  const size = {
+    w: Math.min(0.9, Math.max(0.02, widthPx / Math.max(1, rect.width))),
+    h: Math.min(0.9, Math.max(0.02, heightPx / Math.max(1, rect.height))),
+  };
+  return {
+    annotation_type: "stamp",
+    x_norm: Math.min(1 - size.w, Math.max(0, norm.x - size.w / 2)),
+    y_norm: Math.min(1 - size.h, Math.max(0, norm.y - size.h / 2)),
+    w_norm: size.w,
+    h_norm: size.h,
+    stamp_definition_id: stamp.id,
+    text_content: stamp.accessible_label || stamp.name,
+    geometry: {
+      stamp_definition_id: stamp.id,
+      storage_path: stamp.storage_path,
+      image_width: imageWidth,
+      image_height: imageHeight,
+      display_width_px: widthPx,
+      display_height_px: heightPx,
+      aspect_ratio: aspect,
+      opacity,
+      accessible_label_snapshot: stamp.accessible_label,
+      stamp_name_snapshot: stamp.name,
+      applied_at: new Date().toISOString(),
+      asset_version: stamp.asset_version || 1,
+      stamp_normalised: true,
+    },
+  };
+}
+
 export function AnnotationLayer({
   annotations,
   stamps,
@@ -582,14 +681,15 @@ export function AnnotationLayer({
   selectedId,
   editingId,
   linkedCommentDrag,
+  paletteStampDragId = null,
   onSelect,
   onCreate,
   onCommitGeometry,
   onToggleCollapse,
   onBeginInlineEdit,
-  onInlineTextChange,
   onEndInlineEdit,
   onDeleteSelected,
+  onPaletteStampDrop,
 }: {
   annotations: SubmissionAnnotation[];
   stamps: MarkingStamp[];
@@ -599,23 +699,61 @@ export function AnnotationLayer({
   selectedId: string | null;
   editingId: string | null;
   linkedCommentDrag: { itemId: string; text: string } | null;
+  /** Stamp currently dragged from the palette (custom pointer drag). */
+  paletteStampDragId?: string | null;
   onSelect: (id: string | null) => void;
   onCreate: (draft: CreateDraft) => void;
   onCommitGeometry: (id: string, patch: GeometryPatch) => void;
   onToggleCollapse: (id: string) => void;
   onBeginInlineEdit: (id: string) => void;
-  onInlineTextChange: (id: string, text: string) => void;
   onEndInlineEdit: (id: string, cancel?: boolean) => void;
   onDeleteSelected: (id: string) => void;
+  onPaletteStampDrop?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const draftOverlayRef = useRef<HTMLDivElement | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const draftLatest = useRef<{ x: number; y: number; w: number; h: number } | null>(
+    null,
+  );
   const [draftBox, setDraftBox] = useState<{
     x: number;
     y: number;
     w: number;
     h: number;
   } | null>(null);
+  const draftRafRef = useRef(createRafScheduler());
+
+  useEffect(() => () => draftRafRef.current.cancel(), []);
+
+  // Complete palette stamp drops that end over the worksheet.
+  useEffect(() => {
+    if (!paletteStampDragId) return;
+    function onUp(e: PointerEvent) {
+      const root = rootRef.current;
+      if (!root) return;
+      const rect = root.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      if (!inside) {
+        onPaletteStampDrop?.();
+        return;
+      }
+      const stamp = stamps.find((s) => s.id === paletteStampDragId);
+      if (!stamp) {
+        onPaletteStampDrop?.();
+        return;
+      }
+      const norm = pointerToNorm(e.clientX, e.clientY, rect);
+      onCreate(buildStampCreateDraft(stamp, norm, rect));
+      onPaletteStampDrop?.();
+    }
+    window.addEventListener("pointerup", onUp);
+    return () => window.removeEventListener("pointerup", onUp);
+  }, [onCreate, onPaletteStampDrop, paletteStampDragId, stamps]);
 
   return (
     <div
@@ -634,13 +772,29 @@ export function AnnotationLayer({
       onDragOver={(e) => {
         if (
           linkedCommentDrag ||
-          e.dataTransfer.types.includes("application/x-comment-bank-item")
+          e.dataTransfer.types.includes("application/x-comment-bank-item") ||
+          e.dataTransfer.types.includes("application/x-marking-stamp")
         ) {
           e.preventDefault();
         }
       }}
       onDrop={(e) => {
         if (!rootRef.current) return;
+        const stampRaw = e.dataTransfer.getData("application/x-marking-stamp");
+        if (stampRaw) {
+          e.preventDefault();
+          try {
+            const parsed = JSON.parse(stampRaw) as { id?: string };
+            const stamp = stamps.find((s) => s.id === parsed.id);
+            if (!stamp) return;
+            const rect = rootRef.current.getBoundingClientRect();
+            const norm = pointerToNorm(e.clientX, e.clientY, rect);
+            onCreate(buildStampCreateDraft(stamp, norm, rect));
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         let itemId = linkedCommentDrag?.itemId ?? "";
         let text = linkedCommentDrag?.text ?? "";
         const raw = e.dataTransfer.getData("application/x-comment-bank-item");
@@ -690,48 +844,7 @@ export function AnnotationLayer({
         if (tool === "stamp" && selectedStampId) {
           const stamp = stamps.find((s) => s.id === selectedStampId);
           if (!stamp) return;
-          const imageWidth = stamp.default_width_px || 64;
-          const imageHeight = stamp.default_height_px || 64;
-          const opacity =
-            typeof stamp.default_opacity === "number"
-              ? Math.min(1, Math.max(0.1, stamp.default_opacity))
-              : 1;
-          // Prefer configured display width in CSS pixels; fall back to % size.
-          const widthPx = Math.min(
-            300,
-            Math.max(16, imageWidth || (stamp.default_size_pct / 100) * rect.width),
-          );
-          const aspect = imageHeight > 0 ? imageWidth / imageHeight : 1;
-          const heightPx = widthPx / Math.max(0.01, aspect);
-          const size = {
-            w: Math.min(0.9, Math.max(0.02, widthPx / Math.max(1, rect.width))),
-            h: Math.min(0.9, Math.max(0.02, heightPx / Math.max(1, rect.height))),
-          };
-          const draft: CreateDraft = {
-            annotation_type: "stamp",
-            x_norm: Math.min(1 - size.w, Math.max(0, norm.x - size.w / 2)),
-            y_norm: Math.min(1 - size.h, Math.max(0, norm.y - size.h / 2)),
-            w_norm: size.w,
-            h_norm: size.h,
-            stamp_definition_id: stamp.id,
-            text_content: stamp.accessible_label || stamp.name,
-            geometry: {
-              stamp_definition_id: stamp.id,
-              storage_path: stamp.storage_path,
-              image_width: imageWidth,
-              image_height: imageHeight,
-              display_width_px: widthPx,
-              display_height_px: heightPx,
-              aspect_ratio: aspect,
-              opacity,
-              accessible_label_snapshot: stamp.accessible_label,
-              stamp_name_snapshot: stamp.name,
-              applied_at: new Date().toISOString(),
-              asset_version: stamp.asset_version || 1,
-              stamp_normalised: true,
-            },
-          };
-          onCreate(draft);
+          onCreate(buildStampCreateDraft(stamp, norm, rect));
           return;
         }
 
@@ -754,22 +867,34 @@ export function AnnotationLayer({
         }
 
         dragStart.current = { x: norm.x, y: norm.y };
-        setDraftBox({ x: norm.x, y: norm.y, w: 0, h: 0 });
+        const empty = { x: norm.x, y: norm.y, w: 0, h: 0 };
+        draftLatest.current = empty;
+        setDraftBox(empty);
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         if (!dragStart.current || !rootRef.current) return;
         const rect = rootRef.current.getBoundingClientRect();
         const norm = pointerToNorm(e.clientX, e.clientY, rect);
-        setDraftBox(dragBoxFromPoints(dragStart.current, norm));
+        const box = dragBoxFromPoints(dragStart.current, norm);
+        draftLatest.current = box;
+        applyNormBoxStyle(draftOverlayRef.current, {
+          x_norm: box.x,
+          y_norm: box.y,
+          w_norm: box.w,
+          h_norm: box.h,
+        });
+        draftRafRef.current.schedule(() => setDraftBox(box));
       }}
       onPointerUp={(e) => {
         if (!dragStart.current || !rootRef.current) return;
         const start = dragStart.current;
         dragStart.current = null;
+        draftRafRef.current.cancel();
         const rect = rootRef.current.getBoundingClientRect();
         const norm = pointerToNorm(e.clientX, e.clientY, rect);
-        const box = dragBoxFromPoints(start, norm);
+        const box = dragLatestOrComputed(start, norm, draftLatest.current);
+        draftLatest.current = null;
         setDraftBox(null);
         try {
           (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
@@ -801,7 +926,6 @@ export function AnnotationLayer({
           onCommit={onCommitGeometry}
           onToggleCollapse={onToggleCollapse}
           onBeginInlineEdit={onBeginInlineEdit}
-          onInlineTextChange={onInlineTextChange}
           onEndInlineEdit={onEndInlineEdit}
           onDelete={(id) => onDeleteSelected(id)}
         />
@@ -809,6 +933,7 @@ export function AnnotationLayer({
 
       {draftBox ? (
         <div
+          ref={draftOverlayRef}
           className="pointer-events-none absolute box-border"
           style={{
             ...exactAnnotationStyle(draftBox),
@@ -821,4 +946,12 @@ export function AnnotationLayer({
       ) : null}
     </div>
   );
+}
+
+function dragLatestOrComputed(
+  start: { x: number; y: number },
+  norm: { x: number; y: number },
+  latest: { x: number; y: number; w: number; h: number } | null,
+) {
+  return latest ?? dragBoxFromPoints(start, norm);
 }

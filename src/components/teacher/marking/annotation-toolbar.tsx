@@ -77,6 +77,7 @@ export function AnnotationToolbar({
   onToolChange,
   onColourChange,
   onStampSelect,
+  onStampPaletteDragStart,
   onUndo,
   onRedo,
   onToggleDock,
@@ -96,6 +97,8 @@ export function AnnotationToolbar({
   onToolChange: (tool: AnnotationTool) => void;
   onColourChange: (colour: string) => void;
   onStampSelect: (stampId: string) => void;
+  /** Custom pointer drag from palette onto the worksheet. Pass null to cancel. */
+  onStampPaletteDragStart?: (stampId: string | null) => void;
   onUndo: () => void;
   onRedo: () => void;
   onToggleDock: () => void;
@@ -249,7 +252,7 @@ export function AnnotationToolbar({
                       type="button"
                       title={
                         ready
-                          ? stamp.accessible_label
+                          ? `${stamp.accessible_label} — click to place or drag onto worksheet`
                           : `${stamp.accessible_label} (loading)`
                       }
                       aria-label={
@@ -262,16 +265,43 @@ export function AnnotationToolbar({
                       }
                       disabled={!ready}
                       className={cn(
-                        "flex h-10 w-10 items-center justify-center rounded-xl",
+                        "flex h-10 w-10 cursor-grab items-center justify-center rounded-xl active:cursor-grabbing",
                         selectedStampId === stamp.id && tool === "stamp"
                           ? "bg-rose-100"
                           : "bg-slate-50",
                         !ready && "opacity-40",
                       )}
-                      onClick={() => {
-                        if (!ready) return;
-                        onStampSelect(stamp.id);
-                        onToolChange("stamp");
+                      onPointerDown={(e) => {
+                        if (!ready || e.button !== 0) return;
+                        // Custom pointer drag (not HTML5) so the document viewer cannot swallow drops.
+                        const startX = e.clientX;
+                        const startY = e.clientY;
+                        let started = false;
+                        const onMove = (ev: PointerEvent) => {
+                          if (
+                            Math.abs(ev.clientX - startX) < 4 &&
+                            Math.abs(ev.clientY - startY) < 4
+                          ) {
+                            return;
+                          }
+                          if (!started) {
+                            started = true;
+                            onStampSelect(stamp.id);
+                            onToolChange("stamp");
+                            onStampPaletteDragStart?.(stamp.id);
+                          }
+                        };
+                        const onUp = () => {
+                          window.removeEventListener("pointermove", onMove);
+                          window.removeEventListener("pointerup", onUp);
+                          if (!started) {
+                            // Treat as click-to-select when the pointer barely moved.
+                            onStampSelect(stamp.id);
+                            onToolChange("stamp");
+                          }
+                        };
+                        window.addEventListener("pointermove", onMove);
+                        window.addEventListener("pointerup", onUp);
                       }}
                     >
                       <StampImage

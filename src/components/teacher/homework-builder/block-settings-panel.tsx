@@ -1186,65 +1186,86 @@ function ScannedUploadSettings({
             Add question
           </Button>
         </div>
-        {subquestions.map((q) => (
-          <div
-            key={q.id}
-            className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/70 p-3"
-          >
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Input
-                value={q.question_label}
-                placeholder="Label (e.g. Q1a)"
-                onChange={(e) =>
-                  updateSub(q.id, { question_label: e.target.value })
-                }
-              />
-              <Input
-                value={q.title}
-                placeholder="Title"
-                onChange={(e) => updateSub(q.id, { title: e.target.value })}
-              />
-              <Input
-                type="number"
-                min={0}
-                value={q.maximum_mark}
-                onChange={(e) =>
-                  updateSub(q.id, {
-                    maximum_mark: Number(e.target.value) || 0,
-                  })
-                }
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  patchConfig({
-                    subquestions: config.subquestions.filter(
-                      (row) => row.id !== q.id,
-                    ),
-                  })
-                }
-              >
-                Remove
-              </Button>
+        <div className="space-y-2">
+          {subquestions.map((q) => (
+            <div
+              key={q.id}
+              className="grid grid-cols-1 items-end gap-2 rounded-lg border border-slate-100 bg-slate-50/70 p-3 sm:grid-cols-[7rem_minmax(0,1fr)_5.5rem_auto_auto]"
+            >
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-slate-500">
+                  Question label
+                </span>
+                <Input
+                  value={q.question_label}
+                  placeholder="Q1a"
+                  onChange={(e) =>
+                    updateSub(q.id, { question_label: e.target.value })
+                  }
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-slate-500">Title</span>
+                <Input
+                  value={q.title}
+                  placeholder="Title"
+                  onChange={(e) => updateSub(q.id, { title: e.target.value })}
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-slate-500">
+                  Maximum mark
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  value={q.maximum_mark}
+                  onChange={(e) =>
+                    updateSub(q.id, {
+                      maximum_mark: Number(e.target.value) || 0,
+                    })
+                  }
+                />
+              </label>
+              <label className="flex items-center gap-2 pb-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={q.is_required}
+                  onChange={(e) =>
+                    updateSub(q.id, { is_required: e.target.checked })
+                  }
+                />
+                Required
+              </label>
+              <div className="flex flex-wrap gap-2 pb-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={q.include_in_total}
+                    onChange={(e) =>
+                      updateSub(q.id, { include_in_total: e.target.checked })
+                    }
+                  />
+                  In total
+                </label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    patchConfig({
+                      subquestions: config.subquestions.filter(
+                        (row) => row.id !== q.id,
+                      ),
+                    })
+                  }
+                >
+                  Remove
+                </Button>
+              </div>
             </div>
-            <Textarea
-              value={q.description}
-              placeholder="Description"
-              rows={2}
-              onChange={(e) => updateSub(q.id, { description: e.target.value })}
-            />
-            <Textarea
-              value={q.marking_guidance}
-              placeholder="Teacher marking guidance"
-              rows={2}
-              onChange={(e) =>
-                updateSub(q.id, { marking_guidance: e.target.value })
-              }
-            />
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
       <div className="space-y-2 border-t border-slate-100 pt-3">

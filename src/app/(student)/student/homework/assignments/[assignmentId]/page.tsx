@@ -15,6 +15,8 @@ import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
 import { pickAuthoritativeResponsesByQuestion } from "@/lib/homework/response-protect";
+import { ensureDraftSubmission } from "@/lib/homework/ensure-draft-submission";
+import { repairScannedHomeworkQuestionIds } from "@/lib/homework/repair-scanned-question-ids";
 import { loadTemplateStructure } from "@/lib/homework/structure";
 import type {
   MarkingStamp,
@@ -59,18 +61,14 @@ export default async function StudentAssignmentPage({
     .maybeSingle();
   if (!membership) notFound();
 
-  const [{ data: resources }, { data: submission }] = await Promise.all([
+  const [{ data: resources }, draftResult] = await Promise.all([
     supabase
       .from("assignment_resources")
       .select("id, file_name, storage_path, file_type")
       .eq("assignment_id", assignmentId),
-    supabase
-      .from("submissions")
-      .select("*")
-      .eq("assignment_id", assignmentId)
-      .eq("student_id", profile.id)
-      .maybeSingle(),
+    ensureDraftSubmission(supabase, assignmentId, profile.id),
   ]);
+  const submission = draftResult.submission;
 
   type ReleasedFeedback = {
     id?: string;
@@ -312,10 +310,15 @@ export default async function StudentAssignmentPage({
 
   if (assignment.template_id) {
     try {
-      const sections = await loadTemplateStructure(supabase, assignment.template_id);
+      let sections = await loadTemplateStructure(supabase, assignment.template_id);
       hasStructuredBlocks = isStructuredAssignment(sections);
 
       if (hasStructuredBlocks) {
+        const repaired = await repairScannedHomeworkQuestionIds(
+          supabase,
+          sections,
+        );
+        sections = repaired.sections;
         structuredSections = sections;
 
         if (submission) {
@@ -394,7 +397,7 @@ export default async function StudentAssignmentPage({
           <StructuredHomework
             key={`${assignmentId}-${submission?.status ?? "none"}-${editable ? "edit" : "ro"}`}
             assignmentId={assignmentId}
-            submissionId={submission?.id ?? null}
+            submissionId={submission?.id ?? null /* draft ensured above */}
             sections={structuredSections}
             existingResponses={existingResponses}
             editable={editable}

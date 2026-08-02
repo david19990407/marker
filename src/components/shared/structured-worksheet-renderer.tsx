@@ -854,8 +854,9 @@ function BlockView({
             {summary ? ` · ${summary} file(s) on record` : " · student uploads appear here"}
           </p>
         ) : (
-          <p className="text-sm text-rose-700">
-            Upload is unavailable because the submission could not be loaded.
+          <p className="text-sm text-amber-800">
+            Preparing your submission… Refresh if the upload area does not
+            appear.
           </p>
         )}
       </QuestionShell>
