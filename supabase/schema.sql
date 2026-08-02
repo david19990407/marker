@@ -933,6 +933,7 @@ create policy "Teachers read submission files for their classes"
 --   supabase/phase_08_scanned_homework_uploads.sql
 --   supabase/fix_phase_08_stamp_editing_and_palette_visibility.sql
 --   supabase/fix_phase_08_scanned_questions_and_annotation_interactions.sql
+--   supabase/fix_phase_08_annotation_toolbar_and_comment_interactions.sql
 -- Includes scanned_upload_* tables, question_marks.not_attempted,
 -- school_marking_symbols.default_opacity, upsert_question_mark updates,
 -- and _upsert_structure_block treating scanned_homework_upload as response.

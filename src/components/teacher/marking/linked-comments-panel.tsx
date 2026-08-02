@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import type { AssignmentCommentDraft } from "@/lib/types";
 import type { CommentBankItem } from "@/lib/feedback/types";
@@ -26,6 +26,8 @@ type Row = {
   group: string;
 };
 
+const DRAG_THRESHOLD_PX = 5;
+
 export function LinkedCommentsPanel({
   selectedQuestionId,
   assignmentComments,
@@ -37,10 +39,13 @@ export function LinkedCommentsPanel({
   assignmentComments: LinkedComment[];
   commentBankItems: CommentBankItem[];
   onInsertIntoFeedback: (text: string) => void;
-  onDragCreateBoxComment?: (comment: { id: string; text: string }) => void;
+  onDragCreateBoxComment?: (
+    comment: { id: string; text: string } | null,
+  ) => void;
 }) {
-  void onDragCreateBoxComment;
   const [query, setQuery] = useState("");
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragActiveRef = useRef(false);
 
   const rows = useMemo(() => {
     const seenIds = new Set<string>();
@@ -75,10 +80,6 @@ export function LinkedCommentsPanel({
     for (const item of commentBankItems) {
       if (!item.is_active) continue;
       if (seenIds.has(item.id)) continue;
-      const isLinked = Boolean(
-        selectedQuestionId && item.linked_question_id === selectedQuestionId,
-      );
-      // Selected banks for the assignment — show question-linked first, then others.
       seenIds.add(item.id);
       linked.push({
         id: item.id,
@@ -86,7 +87,6 @@ export function LinkedCommentsPanel({
         text: item.full_text,
         group: item.group_name || item.bank_name || "Selected banks",
       });
-      void isLinked;
     }
 
     const q = query.trim().toLowerCase();
@@ -98,7 +98,10 @@ export function LinkedCommentsPanel({
           c.text.toLowerCase().includes(q) ||
           c.group.toLowerCase().includes(q),
       )
-      .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+      .sort(
+        (a, b) =>
+          a.group.localeCompare(b.group) || a.label.localeCompare(b.label),
+      );
   }, [assignmentComments, commentBankItems, selectedQuestionId, query]);
 
   const byGroup = useMemo(() => {
@@ -111,6 +114,61 @@ export function LinkedCommentsPanel({
     return map;
   }, [rows]);
 
+  function beginPointerDrag(row: Row, e: React.PointerEvent) {
+    if (e.button !== 0) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let started = false;
+    dragActiveRef.current = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (
+        Math.abs(ev.clientX - startX) < DRAG_THRESHOLD_PX &&
+        Math.abs(ev.clientY - startY) < DRAG_THRESHOLD_PX
+      ) {
+        return;
+      }
+      if (!started) {
+        started = true;
+        dragActiveRef.current = true;
+        setDraggingId(row.id);
+        onDragCreateBoxComment?.({ id: row.id, text: row.text });
+      }
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey);
+      setDraggingId(null);
+      // Click (no drag) inserts into feedback. Clear drag state after a tick
+      // so the worksheet drop handler can still read the payload.
+      if (!started) {
+        onDragCreateBoxComment?.(null);
+        onInsertIntoFeedback(row.text);
+      } else {
+        window.setTimeout(() => onDragCreateBoxComment?.(null), 0);
+      }
+      window.setTimeout(() => {
+        dragActiveRef.current = false;
+      }, 0);
+    };
+
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      started = true; // suppress click insert
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey);
+      setDraggingId(null);
+      onDragCreateBoxComment?.(null);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("keydown", onKey);
+  }
+
   return (
     <div className="space-y-2">
       <Input
@@ -119,6 +177,12 @@ export function LinkedCommentsPanel({
         placeholder="Search comments"
         aria-label="Search linked comments"
       />
+
+      {draggingId ? (
+        <p className="text-[11px] text-slate-500">
+          Drop onto the worksheet to place a box comment. Esc cancels.
+        </p>
+      ) : null}
 
       {[...byGroup.entries()].map(([group, comments]) => (
         <div key={group}>
@@ -134,26 +198,35 @@ export function LinkedCommentsPanel({
                   draggable
                   aria-label={`Insert comment ${c.label}`}
                   title="Click to insert into feedback. Drag onto worksheet for a box comment."
+                  className={`cursor-grab rounded-lg border px-2 py-1.5 text-left active:cursor-grabbing ${
+                    draggingId === c.id
+                      ? "border-rose-300 bg-rose-50 opacity-70"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                  onPointerDown={(e) => beginPointerDrag(c, e)}
                   onDragStart={(e) => {
+                    // HTML5 fallback for environments that prefer native DnD.
+                    const payload = JSON.stringify({ id: c.id, text: c.text });
                     e.dataTransfer.setData(
                       "application/x-comment-bank-item",
-                      JSON.stringify({ id: c.id, text: c.text }),
+                      payload,
                     );
+                    e.dataTransfer.setData("text/plain", payload);
                     e.dataTransfer.effectAllowed = "copy";
+                    onDragCreateBoxComment?.({ id: c.id, text: c.text });
                   }}
-                  onClick={() => onInsertIntoFeedback(c.text)}
+                  onDragEnd={() => onDragCreateBoxComment?.(null)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       onInsertIntoFeedback(c.text);
                     }
                   }}
-                  className="cursor-grab rounded-lg border border-slate-100 px-2 py-1.5 text-left text-xs hover:bg-slate-50 active:cursor-grabbing"
                 >
-                  <span className="font-medium text-slate-800">{c.label}</span>
-                  <span className="mt-0.5 block line-clamp-3 text-slate-500">
+                  <p className="text-xs font-medium text-slate-800">{c.label}</p>
+                  <p className="line-clamp-2 text-[11px] text-slate-500">
                     {c.text}
-                  </span>
+                  </p>
                 </div>
               </li>
             ))}
@@ -161,10 +234,8 @@ export function LinkedCommentsPanel({
         </div>
       ))}
 
-      {!rows.length ? (
-        <p className="text-xs text-slate-500">
-          No linked comments for this question.
-        </p>
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-500">No linked comments available.</p>
       ) : null}
     </div>
   );
