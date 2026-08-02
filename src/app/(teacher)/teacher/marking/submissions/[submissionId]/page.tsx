@@ -249,6 +249,11 @@ export default async function MarkSubmissionPage({
             block_id: String(row.block_id),
             question_id: (row.question_id as string | null) ?? null,
             submission_version: Number(row.submission_version ?? 1),
+            storage_bucket:
+              String(
+                (row as { storage_bucket?: string | null }).storage_bucket ??
+                  "student-submissions",
+              ) || "student-submissions",
             original_storage_path: String(row.original_storage_path),
             preview_storage_path:
               (row.preview_storage_path as string | null) ?? null,

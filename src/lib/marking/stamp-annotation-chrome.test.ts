@@ -20,9 +20,11 @@ describe("stamp annotation chrome", () => {
     expect(selected.border).toBe("none");
     expect(selected.boxShadow).toBe("none");
     expect(selected.backgroundColor).toBe("transparent");
+    expect(selected.background).toBe("transparent");
 
     const deselected = stampAnnotationChrome(false);
     expect(deselected.outline).toBe("none");
+    expect(deselected.outlineOffset).toBe(0);
     expect(stampChromeIsInvisible(deselected)).toBe(true);
   });
 });

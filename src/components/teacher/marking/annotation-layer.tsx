@@ -25,6 +25,7 @@ import {
   BOX_COMMENT_FONT,
   BOX_COMMENT_LINE_HEIGHT,
   BOX_COMMENT_MAX_WIDTH_FRACTION,
+  BOX_COMMENT_MIN_WIDTH_PX,
   BOX_COMMENT_PAD_X,
   BOX_COMMENT_PAD_Y,
   placeBoxCommentAtPoint,
@@ -77,7 +78,20 @@ type CreateDraft = {
   begin_inline_edit?: boolean;
 };
 
-type DragMode = "move" | "resize-right" | "resize-left" | "resize-se";
+type DragMode =
+  | "move"
+  | "resize-right"
+  | "resize-left"
+  | "resize-se"
+  | "resize-n"
+  | "resize-s"
+  | "resize-e"
+  | "resize-w"
+  | "resize-nw"
+  | "resize-ne"
+  | "resize-sw";
+
+const HIGHLIGHT_MIN_NORM = 0.012;
 
 const boxTextStyle: CSSProperties = {
   font: BOX_COMMENT_FONT,
@@ -261,6 +275,49 @@ function StampResizeHandle({
   );
 }
 
+function HighlightEdgeHandle({
+  edge,
+  onPointerDown,
+}: {
+  edge: "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
+  onPointerDown: (e: ReactPointerEvent) => void;
+}) {
+  const cursor =
+    edge === "n" || edge === "s"
+      ? "ns-resize"
+      : edge === "e" || edge === "w"
+        ? "ew-resize"
+        : edge === "ne" || edge === "sw"
+          ? "nesw-resize"
+          : "nwse-resize";
+  const pos: CSSProperties =
+    edge === "n"
+      ? { left: 4, right: 4, top: -3, height: 6 }
+      : edge === "s"
+        ? { left: 4, right: 4, bottom: -3, height: 6 }
+        : edge === "e"
+          ? { top: 4, bottom: 4, right: -3, width: 6 }
+          : edge === "w"
+            ? { top: 4, bottom: 4, left: -3, width: 6 }
+            : edge === "nw"
+              ? { left: -3, top: -3, width: 8, height: 8 }
+              : edge === "ne"
+                ? { right: -3, top: -3, width: 8, height: 8 }
+                : edge === "sw"
+                  ? { left: -3, bottom: -3, width: 8, height: 8 }
+                  : { right: -3, bottom: -3, width: 8, height: 8 };
+  return (
+    <button
+      type="button"
+      data-resize-handle="true"
+      aria-label={`Resize highlight ${edge}`}
+      className="absolute z-10 border-0 bg-transparent p-0 opacity-70 hover:bg-slate-900/10"
+      style={{ ...pos, cursor }}
+      onPointerDown={onPointerDown}
+    />
+  );
+}
+
 function AnnotationItem({
   annotation,
   selected,
@@ -389,16 +446,48 @@ function AnnotationItem({
         return;
       }
 
+      if (isHighlight && drag.mode.startsWith("resize-")) {
+        let x = drag.ox;
+        let y = drag.oy;
+        let w = drag.ow;
+        let h = drag.oh;
+        const mode = drag.mode;
+        if (mode === "resize-e" || mode === "resize-ne" || mode === "resize-se") {
+          w = Math.max(HIGHLIGHT_MIN_NORM, drag.ow + dx);
+        }
+        if (mode === "resize-w" || mode === "resize-nw" || mode === "resize-sw") {
+          const nextW = Math.max(HIGHLIGHT_MIN_NORM, drag.ow - dx);
+          x = drag.ox + (drag.ow - nextW);
+          w = nextW;
+        }
+        if (mode === "resize-s" || mode === "resize-se" || mode === "resize-sw") {
+          h = Math.max(HIGHLIGHT_MIN_NORM, drag.oh + dy);
+        }
+        if (mode === "resize-n" || mode === "resize-ne" || mode === "resize-nw") {
+          const nextH = Math.max(HIGHLIGHT_MIN_NORM, drag.oh - dy);
+          y = drag.oy + (drag.oh - nextH);
+          h = nextH;
+        }
+        publishLive(clampNormBox({ x_norm: x, y_norm: y, w_norm: w, h_norm: h }));
+        return;
+      }
+
       if ((drag.mode === "resize-right" || drag.mode === "resize-left") && isBox) {
         const nextW =
           drag.mode === "resize-right"
             ? Math.min(
                 BOX_COMMENT_MAX_WIDTH_FRACTION,
-                Math.max(0.08, drag.ow + dx),
+                Math.max(
+                  BOX_COMMENT_MIN_WIDTH_PX / Math.max(1, rect.width),
+                  drag.ow + dx,
+                ),
               )
             : Math.min(
                 BOX_COMMENT_MAX_WIDTH_FRACTION,
-                Math.max(0.08, drag.ow - dx),
+                Math.max(
+                  BOX_COMMENT_MIN_WIDTH_PX / Math.max(1, rect.width),
+                  drag.ow - dx,
+                ),
               );
         const sized = resizeBoxCommentWidth(
           drag.text,
@@ -421,7 +510,14 @@ function AnnotationItem({
         });
       }
     },
-    [annotation.geometry, canvasRef, isBox, isStamp, publishLive],
+    [
+      annotation.geometry,
+      canvasRef,
+      isBox,
+      isHighlight,
+      isStamp,
+      publishLive,
+    ],
   );
 
   const endDrag = useCallback(
@@ -563,17 +659,30 @@ function AnnotationItem({
           return;
         }
         onSelect(annotation.id);
-      }}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        if (isBox) onBeginInlineEdit(annotation.id);
+        // Single-click text zone enters edit (no double-click required).
+        if (
+          isBox &&
+          interactive &&
+          !editing &&
+          (e.target as HTMLElement).closest("[data-box-comment-text]")
+        ) {
+          onBeginInlineEdit(annotation.id);
+        }
       }}
       onPointerDown={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            "[data-resize-handle],[data-collapse-btn],textarea,[data-box-comment-editor]",
+            "[data-resize-handle],[data-collapse-btn],textarea,[data-box-comment-editor],[data-box-comment-text]",
           )
         ) {
+          // Text zone: select only — do not start a move drag.
+          if (
+            (e.target as HTMLElement).closest(
+              "[data-box-comment-text],[data-box-comment-editor]",
+            )
+          ) {
+            if (!selected) onSelect(annotation.id);
+          }
           return;
         }
         if (editing) return;
@@ -592,6 +701,7 @@ function AnnotationItem({
         <>
           <span
             aria-hidden
+            data-box-comment-anchor="true"
             className="absolute -left-1.5 -top-1.5 h-2 w-2 rounded-full"
             style={{ backgroundColor: outlineColour }}
           />
@@ -607,7 +717,9 @@ function AnnotationItem({
               onEndInlineEdit={onEndInlineEdit}
             />
           ) : (
-            <p style={boxTextStyle}>{annotation.text_content || ""}</p>
+            <p data-box-comment-text="true" style={boxTextStyle}>
+              {annotation.text_content || ""}
+            </p>
           )}
           {selected && interactive && !editing ? (
             <>
@@ -662,12 +774,26 @@ function AnnotationItem({
             annotation.text_content ||
             "Stamp"
           }
-          className="h-full w-full object-contain"
+          className="pointer-events-none h-full w-full border-0 bg-transparent object-contain outline-none"
         />
       ) : null}
 
       {selected && interactive && isStamp ? (
         <StampResizeHandle onPointerDown={(e) => beginDrag(e, "resize-se")} />
+      ) : null}
+
+      {selected && interactive && isHighlight ? (
+        <>
+          {(
+            ["n", "s", "e", "w", "nw", "ne", "sw", "se"] as const
+          ).map((edge) => (
+            <HighlightEdgeHandle
+              key={edge}
+              edge={edge}
+              onPointerDown={(e) => beginDrag(e, `resize-${edge}`)}
+            />
+          ))}
+        </>
       ) : null}
     </div>
   );
@@ -804,6 +930,13 @@ export function AnnotationLayer({
   const [dropHint, setDropHint] = useState<{ x: number; y: number } | null>(
     null,
   );
+  const [stampPreview, setStampPreview] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    stampId: string;
+  } | null>(null);
   const draftRafRef = useRef(createRafScheduler());
   const linkedDropHandled = useRef(false);
   const linkedCommentDragRef = useRef(linkedCommentDrag);
@@ -818,6 +951,48 @@ export function AnnotationLayer({
   }, [onCreate]);
 
   useEffect(() => () => draftRafRef.current.cancel(), []);
+
+  const previewStampId =
+    paletteStampDragId || (tool === "stamp" ? selectedStampId : null);
+
+  // Translucent stamp follows the pointer over the worksheet (no DB write).
+  useEffect(() => {
+    if (!previewStampId) return;
+    const stamp = stamps.find((s) => s.id === previewStampId);
+    if (!stamp) return;
+    function onMove(e: PointerEvent) {
+      const root = rootRef.current;
+      if (!root || !stamp) return;
+      const rect = root.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      if (!inside) {
+        setStampPreview(null);
+        return;
+      }
+      const norm = pointerToNorm(e.clientX, e.clientY, rect);
+      const draft = buildStampCreateDraft(stamp, norm, rect);
+      setStampPreview({
+        x: draft.x_norm,
+        y: draft.y_norm,
+        w: draft.w_norm,
+        h: draft.h_norm,
+        stampId: stamp.id,
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+    };
+  }, [previewStampId, stamps]);
+
+  const activeStampPreview =
+    previewStampId && stampPreview?.stampId === previewStampId
+      ? stampPreview
+      : null;
 
   // Complete palette stamp drops that end over the worksheet.
   useEffect(() => {
@@ -916,10 +1091,10 @@ export function AnnotationLayer({
       className="absolute inset-0 z-[5]"
       style={{
         cursor:
-          tool === "select" || tool === "delete"
-            ? "default"
-            : tool === "stamp" || tool === "area_comment"
-              ? "crosshair"
+          previewStampId && activeStampPreview
+            ? "none"
+            : tool === "select" || tool === "delete"
+              ? "default"
               : "crosshair",
         pointerEvents: "auto",
       }}
@@ -1098,6 +1273,39 @@ export function AnnotationLayer({
           aria-hidden
         />
       ) : null}
+
+      {activeStampPreview
+        ? (() => {
+            const stamp = stamps.find(
+              (s) => s.id === activeStampPreview.stampId,
+            );
+            if (!stamp) return null;
+            const opacity =
+              typeof stamp.default_opacity === "number"
+                ? Math.min(1, Math.max(0.1, stamp.default_opacity))
+                : 0.55;
+            return (
+              <div
+                className="pointer-events-none absolute z-50 border-0 bg-transparent outline-none"
+                style={{
+                  left: `${activeStampPreview.x * 100}%`,
+                  top: `${activeStampPreview.y * 100}%`,
+                  width: `${activeStampPreview.w * 100}%`,
+                  height: `${activeStampPreview.h * 100}%`,
+                  opacity: Math.min(0.75, opacity),
+                }}
+                aria-hidden
+                data-stamp-cursor-preview="true"
+              >
+                <StampImage
+                  stamp={stamp}
+                  alt=""
+                  className="h-full w-full border-0 bg-transparent object-contain outline-none"
+                />
+              </div>
+            );
+          })()
+        : null}
     </div>
   );
 }

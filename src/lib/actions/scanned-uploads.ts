@@ -24,6 +24,7 @@ export type ScannedUploadFileRow = {
   block_id: string;
   question_id: string | null;
   submission_version: number;
+  storage_bucket: string;
   original_storage_path: string;
   preview_storage_path: string | null;
   original_file_name: string;
@@ -43,6 +44,9 @@ function mapFile(row: Record<string, unknown>): ScannedUploadFileRow {
     block_id: String(row.block_id),
     question_id: (row.question_id as string | null) ?? null,
     submission_version: Number(row.submission_version ?? 1),
+    storage_bucket:
+      String(row.storage_bucket ?? "student-submissions") ||
+      "student-submissions",
     original_storage_path: String(row.original_storage_path),
     preview_storage_path: (row.preview_storage_path as string | null) ?? null,
     original_file_name: String(row.original_file_name),
@@ -324,27 +328,41 @@ export async function confirmScannedUploadAction(input: {
     };
   }
 
-  const { data, error } = await supabase
+  const baseRow = {
+    id: input.fileId,
+    submission_id: input.submissionId,
+    block_id: input.blockId,
+    question_id: input.questionId ?? null,
+    submission_version: input.submissionVersion,
+    original_storage_path: input.storagePath,
+    preview_storage_path: input.storagePath,
+    original_file_name: input.originalFileName,
+    mime_type: input.mimeType,
+    file_size: input.fileSize,
+    page_count: input.mimeType === "application/pdf" ? null : 1,
+    display_order: input.displayOrder,
+    rotation: 0,
+    is_active_version: true,
+    created_by: profile.id,
+  };
+
+  let { data, error } = await supabase
     .from("scanned_upload_files")
     .insert({
-      id: input.fileId,
-      submission_id: input.submissionId,
-      block_id: input.blockId,
-      question_id: input.questionId ?? null,
-      submission_version: input.submissionVersion,
-      original_storage_path: input.storagePath,
-      preview_storage_path: input.storagePath,
-      original_file_name: input.originalFileName,
-      mime_type: input.mimeType,
-      file_size: input.fileSize,
-      page_count: input.mimeType === "application/pdf" ? null : 1,
-      display_order: input.displayOrder,
-      rotation: 0,
-      is_active_version: true,
-      created_by: profile.id,
+      ...baseRow,
+      storage_bucket: "student-submissions",
     })
     .select("*")
     .single();
+
+  // Pre-migration compatibility when storage_bucket column is absent.
+  if (error && /storage_bucket/i.test(error.message)) {
+    ({ data, error } = await supabase
+      .from("scanned_upload_files")
+      .insert(baseRow)
+      .select("*")
+      .single());
+  }
 
   if (error) {
     console.error("[scanned-upload] metadata insert failed", error);

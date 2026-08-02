@@ -4,6 +4,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -51,6 +52,10 @@ import {
   parentScannedUploadBlockId,
 } from "@/lib/marking/expand-assessable";
 import type { ScannedUploadFileRow } from "@/lib/actions/scanned-uploads";
+import {
+  resolveScannedDisplayPath,
+  selectLatestActiveScannedFiles,
+} from "@/lib/homework/scanned-file-resolve";
 import type {
   AssignmentFeedbackField,
   CommentBankItem,
@@ -109,6 +114,9 @@ type CentreView =
       pageNumber?: number | null;
       rotation?: number;
       originalPath?: string | null;
+      fileId?: string | null;
+      blockId?: string | null;
+      submissionVersion?: number | null;
     };
 
 type AnnotationGeometryPatch = Pick<
@@ -366,6 +374,12 @@ export function DocumentMarkingWorkspace({
   const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(
     null,
   );
+  const selectedAnnotationIdRef = useRef<string | null>(null);
+  const editingAnnotationIdRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    selectedAnnotationIdRef.current = selectedAnnotationId;
+    editingAnnotationIdRef.current = editingAnnotationId;
+  }, [selectedAnnotationId, editingAnnotationId]);
   const [markFlash, setMarkFlash] = useState<MarkFlashPayload | null>(null);
   const textEditTimers = useRef(new Map<string, number>());
   const editSnapshots = useRef(new Map<string, SubmissionAnnotation>());
@@ -472,13 +486,12 @@ export function DocumentMarkingWorkspace({
 
   const scannedFilesByBlock = useMemo(() => {
     const map = new Map<string, ScannedUploadFileRow[]>();
-    for (const file of initialScannedFiles) {
-      const list = map.get(file.block_id) ?? [];
-      list.push(file);
-      map.set(file.block_id, list);
-    }
-    for (const [, list] of map) {
-      list.sort((a, b) => a.display_order - b.display_order);
+    const blockIds = new Set(initialScannedFiles.map((f) => f.block_id));
+    for (const blockId of blockIds) {
+      map.set(
+        blockId,
+        selectLatestActiveScannedFiles(initialScannedFiles, blockId),
+      );
     }
     return map;
   }, [initialScannedFiles]);
@@ -490,34 +503,26 @@ export function DocumentMarkingWorkspace({
         setCentreView({ kind: "worksheet" });
         return;
       }
-      const combinedPreview = files.find(
-        (f) =>
-          f.preview_storage_path &&
-          f.preview_storage_path !== f.original_storage_path &&
-          f.preview_storage_path.endsWith(".pdf"),
-      );
-      if (combinedPreview?.preview_storage_path) {
-        setCentreView({
-          kind: "file",
-          fileName: "Marking preview.pdf",
-          path: combinedPreview.preview_storage_path,
-          bucket: "student-submissions",
-          annotatable: true,
-          pageNumber: 1,
-          originalPath: combinedPreview.original_storage_path,
-        });
-        return;
-      }
-      const first = files[0]!;
+      // Prefer a combined image→PDF preview when present; otherwise the
+      // latest active original (never reconstruct path from filename).
+      const combined = files.find((f) => {
+        const resolved = resolveScannedDisplayPath(f);
+        return resolved.usesCombinedPreview;
+      });
+      const primary = combined ?? files[0]!;
+      const resolved = resolveScannedDisplayPath(primary);
       setCentreView({
         kind: "file",
-        fileName: first.original_file_name,
-        path: first.preview_storage_path || first.original_storage_path,
-        bucket: "student-submissions",
+        fileName: resolved.fileName,
+        path: resolved.path,
+        bucket: resolved.bucket as "student-submissions",
         annotatable: true,
         pageNumber: 1,
-        rotation: first.rotation,
-        originalPath: first.original_storage_path,
+        rotation: primary.rotation,
+        originalPath: resolved.downloadPath,
+        fileId: primary.id,
+        blockId,
+        submissionVersion: primary.submission_version,
       });
     },
     [scannedFilesByBlock],
@@ -780,7 +785,13 @@ export function DocumentMarkingWorkspace({
       block_id: parentBlockId,
       page_number:
         centreView.kind === "file" ? (centreView.pageNumber ?? 1) : null,
-      target_kind: centreView.kind === "worksheet" ? "worksheet" : "file",
+      target_kind:
+        centreView.kind === "worksheet"
+          ? "worksheet"
+          : centreView.fileName.toLowerCase().endsWith(".pdf") ||
+              centreView.path.toLowerCase().endsWith(".pdf")
+            ? "pdf"
+            : "file",
       target_path: centreView.kind === "file" ? centreView.path : null,
       annotation_type: draft.annotation_type,
       x_norm: draft.x_norm,
@@ -1087,6 +1098,11 @@ export function DocumentMarkingWorkspace({
     const next = previous.filter((a) => a.id !== id);
     replaceAnnotations(next);
     setSelectedAnnotationId(null);
+    setEditingAnnotationId((cur) => (cur === id ? null : cur));
+    selectedAnnotationIdRef.current = null;
+    if (editingAnnotationIdRef.current === id) {
+      editingAnnotationIdRef.current = null;
+    }
     undoRef.current.push({
       label: "delete",
       undo: () => previous,
@@ -1310,13 +1326,16 @@ export function DocumentMarkingWorkspace({
       ) {
         return;
       }
+      // Always read selection from refs — never a stale closure.
+      const selectedId = selectedAnnotationIdRef.current;
+      const editingId = editingAnnotationIdRef.current;
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
-        selectedAnnotationId &&
-        !editingAnnotationId
+        selectedId &&
+        !editingId
       ) {
         e.preventDefault();
-        deleteAnnotationById(selectedAnnotationId);
+        deleteAnnotationById(selectedId);
         return;
       }
       if (e.key === "ArrowLeft") void goQuestion(-1);
@@ -1370,8 +1389,19 @@ export function DocumentMarkingWorkspace({
   const fileAnnotations = annotations.filter((a) => {
     if (a.is_deleted || a.target_kind === "worksheet") return false;
     if (centreView.kind !== "file") return false;
-    if (!a.target_path) return true;
-    return a.target_path === centreView.path;
+    if (a.target_path && a.target_path !== centreView.path) {
+      // Also match annotations stored against the original download path.
+      if (
+        centreView.originalPath &&
+        a.target_path !== centreView.originalPath
+      ) {
+        return false;
+      }
+      if (!centreView.originalPath) return false;
+    }
+    const page = centreView.pageNumber ?? 1;
+    if (a.page_number != null && a.page_number !== page) return false;
+    return true;
   });
   const scannedBlockMarkScheme =
     selectedBlock?.block_type === "scanned_homework_upload"
@@ -1658,7 +1688,9 @@ export function DocumentMarkingWorkspace({
                           </span>
                         </button>
                         <ul className="mt-1 space-y-1 pl-2">
-                          {files.map((file) => (
+                          {files.map((file) => {
+                            const resolved = resolveScannedDisplayPath(file);
+                            return (
                             <li key={file.id}>
                               <button
                                 type="button"
@@ -1667,20 +1699,23 @@ export function DocumentMarkingWorkspace({
                                   setCentreView({
                                     kind: "file",
                                     fileName: file.original_file_name,
-                                    path:
-                                      file.preview_storage_path ||
-                                      file.original_storage_path,
-                                    bucket: "student-submissions",
+                                    path: resolved.downloadPath,
+                                    bucket: resolved.bucket as "student-submissions",
                                     annotatable: true,
                                     rotation: file.rotation,
-                                    originalPath: file.original_storage_path,
+                                    originalPath: resolved.downloadPath,
+                                    fileId: file.id,
+                                    blockId,
+                                    submissionVersion: file.submission_version,
+                                    pageNumber: 1,
                                   })
                                 }
                               >
                                 {file.original_file_name}
                               </button>
                             </li>
-                          ))}
+                            );
+                          })}
                         </ul>
                       </li>
                     );
@@ -1857,108 +1892,118 @@ export function DocumentMarkingWorkspace({
           </div>
 
           {centreView.kind === "file" ? (
-            <div className="relative min-h-0 flex-1 overflow-auto">
-              <div className="relative min-h-full">
-                <FileViewer
-                  fileName={centreView.fileName}
-                  storagePath={centreView.path}
-                  bucket={centreView.bucket}
-                  zoom={zoom}
-                  fit={fit}
-                  rotation={centreView.rotation}
-                  downloadPath={centreView.originalPath ?? centreView.path}
-                  onPageCount={(pages) => {
-                    if (centreView.kind !== "file") return;
-                    if (!centreView.pageNumber) {
-                      setCentreView({ ...centreView, pageNumber: 1 });
-                    }
-                    void pages;
-                  }}
-                />
-                {centreView.annotatable ? (
-                  <div className="pointer-events-none absolute inset-0 z-[6]">
-                    <div className="pointer-events-auto absolute inset-x-0 top-12 bottom-0 mx-auto max-w-4xl">
-                      <AnnotationLayer
-                        annotations={fileAnnotations}
-                        tool={tool}
-                        colour={colour}
-                        selectedId={selectedAnnotationId}
-                        editingId={editingAnnotationId}
-                        selectedStampId={selectedStampId}
-                        stamps={stamps}
-                        linkedCommentDrag={linkedCommentDrag}
-                        paletteStampDragId={paletteStampDragId}
-                        onSelect={handleAnnotationSelect}
-                        onCreate={createAnnotation}
-                        onCommitGeometry={handleCommitGeometry}
-                        onToggleCollapse={handleToggleCollapse}
-                        onBeginInlineEdit={handleBeginInlineEdit}
-                        onEndInlineEdit={handleEndInlineEdit}
-                        onPaletteStampDrop={() => setPaletteStampDragId(null)}
-                        onDeleteSelected={(id) => {
-                          const targetId = id ?? selectedAnnotationId;
-                          if (targetId) deleteAnnotationById(targetId);
-                        }}
-                      />
+            <div className="relative min-h-0 flex-1">
+              <div className="absolute inset-0 overflow-auto">
+                <div className="relative min-h-full">
+                  <FileViewer
+                    fileName={centreView.fileName}
+                    storagePath={centreView.path}
+                    bucket={centreView.bucket}
+                    zoom={zoom}
+                    fit={fit}
+                    rotation={centreView.rotation}
+                    pageNumber={centreView.pageNumber ?? 1}
+                    downloadPath={centreView.originalPath ?? centreView.path}
+                    onPageChange={(page) => {
+                      setCentreView((prev) =>
+                        prev.kind === "file"
+                          ? { ...prev, pageNumber: page }
+                          : prev,
+                      );
+                    }}
+                    onPageCount={(pages) => {
+                      void pages;
+                    }}
+                  />
+                  {centreView.annotatable ? (
+                    <div className="pointer-events-none absolute inset-0 z-[6]">
+                      <div className="pointer-events-auto absolute inset-x-0 top-12 bottom-0 mx-auto max-w-4xl">
+                        <AnnotationLayer
+                          annotations={fileAnnotations}
+                          tool={tool}
+                          colour={colour}
+                          selectedId={selectedAnnotationId}
+                          editingId={editingAnnotationId}
+                          selectedStampId={selectedStampId}
+                          stamps={stamps}
+                          linkedCommentDrag={linkedCommentDrag}
+                          paletteStampDragId={paletteStampDragId}
+                          onSelect={handleAnnotationSelect}
+                          onCreate={createAnnotation}
+                          onCommitGeometry={handleCommitGeometry}
+                          onToggleCollapse={handleToggleCollapse}
+                          onBeginInlineEdit={handleBeginInlineEdit}
+                          onEndInlineEdit={handleEndInlineEdit}
+                          onPaletteStampDrop={() => setPaletteStampDragId(null)}
+                          onDeleteSelected={(id) => {
+                            const targetId =
+                              id ?? selectedAnnotationIdRef.current;
+                            if (targetId) deleteAnnotationById(targetId);
+                          }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
               </div>
+              {/* Sticky to visible viewer viewport — not the scrolled PDF height. */}
               <MarkAwardFlash flash={markFlash} />
             </div>
           ) : (
-            <div
-              data-marking-worksheet-scroll="true"
-              className="relative min-h-0 flex-1 overflow-auto bg-slate-300/50 p-6"
-            >
+            <div className="relative min-h-0 flex-1">
               <div
-                ref={paperRef}
-                className="relative mx-auto max-w-4xl rounded-sm bg-white p-8 shadow-xl"
-                style={{
-                  transform:
-                    fit === "width"
-                      ? "none"
-                      : fit === "page"
-                        ? "scale(0.92)"
-                        : `scale(${zoom})`,
-                  transformOrigin: "top center",
-                }}
+                data-marking-worksheet-scroll="true"
+                className="absolute inset-0 overflow-auto bg-slate-300/50 p-6"
               >
-                <MemoWorksheet
-                  sections={sections}
-                  values={worksheetValues}
-                  mode="teacher_marking"
-                  showTeacherGuidance
-                  selectedQuestionId={selectedQuestionId}
-                  onSelectQuestion={onSelectQuestion}
-                />
-                <AnnotationLayer
-                  annotations={worksheetAnnotations}
-                  tool={tool}
-                  colour={colour}
-                  selectedId={selectedAnnotationId}
-                  editingId={editingAnnotationId}
-                  selectedStampId={selectedStampId}
-                  stamps={stamps}
-                  linkedCommentDrag={linkedCommentDrag}
-                  paletteStampDragId={paletteStampDragId}
-                  onSelect={handleAnnotationSelect}
-                  onCreate={createAnnotation}
-                  onCommitGeometry={handleCommitGeometry}
-                  onToggleCollapse={handleToggleCollapse}
-                  onBeginInlineEdit={handleBeginInlineEdit}
-                  onEndInlineEdit={handleEndInlineEdit}
-                  onPaletteStampDrop={() => setPaletteStampDragId(null)}
-                  onDeleteSelected={(id) => {
-                    const targetId = id ?? selectedAnnotationId;
-                    if (targetId) deleteAnnotationById(targetId);
+                <div
+                  ref={paperRef}
+                  className="relative mx-auto max-w-4xl rounded-sm bg-white p-8 shadow-xl"
+                  style={{
+                    transform:
+                      fit === "width"
+                        ? "none"
+                        : fit === "page"
+                          ? "scale(0.92)"
+                          : `scale(${zoom})`,
+                    transformOrigin: "top center",
                   }}
-                />
-                {!stampsReady ? (
-                  <div className="pointer-events-none absolute right-3 top-3 rounded-md bg-slate-900/70 px-2 py-1 text-[11px] text-white">
-                    Loading stamps…
-                  </div>
-                ) : null}
+                >
+                  <MemoWorksheet
+                    sections={sections}
+                    values={worksheetValues}
+                    mode="teacher_marking"
+                    showTeacherGuidance
+                    selectedQuestionId={selectedQuestionId}
+                    onSelectQuestion={onSelectQuestion}
+                  />
+                  <AnnotationLayer
+                    annotations={worksheetAnnotations}
+                    tool={tool}
+                    colour={colour}
+                    selectedId={selectedAnnotationId}
+                    editingId={editingAnnotationId}
+                    selectedStampId={selectedStampId}
+                    stamps={stamps}
+                    linkedCommentDrag={linkedCommentDrag}
+                    paletteStampDragId={paletteStampDragId}
+                    onSelect={handleAnnotationSelect}
+                    onCreate={createAnnotation}
+                    onCommitGeometry={handleCommitGeometry}
+                    onToggleCollapse={handleToggleCollapse}
+                    onBeginInlineEdit={handleBeginInlineEdit}
+                    onEndInlineEdit={handleEndInlineEdit}
+                    onPaletteStampDrop={() => setPaletteStampDragId(null)}
+                    onDeleteSelected={(id) => {
+                      const targetId = id ?? selectedAnnotationIdRef.current;
+                      if (targetId) deleteAnnotationById(targetId);
+                    }}
+                  />
+                  {!stampsReady ? (
+                    <div className="pointer-events-none absolute right-3 top-3 rounded-md bg-slate-900/70 px-2 py-1 text-[11px] text-white">
+                      Loading stamps…
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <MarkAwardFlash flash={markFlash} />
             </div>
