@@ -7,11 +7,14 @@ import type { CSSProperties } from "react";
 export function stampAnnotationChrome(selected: boolean): CSSProperties {
   return {
     border: "none",
-    outline: selected ? "1px dashed rgba(15,23,42,0.35)" : "none",
-    outlineOffset: 2,
+    // Selected: faint temporary guide only — never a solid rectangular frame.
+    outline: selected ? "1px dashed rgba(15,23,42,0.28)" : "none",
+    outlineOffset: selected ? 2 : 0,
     backgroundColor: "transparent",
+    background: "transparent",
     boxShadow: "none",
     overflow: "visible",
+    WebkitTapHighlightColor: "transparent",
   };
 }
 
