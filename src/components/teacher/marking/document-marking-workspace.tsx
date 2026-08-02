@@ -51,10 +51,7 @@ import type {
   FeedbackFieldValue,
 } from "@/lib/feedback/types";
 import { normalizeStampDimensions } from "@/lib/marking/annotation-geometry";
-import {
-  appendFeedbackAvoidingDuplicate,
-  resizeBoxCommentForText,
-} from "@/lib/marking/box-comment-size";
+import { appendFeedbackAvoidingDuplicate } from "@/lib/marking/box-comment-size";
 import type {
   AnnotationTool,
   MarkingStamp,
@@ -335,6 +332,9 @@ export function DocumentMarkingWorkspace({
   }, []);
   const [colour, setColour] = useState("#dc2626");
   const [selectedStampId, setSelectedStampId] = useState<string | null>(null);
+  const [paletteStampDragId, setPaletteStampDragId] = useState<string | null>(
+    null,
+  );
   const [readyStampPaths, setReadyStampPaths] = useState<Set<string>>(
     () => new Set(),
   );
@@ -351,7 +351,6 @@ export function DocumentMarkingWorkspace({
   );
   const [markFlash, setMarkFlash] = useState<MarkFlashPayload | null>(null);
   const textEditTimers = useRef(new Map<string, number>());
-  const textEditSeq = useRef(new Map<string, number>());
   const editSnapshots = useRef(new Map<string, SubmissionAnnotation>());
   const [stampsReady, setStampsReady] = useState(false);
   const stampNormalizeSaved = useRef(false);
@@ -656,10 +655,16 @@ export function DocumentMarkingWorkspace({
     return true;
   }, []);
 
+  const annotationSaveSeq = useRef(0);
+  const annotationSaveLatest = useRef(new Map<string, number>());
+
   async function persistAnnotation(
     next: SubmissionAnnotation,
     previous: SubmissionAnnotation[] | null,
+    options?: { rollbackOnFailure?: boolean },
   ) {
+    const seq = ++annotationSaveSeq.current;
+    annotationSaveLatest.current.set(next.id, seq);
     pendingSaves.current += 1;
     setSaveStatus("saving");
     setSaveError(null);
@@ -669,19 +674,43 @@ export function DocumentMarkingWorkspace({
         submission_id: submissionId,
         assignment_id: assignmentId,
       });
+      // Ignore stale responses from earlier saves of the same annotation.
+      if (annotationSaveLatest.current.get(next.id) !== seq) {
+        return;
+      }
       if (result.error || !result.annotation) {
         setSaveStatus("error");
         setSaveError(result.error ?? "Save failed");
-        if (previous) replaceAnnotations(previous);
+        // Keep the optimistic geometry; only roll back when explicitly requested
+        // (e.g. failed create). Failed moves keep the local position.
+        if (options?.rollbackOnFailure && previous) {
+          replaceAnnotations(previous);
+        }
         return;
       }
+      const serverId = result.annotation.id;
       // Keep local geometry to avoid a post-save jump; only sync server identity.
       updateAnnotations((prev) =>
         prev.map((a) => {
-          if (a.id !== next.id && a.id !== result.annotation!.id) return a;
+          if (a.id !== next.id && a.id !== serverId) return a;
+          // Never overwrite newer local geometry with an older save response.
+          const localNewer =
+            a.client_version > result.annotation!.client_version ||
+            a.updated_at > (result.annotation!.updated_at ?? "");
+          if (localNewer && a.id === serverId) {
+            return {
+              ...a,
+              client_version: Math.max(
+                a.client_version,
+                result.annotation!.client_version,
+              ),
+              created_by: result.annotation!.created_by || a.created_by,
+              created_at: result.annotation!.created_at || a.created_at,
+            };
+          }
           return {
             ...a,
-            id: result.annotation!.id,
+            id: serverId,
             client_version: result.annotation!.client_version,
             created_by: result.annotation!.created_by || a.created_by,
             created_at: result.annotation!.created_at || a.created_at,
@@ -689,6 +718,19 @@ export function DocumentMarkingWorkspace({
           };
         }),
       );
+      if (serverId !== next.id) {
+        setSelectedAnnotationId((cur) => (cur === next.id ? serverId : cur));
+        setEditingAnnotationId((cur) => (cur === next.id ? serverId : cur));
+        const snap = editSnapshots.current.get(next.id);
+        if (snap) {
+          editSnapshots.current.delete(next.id);
+          editSnapshots.current.set(serverId, { ...snap, id: serverId });
+        }
+        annotationSaveLatest.current.set(
+          serverId,
+          annotationSaveLatest.current.get(next.id) ?? seq,
+        );
+      }
       setSaveStatus("saved");
     } finally {
       pendingSaves.current = Math.max(0, pendingSaves.current - 1);
@@ -733,7 +775,14 @@ export function DocumentMarkingWorkspace({
       geometry: draft.geometry ?? {},
       text_content: draft.text_content ?? null,
       colour,
-      opacity: draft.annotation_type === "freehand" ? 0.55 : 0.35,
+      opacity:
+        draft.annotation_type === "freehand"
+          ? 0.55
+          : draft.annotation_type === "stamp"
+            ? typeof draft.geometry?.opacity === "number"
+              ? Number(draft.geometry.opacity)
+              : 1
+            : 0.35,
       stroke_width: 2,
       stamp_id: stampId,
       source_comment_item_id: draft.source_comment_item_id ?? null,
@@ -758,7 +807,7 @@ export function DocumentMarkingWorkspace({
     });
     syncUndoButtons();
     startTransition(() => {
-      void persistAnnotation(created, previous);
+      void persistAnnotation(created, previous, { rollbackOnFailure: true });
     });
   }
 
@@ -1075,8 +1124,9 @@ export function DocumentMarkingWorkspace({
       redo: () => redoState,
     });
     syncUndoButtons();
+    // Persist after pointer-up only — never during drag.
     startTransition(() => {
-      void persistAnnotation(next, previous);
+      void persistAnnotation(next, previous, { rollbackOnFailure: false });
     });
   }
 
@@ -1100,80 +1150,6 @@ export function DocumentMarkingWorkspace({
     setEditingAnnotationId(id);
   }
 
-  function handleInlineTextChange(id: string, text: string) {
-    const current = annotationsRef.current.find((a) => a.id === id);
-    if (!current) return;
-    const paper = paperRef.current;
-    const preferred =
-      typeof current.geometry?.preferred_w_norm === "number"
-        ? (current.geometry.preferred_w_norm as number)
-        : current.w_norm;
-    let patch: AnnotationGeometryPatch = {
-      x_norm: current.x_norm,
-      y_norm: current.y_norm,
-      w_norm: current.w_norm,
-      h_norm: current.h_norm,
-      text_content: text,
-      geometry: {
-        ...current.geometry,
-        preferred_w_norm: preferred,
-      },
-    };
-    if (
-      current.annotation_type === "area_comment" &&
-      paper?.clientWidth &&
-      paper.clientHeight
-    ) {
-      const resized = resizeBoxCommentForText(
-        text,
-        current.x_norm,
-        current.y_norm,
-        preferred,
-        paper.clientWidth,
-        paper.clientHeight,
-      );
-      patch = {
-        ...patch,
-        ...resized,
-        text_content: text,
-        geometry: {
-          ...current.geometry,
-          preferred_w_norm: resized.w_norm,
-        },
-      };
-    }
-    const next: SubmissionAnnotation = {
-      ...current,
-      ...patch,
-      text_content: text,
-      updated_at: new Date().toISOString(),
-    };
-    updateAnnotations((prev) => prev.map((a) => (a.id === id ? next : a)));
-
-    const seq = (textEditSeq.current.get(id) ?? 0) + 1;
-    textEditSeq.current.set(id, seq);
-    const existingTimer = textEditTimers.current.get(id);
-    if (existingTimer) window.clearTimeout(existingTimer);
-    const timer = window.setTimeout(() => {
-      textEditTimers.current.delete(id);
-      if (textEditSeq.current.get(id) !== seq) return;
-      const latest = annotationsRef.current.find((a) => a.id === id);
-      if (!latest) return;
-      const toSave = {
-        ...latest,
-        client_version: latest.client_version + 1,
-        updated_at: new Date().toISOString(),
-      };
-      updateAnnotations((prev) =>
-        prev.map((a) => (a.id === id ? toSave : a)),
-      );
-      startTransition(() => {
-        void persistAnnotation(toSave, null);
-      });
-    }, QUESTION_FEEDBACK_DEBOUNCE_MS);
-    textEditTimers.current.set(id, timer);
-  }
-
   function handleEndInlineEdit(id: string, cancel?: boolean) {
     const timer = textEditTimers.current.get(id);
     if (timer) {
@@ -1190,17 +1166,8 @@ export function DocumentMarkingWorkspace({
       return;
     }
     editSnapshots.current.delete(id);
-    const latest = annotationsRef.current.find((a) => a.id === id);
-    if (!latest) return;
-    const toSave = {
-      ...latest,
-      client_version: latest.client_version + 1,
-      updated_at: new Date().toISOString(),
-    };
-    updateAnnotations((prev) => prev.map((a) => (a.id === id ? toSave : a)));
-    startTransition(() => {
-      void persistAnnotation(toSave, null);
-    });
+    // Geometry/text already committed via onCommit before end; avoid a second
+    // save that could race and remount the editor.
   }
 
   function beginRightResize(e: ReactPointerEvent) {
@@ -1479,6 +1446,15 @@ export function DocumentMarkingWorkspace({
             onToolChange={setTool}
             onColourChange={setColour}
             onStampSelect={setSelectedStampId}
+            onStampPaletteDragStart={(stampId) => {
+              if (!stampId) {
+                setPaletteStampDragId(null);
+                return;
+              }
+              setSelectedStampId(stampId);
+              setTool("stamp");
+              setPaletteStampDragId(stampId);
+            }}
             onUndo={() => {
               const prev = undoRef.current.undo();
               if (prev) {
@@ -1834,13 +1810,14 @@ export function DocumentMarkingWorkspace({
                         selectedStampId={selectedStampId}
                         stamps={stamps}
                         linkedCommentDrag={null}
+                        paletteStampDragId={paletteStampDragId}
                         onSelect={handleAnnotationSelect}
                         onCreate={createAnnotation}
                         onCommitGeometry={handleCommitGeometry}
                         onToggleCollapse={handleToggleCollapse}
                         onBeginInlineEdit={handleBeginInlineEdit}
-                        onInlineTextChange={handleInlineTextChange}
                         onEndInlineEdit={handleEndInlineEdit}
+                        onPaletteStampDrop={() => setPaletteStampDragId(null)}
                         onDeleteSelected={(id) => {
                           const targetId = id ?? selectedAnnotationId;
                           if (targetId) deleteAnnotationById(targetId);
@@ -1887,13 +1864,14 @@ export function DocumentMarkingWorkspace({
                   selectedStampId={selectedStampId}
                   stamps={stamps}
                   linkedCommentDrag={null}
+                  paletteStampDragId={paletteStampDragId}
                   onSelect={handleAnnotationSelect}
                   onCreate={createAnnotation}
                   onCommitGeometry={handleCommitGeometry}
                   onToggleCollapse={handleToggleCollapse}
                   onBeginInlineEdit={handleBeginInlineEdit}
-                  onInlineTextChange={handleInlineTextChange}
                   onEndInlineEdit={handleEndInlineEdit}
+                  onPaletteStampDrop={() => setPaletteStampDragId(null)}
                   onDeleteSelected={(id) => {
                     const targetId = id ?? selectedAnnotationId;
                     if (targetId) deleteAnnotationById(targetId);
@@ -2099,6 +2077,15 @@ export function DocumentMarkingWorkspace({
           onToolChange={setTool}
           onColourChange={setColour}
           onStampSelect={setSelectedStampId}
+          onStampPaletteDragStart={(stampId) => {
+            if (!stampId) {
+              setPaletteStampDragId(null);
+              return;
+            }
+            setSelectedStampId(stampId);
+            setTool("stamp");
+            setPaletteStampDragId(stampId);
+          }}
           onUndo={() => {
             const prev = undoRef.current.undo();
             if (prev) {
@@ -2117,6 +2104,14 @@ export function DocumentMarkingWorkspace({
           onToggleCollapse={() => setToolbarCollapsed((v) => !v)}
           onFloatDragStart={handleFloatDragStart}
         />
+      ) : null}
+
+      {paletteStampDragId ? (
+        <div className="pointer-events-none fixed inset-0 z-[80]">
+          <div className="absolute left-3 top-3 rounded-md bg-slate-900/80 px-2 py-1 text-[11px] text-white">
+            Drop stamp on the worksheet
+          </div>
+        </div>
       ) : null}
     </div>
   );

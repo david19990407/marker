@@ -12,6 +12,7 @@ import {
   loadTemplateStructure,
   structureToPayload,
 } from "@/lib/homework/structure";
+import { repairScannedHomeworkQuestionIds } from "@/lib/homework/repair-scanned-question-ids";
 import {
   structuredResponseFingerprint,
   structuredUpsertSkipReason,
@@ -50,6 +51,8 @@ export async function saveHomeworkStructureAction(
 
   // Keep dedicated scanned-upload tables aligned with block config JSON.
   await syncScannedUploadTables(supabase, sections);
+  // Ensure parent scanned-upload blocks have assignment_questions rows.
+  await repairScannedHomeworkQuestionIds(supabase, sections);
 
   // Local-first autosave: never return reloaded structure (would wipe in-progress typing).
   // Client IDs are preserved by the SQL upsert. Do not remount the builder.

@@ -9,6 +9,7 @@ import {
 } from "@/lib/utils/files";
 import { joinClassSchema, submissionDraftSchema } from "@/lib/validations/student";
 import type { ActionResult } from "@/lib/actions/auth";
+import { ensureDraftSubmission } from "@/lib/homework/ensure-draft-submission";
 
 async function assertStudent() {
   return requireProfile(["student"]);
@@ -70,28 +71,11 @@ async function getEditableSubmission(assignmentId: string, studentId: string) {
     .maybeSingle();
   if (!membership) return { error: "You are not in this class" as const };
 
-  let { data: submission } = await supabase
-    .from("submissions")
-    .select("*")
-    .eq("assignment_id", assignmentId)
-    .eq("student_id", studentId)
-    .maybeSingle();
-
-  if (!submission) {
-    const { data: created, error } = await supabase
-      .from("submissions")
-      .insert({
-        assignment_id: assignmentId,
-        student_id: studentId,
-        status: "draft",
-      })
-      .select("*")
-      .single();
-    if (error || !created) {
-      return { error: error?.message ?? "Could not create submission" as const };
-    }
-    submission = created;
+  const ensured = await ensureDraftSubmission(supabase, assignmentId, studentId);
+  if (!ensured.submission) {
+    return { error: ensured.error ?? ("Could not create submission" as const) };
   }
+  const submission = ensured.submission;
 
   if (!["draft", "returned"].includes(submission.status)) {
     return { error: "This submission can no longer be edited" as const };
