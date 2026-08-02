@@ -6,20 +6,27 @@ export const BOX_COMMENT_FONT =
 export const BOX_COMMENT_LINE_HEIGHT = 1.25;
 export const BOX_COMMENT_PAD_X = 6;
 export const BOX_COMMENT_PAD_Y = 4;
-export const BOX_COMMENT_MIN_WIDTH_PX = 128;
-export const BOX_COMMENT_MAX_WIDTH_FRACTION = 0.45;
+export const BOX_COMMENT_DEFAULT_WIDTH_PX = 200;
+export const BOX_COMMENT_MIN_WIDTH_PX = 140;
+export const BOX_COMMENT_MAX_WIDTH_FRACTION = 0.5;
 
 export function measureBoxCommentText(
   text: string,
   maxWidthPx: number,
   minWidthPx = BOX_COMMENT_MIN_WIDTH_PX,
 ): { widthPx: number; heightPx: number } {
+  const widthFloorPx = text.trim()
+    ? minWidthPx
+    : Math.max(minWidthPx, BOX_COMMENT_DEFAULT_WIDTH_PX);
   if (typeof document === "undefined") {
     const widthPx = Math.min(
       maxWidthPx,
-      Math.max(minWidthPx, Math.min(maxWidthPx, 8 + text.length * 6)),
+      Math.max(widthFloorPx, Math.min(maxWidthPx, 8 + text.length * 6)),
     );
-    const charsPerLine = Math.max(12, Math.floor((widthPx - BOX_COMMENT_PAD_X * 2) / 6));
+    const charsPerLine = Math.max(
+      12,
+      Math.floor((widthPx - BOX_COMMENT_PAD_X * 2) / 6),
+    );
     const softLines = text.split("\n").reduce((sum, line) => {
       return sum + Math.max(1, Math.ceil(Math.max(1, line.length) / charsPerLine));
     }, 0);
@@ -42,7 +49,7 @@ export function measureBoxCommentText(
     `padding:${BOX_COMMENT_PAD_Y}px ${BOX_COMMENT_PAD_X}px`,
     "box-sizing:border-box",
     `max-width:${Math.max(minWidthPx, maxWidthPx)}px`,
-    `min-width:${minWidthPx}px`,
+    `min-width:${widthFloorPx}px`,
     "width:max-content",
   ].join(";");
   probe.textContent = text.length > 0 ? text : " ";
@@ -50,7 +57,7 @@ export function measureBoxCommentText(
   const rawWidth = Math.ceil(probe.scrollWidth);
   const widthPx = Math.min(
     Math.max(minWidthPx, maxWidthPx),
-    Math.max(minWidthPx, rawWidth + 1),
+    Math.max(widthFloorPx, rawWidth + 1),
   );
   probe.style.width = `${widthPx}px`;
   probe.style.maxWidth = `${widthPx}px`;

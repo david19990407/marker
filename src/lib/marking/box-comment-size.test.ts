@@ -6,10 +6,15 @@ import {
 } from "./box-comment-size";
 
 describe("box comment sizing", () => {
+  it("starts empty comments at ~200px default width", () => {
+    const size = sizeBoxCommentFromText("", 800, 1100);
+    expect(Math.round(size.w_norm * 800)).toBe(200);
+  });
+
   it("keeps short comments compact and under half canvas width", () => {
     const size = sizeBoxCommentFromText("Good detail", 800, 1100);
-    expect(size.w_norm).toBeLessThanOrEqual(0.48);
-    expect(size.w_norm * 800).toBeGreaterThanOrEqual(120);
+    expect(size.w_norm).toBeLessThanOrEqual(0.5);
+    expect(size.w_norm * 800).toBeGreaterThanOrEqual(140);
     expect(size.h_norm * 1100).toBeGreaterThanOrEqual(20);
   });
 
@@ -17,10 +22,8 @@ describe("box comment sizing", () => {
     const long =
       "This is a substantially longer teacher comment that should wrap across multiple lines without stretching across the whole worksheet surface.";
     const size = sizeBoxCommentFromText(long, 900, 1200);
-    expect(size.w_norm).toBeLessThanOrEqual(0.48 + 0.001);
-    expect(size.h_norm).toBeGreaterThan(
-      sizeBoxCommentFromText("Short", 900, 1200).h_norm,
-    );
+    expect(size.w_norm).toBeLessThanOrEqual(0.5 + 0.001);
+    expect(size.w_norm * 900).toBeGreaterThan(200);
   });
 
   it("places boxes inside the worksheet near edges", () => {

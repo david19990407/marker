@@ -38,6 +38,18 @@ function mapAnnotation(row: Record<string, unknown>): SubmissionAnnotation {
     stamp_id: (row.stamp_id as string | null) ?? null,
     source_comment_item_id:
       (row.source_comment_item_id as string | null) ?? null,
+    source_assignment_comment_id:
+      (row.source_assignment_comment_id as string | null) ?? null,
+    source_type:
+      (row.source_type as SubmissionAnnotation["source_type"]) ?? null,
+    text_snapshot:
+      (row.text_snapshot as string | null) ??
+      (row.text_content as string | null) ??
+      null,
+    source_title_snapshot:
+      (row.source_title_snapshot as string | null) ?? null,
+    source_short_label_snapshot:
+      (row.source_short_label_snapshot as string | null) ?? null,
     visibility:
       (row.visibility as SubmissionAnnotation["visibility"]) ??
       "student_visible",
@@ -134,6 +146,44 @@ export async function loadSubmissionAnnotationsAction(
   };
 }
 
+function sanitiseAnnotationPayload(
+  payload: Partial<SubmissionAnnotation> & {
+    submission_id: string;
+    assignment_id: string;
+    annotation_type: SubmissionAnnotation["annotation_type"];
+  },
+  options?: { clearSources?: boolean },
+) {
+  const textSnapshot =
+    payload.text_snapshot ??
+    payload.text_content ??
+    (typeof payload.geometry?.text_snapshot === "string"
+      ? (payload.geometry.text_snapshot as string)
+      : null);
+  const next = {
+    ...payload,
+    text_snapshot: textSnapshot,
+    text_content: payload.text_content ?? textSnapshot,
+    source_comment_item_id: options?.clearSources
+      ? null
+      : payload.source_comment_item_id ?? null,
+    source_assignment_comment_id: options?.clearSources
+      ? null
+      : payload.source_assignment_comment_id ?? null,
+    source_type: options?.clearSources ? null : payload.source_type ?? null,
+    client_version: payload.client_version ?? 1,
+  };
+  if (next.source_comment_item_id && next.source_assignment_comment_id) {
+    // Never send both FKs — prefer the typed source.
+    if (next.source_type === "assignment_comment") {
+      next.source_comment_item_id = null;
+    } else {
+      next.source_assignment_comment_id = null;
+    }
+  }
+  return next;
+}
+
 export async function saveAnnotationAction(
   payload: Partial<SubmissionAnnotation> & {
     submission_id: string;
@@ -143,21 +193,43 @@ export async function saveAnnotationAction(
 ): Promise<ActionResult & { annotation?: SubmissionAnnotation }> {
   await assertTeacher();
   const supabase = await createClient();
+  const primary = sanitiseAnnotationPayload(payload);
   const { data, error } = await supabase.rpc("upsert_submission_annotation", {
-    p_payload: payload,
+    p_payload: primary,
   });
   if (error) {
     if (/stale_annotation_version/i.test(error.message)) {
       return { error: "A newer annotation version already exists. Reload and retry." };
     }
+    // Optional source attribution must never delete an optimistic annotation.
+    if (/foreign key|source_comment|source_assignment/i.test(error.message)) {
+      console.error(
+        "[annotation] source FK failed; retrying without source ids",
+        {
+          message: error.message,
+          source_comment_item_id: primary.source_comment_item_id,
+          source_assignment_comment_id: primary.source_assignment_comment_id,
+          source_type: primary.source_type,
+        },
+      );
+      const retryPayload = sanitiseAnnotationPayload(payload, {
+        clearSources: true,
+      });
+      const retry = await supabase.rpc("upsert_submission_annotation", {
+        p_payload: retryPayload,
+      });
+      if (!retry.error && retry.data) {
+        return {
+          success: "Annotation saved",
+          annotation: mapAnnotation(retry.data as Record<string, unknown>),
+        };
+      }
+    }
     if (/does not exist|schema cache/i.test(error.message)) {
-      // Direct upsert fallback before RPC is available.
+      const fallback = sanitiseAnnotationPayload(payload, { clearSources: true });
       const { data: row, error: upsertError } = await supabase
         .from("submission_annotations")
-        .upsert({
-          ...payload,
-          client_version: payload.client_version ?? 1,
-        })
+        .upsert(fallback)
         .select("*")
         .single();
       if (upsertError) {
@@ -167,9 +239,26 @@ export async function saveAnnotationAction(
               "Annotations are not available yet. Run phase_06_annotations_and_stamps.sql.",
           };
         }
+        if (/foreign key|source_comment|source_assignment/i.test(upsertError.message)) {
+          const { data: row2, error: upsertError2 } = await supabase
+            .from("submission_annotations")
+            .upsert({
+              ...fallback,
+              source_comment_item_id: null,
+              source_assignment_comment_id: null,
+              source_type: null,
+            })
+            .select("*")
+            .single();
+          if (!upsertError2 && row2) {
+            return {
+              success: "Annotation saved",
+              annotation: mapAnnotation(row2 as Record<string, unknown>),
+            };
+          }
+        }
         return { error: upsertError.message };
       }
-      // Avoid full-page annotation refetch during interactive drag/save.
       return {
         success: "Annotation saved",
         annotation: mapAnnotation(row as Record<string, unknown>),
@@ -177,8 +266,6 @@ export async function saveAnnotationAction(
     }
     return { error: error.message };
   }
-  // Client marking workspace keeps optimistic local state; skip revalidatePath
-  // so saving one annotation does not refetch the whole submission payload.
   return {
     success: "Annotation saved",
     annotation: mapAnnotation(data as Record<string, unknown>),

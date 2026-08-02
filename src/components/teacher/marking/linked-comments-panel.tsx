@@ -2,6 +2,11 @@
 
 import { useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
+import {
+  buildCommentDragPayload,
+  type CommentDragPayload,
+  type CommentDragSourceType,
+} from "@/lib/marking/comment-drag-source";
 import type { AssignmentCommentDraft } from "@/lib/types";
 import type { CommentBankItem } from "@/lib/feedback/types";
 
@@ -21,9 +26,13 @@ type LinkedComment = Pick<
 
 type Row = {
   id: string;
+  sourceType: CommentDragSourceType;
+  sourceId: string;
   label: string;
   text: string;
   group: string;
+  title?: string | null;
+  shortLabel?: string | null;
 };
 
 const DRAG_THRESHOLD_PX = 5;
@@ -39,9 +48,7 @@ export function LinkedCommentsPanel({
   assignmentComments: LinkedComment[];
   commentBankItems: CommentBankItem[];
   onInsertIntoFeedback: (text: string) => void;
-  onDragCreateBoxComment?: (
-    comment: { id: string; text: string } | null,
-  ) => void;
+  onDragCreateBoxComment?: (comment: CommentDragPayload | null) => void;
 }) {
   const [query, setQuery] = useState("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -53,7 +60,8 @@ export function LinkedCommentsPanel({
 
     for (const c of assignmentComments) {
       if (!c.is_active) continue;
-      if (seenIds.has(c._id)) continue;
+      const sourceKey = `assignment_comment:${c._id}`;
+      if (seenIds.has(sourceKey)) continue;
       const ids = c.linked_question_ids?.length
         ? c.linked_question_ids
         : c.linked_question_id
@@ -68,24 +76,33 @@ export function LinkedCommentsPanel({
         c.available_for_overall ||
         c.available_for_annotation;
       if (!available) continue;
-      seenIds.add(c._id);
+      seenIds.add(sourceKey);
       linked.push({
-        id: c._id,
+        id: sourceKey,
+        sourceType: "assignment_comment",
+        sourceId: c._id,
         label: c.short_label || c.category || "Comment",
         text: c.full_comment,
         group: isLinked ? "Question comments" : "Assignment comments",
+        title: c.category || null,
+        shortLabel: c.short_label || null,
       });
     }
 
     for (const item of commentBankItems) {
       if (!item.is_active) continue;
-      if (seenIds.has(item.id)) continue;
-      seenIds.add(item.id);
+      const sourceKey = `comment_bank_item:${item.id}`;
+      if (seenIds.has(sourceKey)) continue;
+      seenIds.add(sourceKey);
       linked.push({
-        id: item.id,
+        id: sourceKey,
+        sourceType: "comment_bank_item",
+        sourceId: item.id,
         label: item.short_label || item.title,
         text: item.full_text,
         group: item.group_name || item.bank_name || "Selected banks",
+        title: item.title,
+        shortLabel: item.short_label,
       });
     }
 
@@ -114,6 +131,16 @@ export function LinkedCommentsPanel({
     return map;
   }, [rows]);
 
+  function dragPayloadForRow(row: Row): CommentDragPayload {
+    return buildCommentDragPayload({
+      sourceType: row.sourceType,
+      sourceId: row.sourceId,
+      text: row.text,
+      title: row.title,
+      shortLabel: row.shortLabel,
+    });
+  }
+
   function beginPointerDrag(row: Row, e: React.PointerEvent) {
     if (e.button !== 0) return;
     const startX = e.clientX;
@@ -132,7 +159,7 @@ export function LinkedCommentsPanel({
         started = true;
         dragActiveRef.current = true;
         setDraggingId(row.id);
-        onDragCreateBoxComment?.({ id: row.id, text: row.text });
+        onDragCreateBoxComment?.(dragPayloadForRow(row));
       }
     };
 
@@ -206,14 +233,14 @@ export function LinkedCommentsPanel({
                   onPointerDown={(e) => beginPointerDrag(c, e)}
                   onDragStart={(e) => {
                     // HTML5 fallback for environments that prefer native DnD.
-                    const payload = JSON.stringify({ id: c.id, text: c.text });
+                    const payload = JSON.stringify(dragPayloadForRow(c));
                     e.dataTransfer.setData(
                       "application/x-comment-bank-item",
                       payload,
                     );
                     e.dataTransfer.setData("text/plain", payload);
                     e.dataTransfer.effectAllowed = "copy";
-                    onDragCreateBoxComment?.({ id: c.id, text: c.text });
+                    onDragCreateBoxComment?.(dragPayloadForRow(c));
                   }}
                   onDragEnd={() => onDragCreateBoxComment?.(null)}
                   onKeyDown={(e) => {

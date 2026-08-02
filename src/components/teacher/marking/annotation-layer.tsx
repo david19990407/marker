@@ -14,6 +14,7 @@ import {
   type SetStateAction,
 } from "react";
 import { StampImage } from "@/components/shared/stamp-image";
+import { stampAnnotationChrome } from "@/lib/marking/stamp-annotation-chrome";
 import {
   dragBoxFromPoints,
   exactAnnotationStyle,
@@ -23,6 +24,7 @@ import {
 import {
   BOX_COMMENT_FONT,
   BOX_COMMENT_LINE_HEIGHT,
+  BOX_COMMENT_MAX_WIDTH_FRACTION,
   BOX_COMMENT_PAD_X,
   BOX_COMMENT_PAD_Y,
   placeBoxCommentAtPoint,
@@ -40,6 +42,11 @@ import {
   type MarkingStamp,
   type SubmissionAnnotation,
 } from "@/lib/marking/annotation-types";
+import {
+  annotationSourceFields,
+  parseCommentDragPayload,
+  type CommentDragPayload,
+} from "@/lib/marking/comment-drag-source";
 
 type GeometryPatch = Pick<
   SubmissionAnnotation,
@@ -60,6 +67,11 @@ type CreateDraft = {
   text_content?: string | null;
   geometry?: Record<string, unknown>;
   source_comment_item_id?: string | null;
+  source_assignment_comment_id?: string | null;
+  source_type?: SubmissionAnnotation["source_type"];
+  text_snapshot?: string | null;
+  source_title_snapshot?: string | null;
+  source_short_label_snapshot?: string | null;
   stamp_definition_id?: string | null;
   /** Start inline editing immediately after create (box tool click). */
   begin_inline_edit?: boolean;
@@ -243,7 +255,7 @@ function StampResizeHandle({
       type="button"
       data-resize-handle="true"
       aria-label="Resize stamp"
-      className="absolute -bottom-1 -right-1 z-10 h-3.5 w-3.5 cursor-se-resize rounded-sm border border-transparent bg-transparent opacity-0 transition group-hover/stamp:opacity-100 group-data-[selected=true]/stamp:border-slate-400/50 group-data-[selected=true]/stamp:bg-white/70 group-data-[selected=true]/stamp:opacity-100"
+      className="absolute -bottom-1 -right-1 z-10 h-3 w-3 cursor-se-resize rounded-sm border border-slate-400/50 bg-white/60 opacity-80 shadow-sm"
       onPointerDown={onPointerDown}
     />
   );
@@ -380,8 +392,14 @@ function AnnotationItem({
       if ((drag.mode === "resize-right" || drag.mode === "resize-left") && isBox) {
         const nextW =
           drag.mode === "resize-right"
-            ? Math.min(0.45, Math.max(0.08, drag.ow + dx))
-            : Math.min(0.45, Math.max(0.08, drag.ow - dx));
+            ? Math.min(
+                BOX_COMMENT_MAX_WIDTH_FRACTION,
+                Math.max(0.08, drag.ow + dx),
+              )
+            : Math.min(
+                BOX_COMMENT_MAX_WIDTH_FRACTION,
+                Math.max(0.08, drag.ow - dx),
+              );
         const sized = resizeBoxCommentWidth(
           drag.text,
           drag.ox,
@@ -468,7 +486,10 @@ function AnnotationItem({
           width: 28,
           height: 28,
           cursor: interactive ? "move" : "default",
-          pointerEvents: interactive || tool === "delete" ? "auto" : "none",
+          pointerEvents:
+            editing || tool === "select" || tool === "delete"
+              ? "auto"
+              : "none",
         }}
         onClick={(e) => {
           e.stopPropagation();
@@ -523,17 +544,18 @@ function AnnotationItem({
           selected && !editing && !isStamp
             ? "0 0 0 1px rgba(15,23,42,0.28)"
             : "none",
-        outline:
-          selected && !editing && isStamp
-            ? "1px dashed rgba(15,23,42,0.35)"
-            : "none",
-        outlineOffset: isStamp ? 2 : 0,
+        outline: "none",
         overflow: isBox || isStamp ? "visible" : "hidden",
         padding: isBox
           ? `${BOX_COMMENT_PAD_Y}px ${BOX_COMMENT_PAD_X}px`
           : 0,
         pointerEvents: pointerEnabled ? "auto" : "none",
+        ...(isStamp
+          ? stampAnnotationChrome(Boolean(selected && !editing))
+          : {}),
       }}
+      data-annotation-kind={annotation.annotation_type}
+      data-stamp-selected={isStamp && selected ? "true" : "false"}
       onClick={(e) => {
         e.stopPropagation();
         if (tool === "delete") {
@@ -700,6 +722,35 @@ function buildStampCreateDraft(
   };
 }
 
+function buildLinkedCommentCreateDraft(
+  payload: CommentDragPayload,
+  norm: { x: number; y: number },
+  rect: DOMRect,
+): CreateDraft {
+  const sourceFields = annotationSourceFields(payload);
+  const placed = placeBoxCommentAtPoint(
+    norm.x,
+    norm.y,
+    sourceFields.text_content,
+    rect.width,
+    rect.height,
+  );
+  return {
+    annotation_type: "area_comment",
+    ...placed,
+    ...sourceFields,
+    geometry: {
+      preferred_w_norm: placed.w_norm,
+      text_snapshot: sourceFields.text_snapshot,
+      source_comment_item_id: sourceFields.source_comment_item_id,
+      source_assignment_comment_id: sourceFields.source_assignment_comment_id,
+      source_type: sourceFields.source_type,
+      source_title_snapshot: sourceFields.source_title_snapshot,
+      source_short_label_snapshot: sourceFields.source_short_label_snapshot,
+    },
+  };
+}
+
 export function AnnotationLayer({
   annotations,
   stamps,
@@ -726,7 +777,7 @@ export function AnnotationLayer({
   colour: string;
   selectedId: string | null;
   editingId: string | null;
-  linkedCommentDrag: { itemId: string; text: string } | null;
+  linkedCommentDrag: CommentDragPayload | null;
   /** Stamp currently dragged from the palette (custom pointer drag). */
   paletteStampDragId?: string | null;
   onSelect: (id: string | null) => void;
@@ -822,7 +873,9 @@ export function AnnotationLayer({
       setDropHint(pointerToNorm(e.clientX, e.clientY, rect));
     }
     function onUp(e: PointerEvent) {
-      const drag = linkedCommentDragRef.current;
+      const drag = linkedCommentDragRef.current
+        ? parseCommentDragPayload(JSON.stringify(linkedCommentDragRef.current))
+        : null;
       setDropHint(null);
       if (!drag?.text) {
         linkedDropHandled.current = false;
@@ -843,24 +896,7 @@ export function AnnotationLayer({
         return;
       }
       const norm = pointerToNorm(e.clientX, e.clientY, rect);
-      const placed = placeBoxCommentAtPoint(
-        norm.x,
-        norm.y,
-        drag.text,
-        rect.width,
-        rect.height,
-      );
-      onCreateRef.current({
-        annotation_type: "area_comment",
-        ...placed,
-        text_content: drag.text,
-        source_comment_item_id: drag.itemId || null,
-        geometry: {
-          preferred_w_norm: placed.w_norm,
-          text_snapshot: drag.text,
-          source_comment_item_id: drag.itemId || null,
-        },
-      });
+      onCreateRef.current(buildLinkedCommentCreateDraft(drag, norm, rect));
       window.setTimeout(() => {
         linkedDropHandled.current = false;
       }, 0);
@@ -922,51 +958,26 @@ export function AnnotationLayer({
           }
           return;
         }
-        let itemId = linkedCommentDrag?.itemId ?? "";
-        let text = linkedCommentDrag?.text ?? "";
         const raw =
           e.dataTransfer.getData("application/x-comment-bank-item") ||
           e.dataTransfer.getData("text/plain");
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw) as { id?: string; text?: string };
-            itemId = parsed.id ?? itemId;
-            text = parsed.text ?? text;
-          } catch {
-            if (!text && raw.trim()) text = raw.trim();
-          }
-        }
-        if (!text) return;
+        const commentPayload =
+          parseCommentDragPayload(raw) ?? linkedCommentDrag ?? null;
+        if (!commentPayload?.text) return;
         e.preventDefault();
         if (linkedDropHandled.current) return;
         linkedDropHandled.current = true;
         const rect = rootRef.current.getBoundingClientRect();
         const norm = pointerToNorm(e.clientX, e.clientY, rect);
-        const placed = placeBoxCommentAtPoint(
-          norm.x,
-          norm.y,
-          text,
-          rect.width,
-          rect.height,
-        );
-        onCreate({
-          annotation_type: "area_comment",
-          ...placed,
-          text_content: text,
-          source_comment_item_id: itemId || null,
-          geometry: {
-            preferred_w_norm: placed.w_norm,
-            text_snapshot: text,
-            source_comment_item_id: itemId || null,
-          },
-        });
+        onCreate(buildLinkedCommentCreateDraft(commentPayload, norm, rect));
+        window.setTimeout(() => {
+          linkedDropHandled.current = false;
+        }, 0);
       }}
       onPointerDown={(e) => {
         if (!rootRef.current) return;
         if ((e.target as HTMLElement).closest("[data-annotation-item]")) return;
-        if (editingId) {
-          onEndInlineEdit(editingId, false);
-        }
+        // Let textarea blur commit before inline edit state is cleared.
         onSelect(null);
         if (tool === "select" || tool === "delete") return;
 

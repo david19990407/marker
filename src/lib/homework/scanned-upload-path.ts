@@ -52,7 +52,7 @@ export function scannedUploadPhaseLabel(
 ): string {
   switch (phase) {
     case "queued":
-      return "Waiting";
+      return "Queued";
     case "uploading":
       return `Uploading, ${Math.round(progress)}%`;
     case "uploaded":

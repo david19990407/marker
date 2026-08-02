@@ -5,6 +5,7 @@ import { StampImage } from "@/components/shared/stamp-image";
 import { annotationStyle } from "@/lib/marking/annotation-types";
 import type { SubmissionAnnotation } from "@/lib/marking/annotation-types";
 import type { MarkingStamp } from "@/lib/marking/annotation-types";
+import { stampAnnotationChrome } from "@/lib/marking/stamp-annotation-chrome";
 
 /** Read-only overlay of student-visible annotations after feedback release. */
 export function ReleasedAnnotationsPanel({
@@ -130,15 +131,17 @@ export function ReleasedAnnotationsPanel({
                   backgroundColor:
                     annotation.annotation_type === "stamp"
                       ? "transparent"
-                      : annotation.annotation_type === "area_comment" ||
-                          annotation.annotation_type === "text_comment"
+                      : annotation.annotation_type === "area_comment"
                         ? "#ffffff"
+                        : annotation.annotation_type === "text_comment"
+                          ? "#ffffff"
                         : annotation.colour,
                   border:
-                    annotation.annotation_type === "area_comment" ||
-                    annotation.annotation_type === "text_comment"
-                      ? `1.5px solid ${annotation.colour || "#dc2626"}`
-                      : undefined,
+                    annotation.annotation_type === "area_comment"
+                      ? "1.5px solid #dc2626"
+                      : annotation.annotation_type === "text_comment"
+                        ? `1.5px solid ${annotation.colour || "#dc2626"}`
+                        : "none",
                   opacity:
                     annotation.annotation_type === "stamp"
                       ? Number(
@@ -150,6 +153,9 @@ export function ReleasedAnnotationsPanel({
                           annotation.annotation_type === "text_comment"
                         ? 1
                         : Math.min(annotation.opacity, 0.35),
+                  ...(annotation.annotation_type === "stamp"
+                    ? stampAnnotationChrome(false)
+                    : {}),
                 }}
                 aria-hidden
               >

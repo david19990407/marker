@@ -57,7 +57,12 @@ import type {
   FeedbackFieldValue,
 } from "@/lib/feedback/types";
 import { normalizeStampDimensions } from "@/lib/marking/annotation-geometry";
+import {
+  isStaleAnnotationSaveResponse,
+  mergeAnnotationAfterSave,
+} from "@/lib/marking/annotation-save-revision";
 import { appendFeedbackAvoidingDuplicate } from "@/lib/marking/box-comment-size";
+import type { CommentDragPayload } from "@/lib/marking/comment-drag-source";
 import type {
   AnnotationTool,
   MarkingStamp,
@@ -341,10 +346,8 @@ export function DocumentMarkingWorkspace({
   const [paletteStampDragId, setPaletteStampDragId] = useState<string | null>(
     null,
   );
-  const [linkedCommentDrag, setLinkedCommentDrag] = useState<{
-    itemId: string;
-    text: string;
-  } | null>(null);
+  const [linkedCommentDrag, setLinkedCommentDrag] =
+    useState<CommentDragPayload | null>(null);
   const unsavedAnnotationIds = useRef(new Set<string>());
   const [stampPreferences, setStampPreferences] = useState<
     TeacherStampPreference[]
@@ -689,7 +692,12 @@ export function DocumentMarkingWorkspace({
         assignment_id: assignmentId,
       });
       // Ignore stale responses from earlier saves of the same annotation.
-      if (annotationSaveLatest.current.get(next.id) !== seq) {
+      if (
+        isStaleAnnotationSaveResponse(
+          annotationSaveLatest.current.get(next.id),
+          seq,
+        )
+      ) {
         return;
       }
       if (result.error || !result.annotation) {
@@ -697,39 +705,27 @@ export function DocumentMarkingWorkspace({
         setSaveError(result.error ?? "Save failed");
         // Keep the optimistic geometry; only roll back when explicitly requested
         // (e.g. failed create). Failed moves keep the local position.
-        if (options?.rollbackOnFailure && previous) {
+        const isCommentSourceFkFailure =
+          (next.annotation_type === "area_comment" ||
+            next.annotation_type === "text_comment") &&
+          /foreign key|source_comment|source_assignment/i.test(
+            result.error ?? "",
+          );
+        if (
+          options?.rollbackOnFailure &&
+          previous &&
+          !isCommentSourceFkFailure
+        ) {
           replaceAnnotations(previous);
         }
         return;
       }
       const serverId = result.annotation.id;
-      // Keep local geometry to avoid a post-save jump; only sync server identity.
+      // Keep local geometry/text to avoid a post-save jump or stale overwrite.
       updateAnnotations((prev) =>
         prev.map((a) => {
           if (a.id !== next.id && a.id !== serverId) return a;
-          // Never overwrite newer local geometry with an older save response.
-          const localNewer =
-            a.client_version > result.annotation!.client_version ||
-            a.updated_at > (result.annotation!.updated_at ?? "");
-          if (localNewer && a.id === serverId) {
-            return {
-              ...a,
-              client_version: Math.max(
-                a.client_version,
-                result.annotation!.client_version,
-              ),
-              created_by: result.annotation!.created_by || a.created_by,
-              created_at: result.annotation!.created_at || a.created_at,
-            };
-          }
-          return {
-            ...a,
-            id: serverId,
-            client_version: result.annotation!.client_version,
-            created_by: result.annotation!.created_by || a.created_by,
-            created_at: result.annotation!.created_at || a.created_at,
-            updated_at: result.annotation!.updated_at || a.updated_at,
-          };
+          return mergeAnnotationAfterSave(a, result.annotation!);
         }),
       );
       if (serverId !== next.id) {
@@ -760,6 +756,11 @@ export function DocumentMarkingWorkspace({
     text_content?: string | null;
     geometry?: Record<string, unknown>;
     source_comment_item_id?: string | null;
+    source_assignment_comment_id?: string | null;
+    source_type?: SubmissionAnnotation["source_type"];
+    text_snapshot?: string | null;
+    source_title_snapshot?: string | null;
+    source_short_label_snapshot?: string | null;
     stamp_definition_id?: string | null;
     begin_inline_edit?: boolean;
   }) {
@@ -800,6 +801,11 @@ export function DocumentMarkingWorkspace({
       stroke_width: 2,
       stamp_id: stampId,
       source_comment_item_id: draft.source_comment_item_id ?? null,
+      source_assignment_comment_id: draft.source_assignment_comment_id ?? null,
+      source_type: draft.source_type ?? null,
+      text_snapshot: draft.text_snapshot ?? draft.text_content ?? null,
+      source_title_snapshot: draft.source_title_snapshot ?? null,
+      source_short_label_snapshot: draft.source_short_label_snapshot ?? null,
       visibility: "student_visible",
       client_version: 1,
       is_deleted: false,
@@ -826,7 +832,9 @@ export function DocumentMarkingWorkspace({
       });
       syncUndoButtons();
       startTransition(() => {
-        void persistAnnotation(created, previous, { rollbackOnFailure: true });
+        void persistAnnotation(created, previous, {
+          rollbackOnFailure: created.annotation_type !== "area_comment",
+        });
       });
       return;
     }
@@ -2033,16 +2041,7 @@ export function DocumentMarkingWorkspace({
                     assignmentComments={assignmentComments}
                     commentBankItems={commentBankItems}
                     onInsertIntoFeedback={appendCommentToFeedback}
-                    onDragCreateBoxComment={(comment) => {
-                      if (!comment) {
-                        setLinkedCommentDrag(null);
-                        return;
-                      }
-                      setLinkedCommentDrag({
-                        itemId: comment.id,
-                        text: comment.text,
-                      });
-                    }}
+                    onDragCreateBoxComment={setLinkedCommentDrag}
                   />
                 </section>
 

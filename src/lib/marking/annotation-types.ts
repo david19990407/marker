@@ -40,6 +40,11 @@ export interface SubmissionAnnotation {
   stroke_width: number;
   stamp_id: string | null;
   source_comment_item_id?: string | null;
+  source_assignment_comment_id?: string | null;
+  source_type?: "comment_bank_item" | "assignment_comment" | null;
+  text_snapshot?: string | null;
+  source_title_snapshot?: string | null;
+  source_short_label_snapshot?: string | null;
   visibility: AnnotationVisibility;
   client_version: number;
   is_deleted: boolean;
