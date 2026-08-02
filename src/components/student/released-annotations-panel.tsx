@@ -47,15 +47,28 @@ export function ReleasedAnnotationsPanel({
                     {annotation.text_content}
                   </p>
                 ) : null}
-                {stamp ? (
+                {stamp || annotation.annotation_type === "stamp" ? (
                   <div className="mt-2 flex items-center gap-2">
                     <StampImage
-                      storagePath={stamp.storage_path}
-                      alt={stamp.accessible_label}
+                      stamp={stamp}
+                      geometry={annotation.geometry}
+                      alt={
+                        (typeof annotation.geometry?.accessible_label_snapshot ===
+                        "string"
+                          ? annotation.geometry.accessible_label_snapshot
+                          : null) ||
+                        stamp?.accessible_label ||
+                        "Stamp"
+                      }
                       className="h-8 w-8 object-contain"
                     />
                     <span className="text-xs text-slate-500">
-                      {stamp.accessible_label}
+                      {(typeof annotation.geometry?.stamp_name_snapshot ===
+                      "string"
+                        ? annotation.geometry.stamp_name_snapshot
+                        : null) ||
+                        stamp?.accessible_label ||
+                        "Stamp"}
                     </span>
                   </div>
                 ) : null}

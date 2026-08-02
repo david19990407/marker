@@ -23,7 +23,12 @@ import { AnnotationToolbar } from "@/components/teacher/marking/annotation-toolb
 import { AnnotationLayer } from "@/components/teacher/marking/annotation-layer";
 import { FileViewer } from "@/components/teacher/marking/file-viewer";
 import { LinkedCommentsPanel } from "@/components/teacher/marking/linked-comments-panel";
+import {
+  MarkAwardFlash,
+  type MarkFlashPayload,
+} from "@/components/teacher/marking/mark-award-flash";
 import { QuestionMarkControls } from "@/components/teacher/marking/question-mark-controls";
+import { VerticalMarkStrip } from "@/components/teacher/marking/vertical-mark-strip";
 import {
   deleteAnnotationAction,
   saveAnnotationAction,
@@ -45,7 +50,6 @@ import type {
 import { normalizeStampDimensions } from "@/lib/marking/annotation-geometry";
 import {
   appendFeedbackAvoidingDuplicate,
-  placeBoxCommentAtPoint,
   resizeBoxCommentForText,
 } from "@/lib/marking/box-comment-size";
 import type {
@@ -100,8 +104,6 @@ type AnnotationGeometryPatch = Pick<
   colour?: string;
   opacity?: number;
 };
-
-type CommentPayload = { id: string; text: string };
 
 const TOOLBAR_DOCKED_KEY = "marking:toolbar-docked";
 const TOOLBAR_COLLAPSED_KEY = "marking:toolbar-collapsed";
@@ -334,6 +336,13 @@ export function DocumentMarkingWorkspace({
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(
     null,
   );
+  const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(
+    null,
+  );
+  const [markFlash, setMarkFlash] = useState<MarkFlashPayload | null>(null);
+  const textEditTimers = useRef(new Map<string, number>());
+  const textEditSeq = useRef(new Map<string, number>());
+  const editSnapshots = useRef(new Map<string, SubmissionAnnotation>());
   const [stampsReady, setStampsReady] = useState(false);
   const stampNormalizeSaved = useRef(false);
   const [questionMarks, setQuestionMarks] = useState<QuestionMarkRecord[]>(
@@ -632,10 +641,15 @@ export function DocumentMarkingWorkspace({
     text_content?: string | null;
     geometry?: Record<string, unknown>;
     source_comment_item_id?: string | null;
+    stamp_definition_id?: string | null;
+    begin_inline_edit?: boolean;
   }) {
     const previous = annotationsRef.current;
     const tempId = crypto.randomUUID();
     const now = new Date().toISOString();
+    const stampId =
+      draft.stamp_definition_id ??
+      (draft.annotation_type === "stamp" ? selectedStampId : null);
     const created: SubmissionAnnotation = {
       id: tempId,
       submission_id: submissionId,
@@ -655,7 +669,7 @@ export function DocumentMarkingWorkspace({
       colour,
       opacity: draft.annotation_type === "freehand" ? 0.55 : 0.35,
       stroke_width: 2,
-      stamp_id: draft.annotation_type === "stamp" ? selectedStampId : null,
+      stamp_id: stampId,
       source_comment_item_id: draft.source_comment_item_id ?? null,
       visibility: "student_visible",
       client_version: 1,
@@ -666,6 +680,11 @@ export function DocumentMarkingWorkspace({
     };
     const next = [...previous, created];
     replaceAnnotations(next);
+    setSelectedAnnotationId(tempId);
+    if (draft.begin_inline_edit) {
+      editSnapshots.current.set(tempId, { ...created });
+      setEditingAnnotationId(tempId);
+    }
     undoRef.current.push({
       label: "add",
       undo: () => previous,
@@ -761,6 +780,18 @@ export function DocumentMarkingWorkspace({
       const others = prev.filter((m) => m.question_id !== qid);
       return [...others, next];
     });
+
+    if (
+      patch.awarded_mark != null &&
+      patch.awarded_mark !== existing?.awarded_mark &&
+      (mode === "numeric" || mode === "auto_mcq")
+    ) {
+      setMarkFlash({
+        awarded: patch.awarded_mark,
+        maximum: next.maximum_mark,
+        token: Date.now(),
+      });
+    }
 
     const debounceMs = options?.debounceMs ?? 0;
     const existingTimer = feedbackDebounceTimers.current.get(qid);
@@ -873,30 +904,6 @@ export function DocumentMarkingWorkspace({
     }
   }
 
-  function createBoxCommentAtPoint(
-    point: { x: number; y: number },
-    comment: CommentPayload,
-  ) {
-    const paper = paperRef.current;
-    const width = paper?.clientWidth ?? 800;
-    const height = paper?.clientHeight ?? 1100;
-    const box = placeBoxCommentAtPoint(point, comment.text, width, height);
-    createAnnotation({
-      annotation_type: "area_comment",
-      x_norm: box.x,
-      y_norm: box.y,
-      w_norm: box.w,
-      h_norm: box.h,
-      text_content: comment.text,
-      source_comment_item_id: comment.id,
-      geometry: { collapsed: false },
-    });
-  }
-
-  function handleCommentDrop(point: { x: number; y: number }, comment: CommentPayload) {
-    createBoxCommentAtPoint(point, comment);
-  }
-
   function deleteAnnotationById(id: string) {
     const target = annotationsRef.current.find((a) => a.id === id);
     if (!target) return;
@@ -964,6 +971,7 @@ export function DocumentMarkingWorkspace({
       current.y_norm === next.y_norm &&
       current.w_norm === next.w_norm &&
       current.h_norm === next.h_norm &&
+      current.text_content === next.text_content &&
       JSON.stringify(current.geometry) === JSON.stringify(next.geometry);
     if (unchanged) return;
 
@@ -993,49 +1001,113 @@ export function DocumentMarkingWorkspace({
     });
   }
 
-  function handleEditText(id: string, text: string) {
+  function handleBeginInlineEdit(id: string) {
     const current = annotationsRef.current.find((a) => a.id === id);
-    if (!current || current.text_content === text) return;
-    const previous = annotationsRef.current;
+    if (current) editSnapshots.current.set(id, { ...current });
+    setSelectedAnnotationId(id);
+    setEditingAnnotationId(id);
+  }
+
+  function handleInlineTextChange(id: string, text: string) {
+    const current = annotationsRef.current.find((a) => a.id === id);
+    if (!current) return;
     const paper = paperRef.current;
-    let x_norm = current.x_norm;
-    let y_norm = current.y_norm;
-    let w_norm = current.w_norm;
-    let h_norm = current.h_norm;
+    const preferred =
+      typeof current.geometry?.preferred_w_norm === "number"
+        ? (current.geometry.preferred_w_norm as number)
+        : current.w_norm;
+    let patch: AnnotationGeometryPatch = {
+      x_norm: current.x_norm,
+      y_norm: current.y_norm,
+      w_norm: current.w_norm,
+      h_norm: current.h_norm,
+      text_content: text,
+      geometry: {
+        ...current.geometry,
+        preferred_w_norm: preferred,
+      },
+    };
     if (
       current.annotation_type === "area_comment" &&
       paper?.clientWidth &&
       paper.clientHeight
     ) {
       const resized = resizeBoxCommentForText(
-        {
-          x: current.x_norm,
-          y: current.y_norm,
-          w: current.w_norm,
-          h: current.h_norm,
-        },
         text,
+        current.x_norm,
+        current.y_norm,
+        preferred,
         paper.clientWidth,
         paper.clientHeight,
       );
-      x_norm = resized.x;
-      y_norm = resized.y;
-      w_norm = resized.w;
-      h_norm = resized.h;
+      patch = {
+        ...patch,
+        ...resized,
+        text_content: text,
+        geometry: {
+          ...current.geometry,
+          preferred_w_norm: resized.w_norm,
+        },
+      };
     }
-    const next = {
+    const next: SubmissionAnnotation = {
       ...current,
-      x_norm,
-      y_norm,
-      w_norm,
-      h_norm,
+      ...patch,
       text_content: text,
-      client_version: current.client_version + 1,
       updated_at: new Date().toISOString(),
     };
     updateAnnotations((prev) => prev.map((a) => (a.id === id ? next : a)));
+
+    const seq = (textEditSeq.current.get(id) ?? 0) + 1;
+    textEditSeq.current.set(id, seq);
+    const existingTimer = textEditTimers.current.get(id);
+    if (existingTimer) window.clearTimeout(existingTimer);
+    const timer = window.setTimeout(() => {
+      textEditTimers.current.delete(id);
+      if (textEditSeq.current.get(id) !== seq) return;
+      const latest = annotationsRef.current.find((a) => a.id === id);
+      if (!latest) return;
+      const toSave = {
+        ...latest,
+        client_version: latest.client_version + 1,
+        updated_at: new Date().toISOString(),
+      };
+      updateAnnotations((prev) =>
+        prev.map((a) => (a.id === id ? toSave : a)),
+      );
+      startTransition(() => {
+        void persistAnnotation(toSave, null);
+      });
+    }, QUESTION_FEEDBACK_DEBOUNCE_MS);
+    textEditTimers.current.set(id, timer);
+  }
+
+  function handleEndInlineEdit(id: string, cancel?: boolean) {
+    const timer = textEditTimers.current.get(id);
+    if (timer) {
+      window.clearTimeout(timer);
+      textEditTimers.current.delete(id);
+    }
+    setEditingAnnotationId((current) => (current === id ? null : current));
+    if (cancel) {
+      const snap = editSnapshots.current.get(id);
+      editSnapshots.current.delete(id);
+      if (snap) {
+        updateAnnotations((prev) => prev.map((a) => (a.id === id ? snap : a)));
+      }
+      return;
+    }
+    editSnapshots.current.delete(id);
+    const latest = annotationsRef.current.find((a) => a.id === id);
+    if (!latest) return;
+    const toSave = {
+      ...latest,
+      client_version: latest.client_version + 1,
+      updated_at: new Date().toISOString(),
+    };
+    updateAnnotations((prev) => prev.map((a) => (a.id === id ? toSave : a)));
     startTransition(() => {
-      void persistAnnotation(next, previous);
+      void persistAnnotation(toSave, null);
     });
   }
 
@@ -1276,8 +1348,8 @@ export function DocumentMarkingWorkspace({
         className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
         style={{
           gridTemplateColumns: toolbarDocked
-            ? `${TOOLBAR_MIN_WIDTH}px minmax(${leftOpen ? LEFT_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`
-            : `minmax(${leftOpen ? LEFT_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`,
+            ? `${TOOLBAR_MIN_WIDTH}px minmax(${leftOpen ? LEFT_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH + 56 : 56}px, ${rightOpen ? rightWidth + 56 : 56}px)`
+            : `minmax(${leftOpen ? LEFT_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH + 56 : 56}px, ${rightOpen ? rightWidth + 56 : 56}px)`,
         }}
       >
         {toolbarDocked ? (
@@ -1515,6 +1587,7 @@ export function DocumentMarkingWorkspace({
               type="button"
               size="sm"
               variant="outline"
+              aria-label="Zoom out"
               onClick={() => {
                 setFit("none");
                 setZoom((z) => Math.max(0.5, z - 0.1));
@@ -1526,6 +1599,7 @@ export function DocumentMarkingWorkspace({
               type="button"
               size="sm"
               variant="outline"
+              aria-label="Zoom in"
               onClick={() => {
                 setFit("none");
                 setZoom((z) => Math.min(2, z + 0.1));
@@ -1533,19 +1607,23 @@ export function DocumentMarkingWorkspace({
             >
               Zoom +
             </Button>
-            <Button type="button" size="sm" variant="outline" onClick={() => setFit("width")}>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-label="Fit width"
+              onClick={() => setFit("width")}
+            >
               Fit width
-            </Button>
-            <Button type="button" size="sm" variant="outline" onClick={() => setFit("page")}>
-              Fit page
             </Button>
             <Button
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => setCentreView({ kind: "worksheet" })}
+              aria-label="Fit page"
+              onClick={() => setFit("page")}
             >
-              Worksheet
+              Fit page
             </Button>
             <span className="text-slate-500">
               Question {selectedQuestionIndex >= 0 ? selectedQuestionIndex + 1 : "—"} of{" "}
@@ -1555,7 +1633,7 @@ export function DocumentMarkingWorkspace({
           </div>
 
           {centreView.kind === "file" ? (
-            <div className="min-h-0 flex-1 overflow-auto">
+            <div className="relative min-h-0 flex-1 overflow-auto">
               <FileViewer
                 fileName={centreView.fileName}
                 storagePath={centreView.path}
@@ -1563,11 +1641,12 @@ export function DocumentMarkingWorkspace({
                 zoom={zoom}
                 fit={fit}
               />
+              <MarkAwardFlash flash={markFlash} />
             </div>
           ) : (
             <div
               data-marking-worksheet-scroll="true"
-              className="min-h-0 flex-1 overflow-auto bg-slate-300/50 p-6"
+              className="relative min-h-0 flex-1 overflow-auto bg-slate-300/50 p-6"
             >
               <div
                 ref={paperRef}
@@ -1595,21 +1674,21 @@ export function DocumentMarkingWorkspace({
                   tool={tool}
                   colour={colour}
                   selectedId={selectedAnnotationId}
+                  editingId={editingAnnotationId}
+                  selectedStampId={selectedStampId}
                   stamps={stamps}
-                  stampSizePct={
-                    stamps.find((s) => s.id === selectedStampId)?.default_size_pct ??
-                    8
-                  }
+                  linkedCommentDrag={null}
                   onSelect={handleAnnotationSelect}
                   onCreate={createAnnotation}
                   onCommitGeometry={handleCommitGeometry}
-                  onEditText={handleEditText}
                   onToggleCollapse={handleToggleCollapse}
+                  onBeginInlineEdit={handleBeginInlineEdit}
+                  onInlineTextChange={handleInlineTextChange}
+                  onEndInlineEdit={handleEndInlineEdit}
                   onDeleteSelected={(id) => {
                     const targetId = id ?? selectedAnnotationId;
                     if (targetId) deleteAnnotationById(targetId);
                   }}
-                  onCommentDrop={handleCommentDrop}
                 />
                 {!stampsReady ? (
                   <div className="pointer-events-none absolute right-3 top-3 rounded-md bg-slate-900/70 px-2 py-1 text-[11px] text-white">
@@ -1617,141 +1696,154 @@ export function DocumentMarkingWorkspace({
                   </div>
                 ) : null}
               </div>
+              <MarkAwardFlash flash={markFlash} />
             </div>
           )}
         </main>
 
-        {rightOpen ? (
-          <aside className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-slate-200 bg-white">
+        <div className="relative flex min-h-0 min-w-0 overflow-hidden bg-white">
+          {rightOpen ? (
+            <aside className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <button
+                type="button"
+                aria-label="Resize marking panel"
+                title="Drag to resize panel"
+                className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize bg-transparent hover:bg-slate-300/70"
+                onPointerDown={beginRightResize}
+                onDoubleClick={() => setRightWidth(RIGHT_DEFAULT_WIDTH)}
+              />
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2 pl-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Marking
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="text-[11px] text-slate-400 hover:text-slate-700"
+                    title="Reset panel width"
+                    onClick={() => setRightWidth(RIGHT_DEFAULT_WIDTH)}
+                  >
+                    Reset width
+                  </button>
+                  <button
+                    type="button"
+                    className="text-xs text-slate-500 hover:text-slate-800"
+                    onClick={() => setRightOpen(false)}
+                  >
+                    Collapse
+                  </button>
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 pl-4">
+                <section className="space-y-3">
+                  {selectedBlock && selectedQuestionId ? (
+                    <QuestionMarkControls
+                      questionId={selectedQuestionId}
+                      questionIndex={Math.max(0, selectedQuestionIndex)}
+                      questionLabel={
+                        selectedBlock.content ||
+                        selectedBlock.prompt ||
+                        ""
+                      }
+                      maximumMark={Number(selectedBlock.max_marks ?? 0)}
+                      mode={inferMarkingMode(selectedBlock)}
+                      record={selectedMark}
+                      canGoPrev={selectedQuestionIndex > 0}
+                      canGoNext={
+                        selectedQuestionIndex >= 0 &&
+                        selectedQuestionIndex < questionIds.length - 1
+                      }
+                      onReview={(state) => updateMark({ review_state: state })}
+                      onFeedback={(text) =>
+                        updateMark(
+                          { question_feedback: text },
+                          { debounceMs: QUESTION_FEEDBACK_DEBOUNCE_MS },
+                        )
+                      }
+                      onPrev={() => void goQuestion(-1)}
+                      onNext={() => void goQuestion(1)}
+                    />
+                  ) : (
+                    <p className="text-sm text-slate-500">No assessable questions.</p>
+                  )}
+                </section>
+
+                <section className="space-y-2 border-t border-slate-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Linked comments
+                  </p>
+                  <LinkedCommentsPanel
+                    selectedQuestionId={selectedQuestionId}
+                    assignmentComments={assignmentComments}
+                    commentBankItems={commentBankItems}
+                    onInsertIntoFeedback={appendCommentToFeedback}
+                  />
+                </section>
+
+                {(selectedBlock?.mark_scheme_note || markSchemes.length > 0) && (
+                  <details className="border-t border-slate-100 pt-3 text-xs text-slate-600">
+                    <summary className="cursor-pointer font-medium text-slate-700">
+                      Mark scheme
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {selectedBlock?.mark_scheme_note ? (
+                        <p className="whitespace-pre-wrap">
+                          {selectedBlock.mark_scheme_note}
+                        </p>
+                      ) : null}
+                      {markSchemes.map((file) => (
+                        <button
+                          key={file.id}
+                          type="button"
+                          className="block w-full text-left text-slate-700 underline-offset-2 hover:underline"
+                          onClick={() =>
+                            setCentreView({
+                              kind: "file",
+                              fileName: file.file_name,
+                              path: file.storage_path,
+                              bucket: "assignment-resources",
+                            })
+                          }
+                        >
+                          {file.title || file.file_name}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+              <div className="shrink-0 border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+                {markTotals.markedCount}/{questionIds.length} marked ·{" "}
+                {formatMarkLabel(markTotals.awarded)}/{maximumMark} ·{" "}
+                {completion.answeredAssessableCount}/{completion.assessableCount}{" "}
+                answered
+              </div>
+            </aside>
+          ) : (
             <button
               type="button"
-              aria-label="Resize marking panel"
-              title="Drag to resize panel"
-              className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize bg-transparent hover:bg-slate-300/70"
-              onPointerDown={beginRightResize}
-              onDoubleClick={() => setRightWidth(RIGHT_DEFAULT_WIDTH)}
+              className="flex w-10 min-w-10 shrink-0 items-start justify-center border-r border-slate-200 bg-white py-2 text-xs"
+              onClick={() => setRightOpen(true)}
+              title="Expand marking panel"
+              aria-label="Expand marking panel"
+            >
+              ««
+            </button>
+          )}
+          {selectedBlock &&
+          selectedQuestionId &&
+          (inferMarkingMode(selectedBlock) === "numeric" ||
+            inferMarkingMode(selectedBlock) === "auto_mcq") ? (
+            <VerticalMarkStrip
+              maximumMark={Number(selectedBlock.max_marks ?? 0)}
+              awarded={selectedMark?.awarded_mark ?? null}
+              allowDecimals={allowDecimalMarks}
+              onAward={(mark) => updateMark({ awarded_mark: mark })}
             />
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2 pl-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Marking
-              </p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="text-[11px] text-slate-400 hover:text-slate-700"
-                  title="Reset panel width"
-                  onClick={() => setRightWidth(RIGHT_DEFAULT_WIDTH)}
-                >
-                  Reset width
-                </button>
-                <button
-                  type="button"
-                  className="text-xs text-slate-500 hover:text-slate-800"
-                  onClick={() => setRightOpen(false)}
-                >
-                  Collapse
-                </button>
-              </div>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 pl-4">
-              <section className="space-y-3">
-                {selectedBlock && selectedQuestionId ? (
-                  <QuestionMarkControls
-                    questionId={selectedQuestionId}
-                    questionIndex={Math.max(0, selectedQuestionIndex)}
-                    questionLabel={
-                      selectedBlock.content ||
-                      selectedBlock.prompt ||
-                      ""
-                    }
-                    maximumMark={Number(selectedBlock.max_marks ?? 0)}
-                    mode={inferMarkingMode(selectedBlock)}
-                    record={selectedMark}
-                    circularThreshold={circularThreshold}
-                    allowDecimals={allowDecimalMarks}
-                    canGoPrev={selectedQuestionIndex > 0}
-                    canGoNext={
-                      selectedQuestionIndex >= 0 &&
-                      selectedQuestionIndex < questionIds.length - 1
-                    }
-                    onAward={(mark) => updateMark({ awarded_mark: mark })}
-                    onReview={(state) => updateMark({ review_state: state })}
-                    onFeedback={(text) =>
-                      updateMark(
-                        { question_feedback: text },
-                        { debounceMs: QUESTION_FEEDBACK_DEBOUNCE_MS },
-                      )
-                    }
-                    onPrev={() => void goQuestion(-1)}
-                    onNext={() => void goQuestion(1)}
-                  />
-                ) : (
-                  <p className="text-sm text-slate-500">No assessable questions.</p>
-                )}
-              </section>
-
-              <section className="space-y-2 border-t border-slate-100 pt-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Linked comments
-                </p>
-                <LinkedCommentsPanel
-                  selectedQuestionId={selectedQuestionId}
-                  assignmentComments={assignmentComments}
-                  commentBankItems={commentBankItems}
-                  onInsertIntoFeedback={appendCommentToFeedback}
-                />
-              </section>
-
-              {(selectedBlock?.mark_scheme_note || markSchemes.length > 0) && (
-                <details className="border-t border-slate-100 pt-3 text-xs text-slate-600">
-                  <summary className="cursor-pointer font-medium text-slate-700">
-                    Mark scheme
-                  </summary>
-                  <div className="mt-2 space-y-2">
-                    {selectedBlock?.mark_scheme_note ? (
-                      <p className="whitespace-pre-wrap">
-                        {selectedBlock.mark_scheme_note}
-                      </p>
-                    ) : null}
-                    {markSchemes.map((file) => (
-                      <button
-                        key={file.id}
-                        type="button"
-                        className="block w-full text-left text-slate-700 underline-offset-2 hover:underline"
-                        onClick={() =>
-                          setCentreView({
-                            kind: "file",
-                            fileName: file.file_name,
-                            path: file.storage_path,
-                            bucket: "assignment-resources",
-                          })
-                        }
-                      >
-                        {file.title || file.file_name}
-                      </button>
-                    ))}
-                  </div>
-                </details>
-              )}
-            </div>
-            <div className="shrink-0 border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">
-              {markTotals.markedCount}/{questionIds.length} marked ·{" "}
-              {formatMarkLabel(markTotals.awarded)}/{maximumMark} ·{" "}
-              {completion.answeredAssessableCount}/{completion.assessableCount}{" "}
-              answered
-            </div>
-          </aside>
-        ) : (
-          <button
-            type="button"
-            className="flex w-10 min-w-10 shrink-0 items-start justify-center border-l border-slate-200 bg-white py-2 text-xs"
-            onClick={() => setRightOpen(true)}
-            title="Expand marking panel"
-            aria-label="Expand marking panel"
-          >
-            ««
-          </button>
-        )}
+          ) : (
+            <div className="w-14 shrink-0 border-l border-slate-200 bg-slate-50" />
+          )}
+        </div>
       </div>
 
       {!toolbarDocked ? (

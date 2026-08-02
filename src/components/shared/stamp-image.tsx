@@ -139,14 +139,20 @@ export async function prefetchStampUrls(
 /** Loads a private marking-stamps object via signed URL. */
 export function StampImage({
   storagePath,
+  stamp,
+  geometry,
   alt,
   className,
 }: {
-  storagePath: string | null | undefined;
+  storagePath?: string | null | undefined;
+  stamp?: { storage_path?: string | null } | null;
+  geometry?: Record<string, unknown> | null;
   alt: string;
   className?: string;
 }) {
-  const path = storagePath?.trim() || "";
+  const snapshotPath =
+    typeof geometry?.storage_path === "string" ? geometry.storage_path : null;
+  const path = (snapshotPath || storagePath || stamp?.storage_path || "").trim();
   const [retryToken, setRetryToken] = useState(0);
   const [url, setUrl] = useState<string | null>(() =>
     path ? getCachedStampUrl(path) : null,

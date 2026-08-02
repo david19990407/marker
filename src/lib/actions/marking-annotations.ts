@@ -60,6 +60,8 @@ function mapStamp(row: Record<string, unknown>): MarkingStamp {
     storage_path: (row.storage_path as string | null) ?? null,
     mime_type: (row.mime_type as string | null) ?? null,
     default_size_pct: Number(row.default_size_pct ?? 8),
+    default_width_px: Number(row.default_width_px ?? 64),
+    default_height_px: Number(row.default_height_px ?? 64),
     subject_restriction: (row.subject_restriction as string | null) ?? null,
     teacher_restriction_ids: Array.isArray(row.teacher_restriction_ids)
       ? (row.teacher_restriction_ids as string[])
@@ -68,8 +70,15 @@ function mapStamp(row: Record<string, unknown>): MarkingStamp {
       ? (row.assignment_restriction_ids as string[])
       : [],
     is_active: Boolean(row.is_active),
+    is_palette_visible:
+      row.is_palette_visible === undefined || row.is_palette_visible === null
+        ? true
+        : Boolean(row.is_palette_visible),
+    is_internal: Boolean(row.is_internal),
     sort_order: Number(row.sort_order ?? 0),
     archived_at: (row.archived_at as string | null) ?? null,
+    asset_version: Number(row.asset_version ?? 1),
+    current_asset_id: (row.current_asset_id as string | null) ?? null,
   };
 }
 
@@ -290,6 +299,12 @@ export async function listMarkingStampsAction(filters?: {
   const stamps = (data ?? [])
     .map((row) => mapStamp(row as Record<string, unknown>))
     .filter((stamp) => {
+      if (stamp.is_internal) return false;
+      if (!filters?.includeArchived) {
+        if (!stamp.is_active || !stamp.is_palette_visible || stamp.archived_at) {
+          return false;
+        }
+      }
       if (
         stamp.subject_restriction &&
         filters?.subject &&
