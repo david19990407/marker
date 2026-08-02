@@ -46,6 +46,10 @@ function mapAnnotation(row: Record<string, unknown>): SubmissionAnnotation {
       (row.text_snapshot as string | null) ??
       (row.text_content as string | null) ??
       null,
+    source_title_snapshot:
+      (row.source_title_snapshot as string | null) ?? null,
+    source_short_label_snapshot:
+      (row.source_short_label_snapshot as string | null) ?? null,
     visibility:
       (row.visibility as SubmissionAnnotation["visibility"]) ??
       "student_visible",
@@ -169,9 +173,13 @@ function sanitiseAnnotationPayload(
     source_type: options?.clearSources ? null : payload.source_type ?? null,
     client_version: payload.client_version ?? 1,
   };
-  // Never send both source FKs.
   if (next.source_comment_item_id && next.source_assignment_comment_id) {
-    next.source_assignment_comment_id = null;
+    // Never send both FKs — prefer the typed source.
+    if (next.source_type === "assignment_comment") {
+      next.source_comment_item_id = null;
+    } else {
+      next.source_assignment_comment_id = null;
+    }
   }
   return next;
 }
@@ -197,7 +205,12 @@ export async function saveAnnotationAction(
     if (/foreign key|source_comment|source_assignment/i.test(error.message)) {
       console.error(
         "[annotation] source FK failed; retrying without source ids",
-        error.message,
+        {
+          message: error.message,
+          source_comment_item_id: primary.source_comment_item_id,
+          source_assignment_comment_id: primary.source_assignment_comment_id,
+          source_type: primary.source_type,
+        },
       );
       const retryPayload = sanitiseAnnotationPayload(payload, {
         clearSources: true,
@@ -213,7 +226,6 @@ export async function saveAnnotationAction(
       }
     }
     if (/does not exist|schema cache/i.test(error.message)) {
-      // Direct upsert fallback before RPC is available.
       const fallback = sanitiseAnnotationPayload(payload, { clearSources: true });
       const { data: row, error: upsertError } = await supabase
         .from("submission_annotations")
