@@ -6,7 +6,6 @@ export const BOX_COMMENT_FONT =
 export const BOX_COMMENT_LINE_HEIGHT = 1.25;
 export const BOX_COMMENT_PAD_X = 6;
 export const BOX_COMMENT_PAD_Y = 4;
-/** Default new box comment width (~200px). */
 export const BOX_COMMENT_DEFAULT_WIDTH_PX = 200;
 export const BOX_COMMENT_MIN_WIDTH_PX = 140;
 export const BOX_COMMENT_MAX_WIDTH_FRACTION = 0.5;
@@ -16,12 +15,18 @@ export function measureBoxCommentText(
   maxWidthPx: number,
   minWidthPx = BOX_COMMENT_MIN_WIDTH_PX,
 ): { widthPx: number; heightPx: number } {
+  const widthFloorPx = text.trim()
+    ? minWidthPx
+    : Math.max(minWidthPx, BOX_COMMENT_DEFAULT_WIDTH_PX);
   if (typeof document === "undefined") {
     const widthPx = Math.min(
       maxWidthPx,
-      Math.max(minWidthPx, Math.min(maxWidthPx, 8 + text.length * 6)),
+      Math.max(widthFloorPx, Math.min(maxWidthPx, 8 + text.length * 6)),
     );
-    const charsPerLine = Math.max(12, Math.floor((widthPx - BOX_COMMENT_PAD_X * 2) / 6));
+    const charsPerLine = Math.max(
+      12,
+      Math.floor((widthPx - BOX_COMMENT_PAD_X * 2) / 6),
+    );
     const softLines = text.split("\n").reduce((sum, line) => {
       return sum + Math.max(1, Math.ceil(Math.max(1, line.length) / charsPerLine));
     }, 0);
@@ -44,7 +49,7 @@ export function measureBoxCommentText(
     `padding:${BOX_COMMENT_PAD_Y}px ${BOX_COMMENT_PAD_X}px`,
     "box-sizing:border-box",
     `max-width:${Math.max(minWidthPx, maxWidthPx)}px`,
-    `min-width:${minWidthPx}px`,
+    `min-width:${widthFloorPx}px`,
     "width:max-content",
   ].join(";");
   probe.textContent = text.length > 0 ? text : " ";
@@ -52,7 +57,7 @@ export function measureBoxCommentText(
   const rawWidth = Math.ceil(probe.scrollWidth);
   const widthPx = Math.min(
     Math.max(minWidthPx, maxWidthPx),
-    Math.max(minWidthPx, rawWidth + 1),
+    Math.max(widthFloorPx, rawWidth + 1),
   );
   probe.style.width = `${widthPx}px`;
   probe.style.maxWidth = `${widthPx}px`;
@@ -65,27 +70,14 @@ export function sizeBoxCommentFromText(
   text: string,
   canvasWidthPx: number,
   canvasHeightPx: number,
-  preferredWidthPx = BOX_COMMENT_DEFAULT_WIDTH_PX,
 ): { w_norm: number; h_norm: number } {
   const maxWidthPx = Math.max(
     BOX_COMMENT_MIN_WIDTH_PX,
     canvasWidthPx * BOX_COMMENT_MAX_WIDTH_FRACTION,
   );
-  const targetWidth = Math.min(
-    maxWidthPx,
-    Math.max(BOX_COMMENT_MIN_WIDTH_PX, preferredWidthPx),
-  );
-  // Empty / new comments start at the default width; height still auto-fits.
-  const { heightPx, widthPx } = measureBoxCommentText(
-    text,
-    text.trim() ? maxWidthPx : targetWidth,
-    text.trim() ? BOX_COMMENT_MIN_WIDTH_PX : targetWidth,
-  );
-  const finalWidth = text.trim()
-    ? Math.min(maxWidthPx, Math.max(BOX_COMMENT_MIN_WIDTH_PX, widthPx))
-    : targetWidth;
+  const { widthPx, heightPx } = measureBoxCommentText(text, maxWidthPx);
   return {
-    w_norm: Math.min(0.95, Math.max(0.08, finalWidth / Math.max(1, canvasWidthPx))),
+    w_norm: Math.min(0.95, Math.max(0.08, widthPx / Math.max(1, canvasWidthPx))),
     h_norm: Math.min(0.9, Math.max(0.03, heightPx / Math.max(1, canvasHeightPx))),
   };
 }
@@ -97,12 +89,7 @@ export function placeBoxCommentAtPoint(
   canvasWidthPx: number,
   canvasHeightPx: number,
 ): { x_norm: number; y_norm: number; w_norm: number; h_norm: number } {
-  const size = sizeBoxCommentFromText(
-    text,
-    canvasWidthPx,
-    canvasHeightPx,
-    BOX_COMMENT_DEFAULT_WIDTH_PX,
-  );
+  const size = sizeBoxCommentFromText(text, canvasWidthPx, canvasHeightPx);
   return clampNormRect({
     x: Math.min(1 - size.w_norm, Math.max(0, xNorm)),
     y: Math.min(1 - size.h_norm, Math.max(0, yNorm)),

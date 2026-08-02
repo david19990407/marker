@@ -23,8 +23,6 @@ describe("box comment sizing", () => {
       "This is a substantially longer teacher comment that should wrap across multiple lines without stretching across the whole worksheet surface.";
     const size = sizeBoxCommentFromText(long, 900, 1200);
     expect(size.w_norm).toBeLessThanOrEqual(0.5 + 0.001);
-    // Long text should reach the max-width band rather than staying at the
-    // empty-box default of 200px.
     expect(size.w_norm * 900).toBeGreaterThan(200);
   });
 
