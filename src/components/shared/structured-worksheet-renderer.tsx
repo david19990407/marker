@@ -85,6 +85,7 @@ export function StructuredWorksheetRenderer({
   selectedQuestionId = null,
   onSelectQuestion,
   submissionId = null,
+  onScannedUploadBusyChange,
 }: {
   sections: BuilderSection[];
   mode: WorksheetMode;
@@ -97,6 +98,8 @@ export function StructuredWorksheetRenderer({
   onSelectQuestion?: (questionId: string) => void;
   /** Required for scanned homework upload persistence. */
   submissionId?: string | null;
+  /** True while any scanned file is queued/uploading/stalled. */
+  onScannedUploadBusyChange?: (busy: boolean) => void;
 }) {
   const visibilityMode: VisibilityMode =
     mode === "teacher_marking" ? "teacher_marking" : "student";
@@ -175,6 +178,7 @@ export function StructuredWorksheetRenderer({
               selectedQuestionId={selectedQuestionId}
               onSelectQuestion={onSelectQuestion}
               submissionId={submissionId}
+              onScannedUploadBusyChange={onScannedUploadBusyChange}
             />
           ))
         )}
@@ -281,6 +285,7 @@ function SectionView({
   selectedQuestionId = null,
   onSelectQuestion,
   submissionId = null,
+  onScannedUploadBusyChange,
 }: {
   section: BuilderSection;
   mode: WorksheetMode;
@@ -294,6 +299,7 @@ function SectionView({
   selectedQuestionId?: string | null;
   onSelectQuestion?: (questionId: string) => void;
   submissionId?: string | null;
+  onScannedUploadBusyChange?: (busy: boolean) => void;
 }) {
   const visibilityMode: VisibilityMode =
     mode === "teacher_marking" ? "teacher_marking" : "student";
@@ -331,6 +337,7 @@ function SectionView({
             showGuidance={showGuidance}
             startLineNumber={passageStarts.get(block._id)}
             submissionId={submissionId}
+            onScannedUploadBusyChange={onScannedUploadBusyChange}
           />
         );
         if (mode !== "teacher_marking" || !block.question_id) return body;
@@ -364,6 +371,7 @@ function SectionView({
             selectedQuestionId={selectedQuestionId}
             onSelectQuestion={onSelectQuestion}
             submissionId={submissionId}
+            onScannedUploadBusyChange={onScannedUploadBusyChange}
           />
         </div>
       ))}
@@ -391,6 +399,7 @@ function BlockView({
   showGuidance,
   startLineNumber,
   submissionId = null,
+  onScannedUploadBusyChange,
 }: {
   block: BuilderBlock;
   mode: WorksheetMode;
@@ -401,6 +410,7 @@ function BlockView({
   showGuidance: boolean;
   submissionId?: string | null;
   startLineNumber?: number;
+  onScannedUploadBusyChange?: (busy: boolean) => void;
 }) {
   const qid = responseKey(block);
   const current = values[qid];
@@ -847,6 +857,7 @@ function BlockView({
               if (!qid) return;
               onValueChange(qid, { type: "json", json: summary });
             }}
+            onBusyChange={onScannedUploadBusyChange}
           />
         ) : previewControls || mode === "teacher_marking" ? (
           <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">

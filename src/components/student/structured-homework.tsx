@@ -70,6 +70,7 @@ export function StructuredHomework({
     null,
   );
   const [confirmSubmit, setConfirmSubmit] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
   const [pending, startTransition] = useTransition();
   const sectionsRef = useRef(sections);
   const valuesRef = useRef(values);
@@ -343,10 +344,16 @@ export function StructuredHomework({
         onValueChange={setValue}
         submissionMeta={null}
         submissionId={submissionId}
+        onScannedUploadBusyChange={setUploadBusy}
       />
 
       {editable ? (
         <div className="space-y-3">
+          {uploadBusy ? (
+            <p className="text-xs text-slate-500">
+              A file upload is in progress. Submit unlocks when uploads finish.
+            </p>
+          ) : null}
           {confirmSubmit ? (
             <div className="border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
               <p className="font-medium text-slate-900">Submit homework?</p>
@@ -356,7 +363,10 @@ export function StructuredHomework({
                 marks the work as submitted.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button onClick={handleSubmit} disabled={pending}>
+                <Button
+                  onClick={handleSubmit}
+                  disabled={pending || uploadBusy}
+                >
                   {pending ? "Submitting…" : "Confirm submit"}
                 </Button>
                 <Button
@@ -370,10 +380,21 @@ export function StructuredHomework({
             </div>
           ) : (
             <div className="flex flex-wrap gap-3">
-              <Button onClick={handleSave} disabled={pending} variant="secondary">
-                {pending || autosave.status === "saving" ? "Saving…" : "Save progress"}
+              <Button
+                onClick={handleSave}
+                disabled={pending}
+                variant="secondary"
+              >
+                {pending
+                  ? "Saving…"
+                  : autosave.status === "saving"
+                    ? "Saving answers…"
+                    : "Save progress"}
               </Button>
-              <Button onClick={() => setConfirmSubmit(true)} disabled={pending}>
+              <Button
+                onClick={() => setConfirmSubmit(true)}
+                disabled={pending || uploadBusy}
+              >
                 Submit homework
               </Button>
             </div>
