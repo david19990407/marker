@@ -19,6 +19,13 @@ import {
   scannedUploadPhaseLabel,
   type ScannedUploadPhase,
 } from "@/lib/homework/scanned-upload-path";
+import {
+  SCANNED_UPLOAD_START_TIMEOUT_MS,
+  requeueUploadJob,
+  releaseUploadJob,
+  takeNextUploadJobs,
+  type QueuePumpState,
+} from "@/lib/homework/scanned-upload-queue";
 
 type FilePhase = ScannedUploadPhase;
 
@@ -35,11 +42,11 @@ type LocalUploadItem = {
   remote: ScannedUploadFileRow | null;
   abort: AbortController | null;
   previewUrl: string | null;
+  queuedAt: number;
 };
 
 const STALL_MS = 20_000;
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
-const CONCURRENCY = 2;
 
 function formatBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -85,14 +92,46 @@ export function ScannedHomeworkUploadField({
   const [dragOver, setDragOver] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const loadedRef = useRef(false);
-  const queueRef = useRef<string[]>([]);
-  const activeCount = useRef(0);
+  const mountedRef = useRef(true);
   const itemsRef = useRef(items);
   const lastSummaryRef = useRef<string>("");
+  /** File payloads independent of React state commit timing. */
+  const pendingFilesRef = useRef(new Map<string, File>());
+  const queueStateRef = useRef<QueuePumpState>({
+    queue: [],
+    activeCount: 0,
+    inFlight: new Set(),
+  });
+  const pumpQueueRef = useRef<() => void>(() => {});
+  const startWatchersRef = useRef(new Map<string, number>());
 
   useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
+    mountedRef.current = true;
+    const startWatchers = startWatchersRef.current;
+    return () => {
+      mountedRef.current = false;
+      for (const item of itemsRef.current) {
+        item.abort?.abort();
+      }
+      for (const timer of startWatchers.values()) {
+        window.clearTimeout(timer);
+      }
+      startWatchers.clear();
+    };
+  }, []);
+
+  const syncItems = useCallback(
+    (updater: (prev: LocalUploadItem[]) => LocalUploadItem[]) => {
+      setItems((prev) => {
+        const next = updater(prev);
+        // Keep the worker on the latest list synchronously — do not wait for
+        // an effect after render (that left uploads stuck on Queued/Waiting).
+        itemsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   const notifySummary = useCallback(
     (list: LocalUploadItem[]) => {
@@ -114,12 +153,10 @@ export function ScannedHomeworkUploadField({
 
   const patchItem = useCallback(
     (localId: string, patch: Partial<LocalUploadItem>) => {
-      setItems((prev) => {
+      syncItems((prev) => {
         const next = prev.map((item) =>
           item.localId === localId ? { ...item, ...patch } : item,
         );
-        // Only push file metadata into the assignment model when the remote
-        // record set may have changed — not on progress/phase-only updates.
         if (
           "remote" in patch ||
           patch.phase === "ready" ||
@@ -131,7 +168,7 @@ export function ScannedHomeworkUploadField({
         return next;
       });
     },
-    [notifySummary],
+    [notifySummary, syncItems],
   );
 
   const reloadFromServer = useCallback(async () => {
@@ -141,7 +178,7 @@ export function ScannedHomeworkUploadField({
       return;
     }
     const remotes = result.files ?? [];
-    setItems((prev) => {
+    syncItems((prev) => {
       // Keep in-flight local rows; merge remotes for completed ones.
       const uploading = prev.filter(
         (p) =>
@@ -162,6 +199,7 @@ export function ScannedHomeworkUploadField({
         remote: file,
         abort: null,
         previewUrl: null,
+        queuedAt: 0,
       }));
       const next = [...remoteItems, ...uploading].sort(
         (a, b) => a.order - b.order,
@@ -169,7 +207,7 @@ export function ScannedHomeworkUploadField({
       notifySummary(next);
       return next;
     });
-  }, [submissionId, blockId, notifySummary]);
+  }, [submissionId, blockId, notifySummary, syncItems]);
 
   useEffect(() => {
     if (loadedRef.current) return;
@@ -255,11 +293,13 @@ export function ScannedHomeworkUploadField({
   );
 
   const uploadLocalItem = useCallback(
-    async (localId: string) => {
-      const current = itemsRef.current.find((i) => i.localId === localId);
-      if (!current?.file) return;
+    async (localId: string, file: File, displayOrder: number) => {
+      const startTimer = startWatchersRef.current.get(localId);
+      if (startTimer) {
+        window.clearTimeout(startTimer);
+        startWatchersRef.current.delete(localId);
+      }
 
-      const file = current.file;
       const abort = new AbortController();
       patchItem(localId, {
         phase: "uploading",
@@ -290,6 +330,7 @@ export function ScannedHomeworkUploadField({
       }, UPLOAD_TIMEOUT_MS);
 
       try {
+        if (!mountedRef.current) return;
         const prepared = await prepareScannedUploadAction({
           submissionId,
           blockId,
@@ -297,7 +338,7 @@ export function ScannedHomeworkUploadField({
           fileName: file.name,
           mimeType: file.type || "application/octet-stream",
           fileSize: file.size,
-          displayOrder: current.order,
+          displayOrder,
         });
         if (prepared.error || !prepared.prepared) {
           patchItem(localId, {
@@ -310,7 +351,6 @@ export function ScannedHomeworkUploadField({
         }
 
         const supabase = createClient();
-        // Prefer XHR for progress events with the signed upload URL.
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", prepared.prepared!.signedUrl);
@@ -340,7 +380,6 @@ export function ScannedHomeworkUploadField({
           abort.signal.addEventListener("abort", () => xhr.abort());
           xhr.send(file);
         }).catch(async (xhrError) => {
-          // Fallback: supabase uploadToSignedUrl (no fine-grained progress).
           if (abort.signal.aborted) throw xhrError;
           const { error } = await supabase.storage
             .from("student-submissions")
@@ -353,7 +392,7 @@ export function ScannedHomeworkUploadField({
           if (error) throw error;
         });
 
-        if (abort.signal.aborted) return;
+        if (abort.signal.aborted || !mountedRef.current) return;
 
         patchItem(localId, { progress: 100, phase: "uploaded" });
 
@@ -379,6 +418,7 @@ export function ScannedHomeworkUploadField({
           return;
         }
 
+        pendingFilesRef.current.delete(localId);
         const previewUrl = file.type.startsWith("image/")
           ? URL.createObjectURL(file)
           : null;
@@ -393,7 +433,6 @@ export function ScannedHomeworkUploadField({
           error: null,
         });
 
-        // Preview must not block “uploaded / ready for submit”.
         void runPreviewInBackground(
           confirmed.file.id,
           confirmed.file.mime_type,
@@ -423,12 +462,10 @@ export function ScannedHomeworkUploadField({
       } finally {
         window.clearInterval(stallTimer);
         window.clearTimeout(hardTimeout);
-        activeCount.current = Math.max(0, activeCount.current - 1);
-        pumpQueue();
+        releaseUploadJob(queueStateRef.current, localId);
+        pumpQueueRef.current();
       }
     },
-    // pumpQueue is defined below; eslint may complain — we call via ref pattern
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       blockId,
       config.maximum_file_size_bytes,
@@ -440,12 +477,31 @@ export function ScannedHomeworkUploadField({
   );
 
   const pumpQueue = useCallback(() => {
-    while (activeCount.current < CONCURRENCY && queueRef.current.length) {
-      const nextId = queueRef.current.shift()!;
-      activeCount.current += 1;
-      void uploadLocalItem(nextId);
+    if (!mountedRef.current) return;
+    const started = takeNextUploadJobs(queueStateRef.current);
+    for (const localId of started) {
+      const file =
+        pendingFilesRef.current.get(localId) ??
+        itemsRef.current.find((i) => i.localId === localId)?.file ??
+        null;
+      const order =
+        itemsRef.current.find((i) => i.localId === localId)?.order ?? 0;
+      if (!file) {
+        // Should not happen when pendingFilesRef is filled first — release lock.
+        requeueUploadJob(queueStateRef.current, localId);
+        patchItem(localId, {
+          phase: "error",
+          error: "The upload could not start. Retry.",
+        });
+        continue;
+      }
+      void uploadLocalItem(localId, file, order);
     }
-  }, [uploadLocalItem]);
+  }, [patchItem, uploadLocalItem]);
+
+  useEffect(() => {
+    pumpQueueRef.current = pumpQueue;
+  }, [pumpQueue]);
 
   function validateFile(file: File): string | null {
     if (file.size > config.maximum_file_size_bytes) {
@@ -467,6 +523,26 @@ export function ScannedHomeworkUploadField({
     return null;
   }
 
+  function armStartTimeout(localId: string) {
+    const existing = startWatchersRef.current.get(localId);
+    if (existing) window.clearTimeout(existing);
+    const timer = window.setTimeout(() => {
+      startWatchersRef.current.delete(localId);
+      const item = itemsRef.current.find((i) => i.localId === localId);
+      if (!item || item.phase !== "queued") return;
+      patchItem(localId, {
+        phase: "error",
+        error: "The upload could not start. Retry.",
+      });
+      queueStateRef.current.queue = queueStateRef.current.queue.filter(
+        (id) => id !== localId,
+      );
+      releaseUploadJob(queueStateRef.current, localId);
+      pumpQueueRef.current();
+    }, SCANNED_UPLOAD_START_TIMEOUT_MS);
+    startWatchersRef.current.set(localId, timer);
+  }
+
   async function onFilesSelected(list: FileList | null) {
     if (!list?.length || !editable) return;
     setGlobalError(null);
@@ -482,6 +558,7 @@ export function ScannedHomeworkUploadField({
     }
     const batch = Array.from(list).slice(0, remaining);
     const additions: LocalUploadItem[] = [];
+    const now = Date.now();
     let order = existingCount;
     for (const file of batch) {
       const validationError = validateFile(file);
@@ -502,17 +579,22 @@ export function ScannedHomeworkUploadField({
           !validationError && file.type.startsWith("image/")
             ? URL.createObjectURL(file)
             : null,
+        queuedAt: now,
       });
       if (!validationError) {
-        queueRef.current.push(localId);
+        // File bytes live in a ref so the worker never waits on React state.
+        pendingFilesRef.current.set(localId, file);
+        queueStateRef.current.queue.push(localId);
+        armStartTimeout(localId);
       }
       order += 1;
     }
-    setItems((prev) => {
+    syncItems((prev) => {
       const next = [...prev, ...additions];
       notifySummary(next);
       return next;
     });
+    // Start immediately — do not wait for another render or autosave.
     pumpQueue();
   }
 
@@ -520,32 +602,48 @@ export function ScannedHomeworkUploadField({
     const item = itemsRef.current.find((i) => i.localId === localId);
     if (!item) return;
     if (!item.file && item.remote) {
-      // Metadata-only failure is uncommon after storage success; reload.
       await reloadFromServer();
       return;
     }
-    if (!item.file) {
+    const file = item.file ?? pendingFilesRef.current.get(localId) ?? null;
+    if (!file) {
       setGlobalError("Select the file again to retry this upload.");
       return;
     }
+    pendingFilesRef.current.set(localId, file);
     patchItem(localId, {
       phase: "queued",
       progress: 0,
       error: null,
+      file,
+      queuedAt: Date.now(),
     });
-    queueRef.current.push(localId);
-    pumpQueue();
+    if (!queueStateRef.current.queue.includes(localId)) {
+      queueStateRef.current.queue.push(localId);
+    }
+    armStartTimeout(localId);
+    pumpQueueRef.current();
   }
 
   async function cancelItem(localId: string) {
     const item = itemsRef.current.find((i) => i.localId === localId);
     item?.abort?.abort();
-    queueRef.current = queueRef.current.filter((id) => id !== localId);
-    setItems((prev) => {
+    pendingFilesRef.current.delete(localId);
+    queueStateRef.current.queue = queueStateRef.current.queue.filter(
+      (id) => id !== localId,
+    );
+    releaseUploadJob(queueStateRef.current, localId);
+    const startTimer = startWatchersRef.current.get(localId);
+    if (startTimer) {
+      window.clearTimeout(startTimer);
+      startWatchersRef.current.delete(localId);
+    }
+    syncItems((prev) => {
       const next = prev.filter((i) => i.localId !== localId);
       notifySummary(next);
       return next;
     });
+    pumpQueueRef.current();
   }
 
   async function replaceAll() {
@@ -556,8 +654,13 @@ export function ScannedHomeworkUploadField({
       setGlobalError(result.error);
       return;
     }
-    queueRef.current = [];
-    setItems([]);
+    queueStateRef.current = {
+      queue: [],
+      activeCount: 0,
+      inFlight: new Set(),
+    };
+    pendingFilesRef.current.clear();
+    syncItems(() => []);
     onFilesChanged?.({ file_count: 0, file_names: [] });
   }
 
