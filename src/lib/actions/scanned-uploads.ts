@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { createClient } from "@/lib/supabase/server";
+import { buildNormalisedMarkingPdf } from "@/lib/homework/scanned-upload-preview";
 import type { ActionResult } from "@/lib/actions/auth";
 
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -52,28 +53,44 @@ function mapFile(row: Record<string, unknown>): ScannedUploadFileRow {
   };
 }
 
+async function assertSubmissionAccess(
+  submissionId: string,
+  roles: Array<"student" | "teacher" | "admin"> = ["student", "teacher", "admin"],
+) {
+  const profile = await requireProfile(roles);
+  const supabase = await createClient();
+  const { data: submission, error } = await supabase
+    .from("submissions")
+    .select("id, student_id, status, assignment_id")
+    .eq("id", submissionId)
+    .maybeSingle();
+  if (error || !submission) {
+    return {
+      profile,
+      supabase,
+      submission: null as null,
+      error: error?.message ?? "Submission not found",
+    };
+  }
+  if (profile.role === "student" && submission.student_id !== profile.id) {
+    return {
+      profile,
+      supabase,
+      submission: null as null,
+      error: "You do not have access to this upload",
+    };
+  }
+  return { profile, supabase, submission, error: null as null };
+}
+
 export async function listScannedUploadFilesAction(
   submissionId: string,
   blockId: string,
 ): Promise<ActionResult & { files?: ScannedUploadFileRow[] }> {
-  const profile = await requireProfile(["student", "teacher", "admin"]);
-  const supabase = await createClient();
-  const { data: submission, error: subError } = await supabase
-    .from("submissions")
-    .select("id, student_id, status")
-    .eq("id", submissionId)
-    .maybeSingle();
-  if (subError || !submission) {
-    return { error: subError?.message ?? "Submission not found" };
-  }
-  if (
-    profile.role === "student" &&
-    submission.student_id !== profile.id
-  ) {
-    return { error: "You do not have access to this upload" };
-  }
+  const access = await assertSubmissionAccess(submissionId);
+  if (access.error || !access.submission) return { error: access.error };
 
-  const { data, error } = await supabase
+  const { data, error } = await access.supabase
     .from("scanned_upload_files")
     .select("*")
     .eq("submission_id", submissionId)
@@ -89,6 +106,47 @@ export async function listScannedUploadFilesAction(
   return {
     files: (data ?? []).map((row) => mapFile(row as Record<string, unknown>)),
   };
+}
+
+/** All active scanned uploads for a submission (teacher marking). */
+export async function listSubmissionScannedUploadFilesAction(
+  submissionId: string,
+): Promise<ActionResult & { files?: ScannedUploadFileRow[] }> {
+  const access = await assertSubmissionAccess(submissionId);
+  if (access.error || !access.submission) return { error: access.error };
+
+  const { data, error } = await access.supabase
+    .from("scanned_upload_files")
+    .select("*")
+    .eq("submission_id", submissionId)
+    .eq("is_active_version", true)
+    .order("block_id", { ascending: true })
+    .order("display_order", { ascending: true });
+  if (error) {
+    if (/does not exist|schema cache/i.test(error.message)) {
+      return { files: [] };
+    }
+    return { error: error.message };
+  }
+  return {
+    files: (data ?? []).map((row) => mapFile(row as Record<string, unknown>)),
+  };
+}
+
+async function nextSubmissionVersion(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  submissionId: string,
+  blockId: string,
+): Promise<number> {
+  const { data } = await supabase
+    .from("scanned_upload_files")
+    .select("submission_version")
+    .eq("submission_id", submissionId)
+    .eq("block_id", blockId)
+    .order("submission_version", { ascending: false })
+    .limit(1);
+  const max = Number(data?.[0]?.submission_version ?? 0);
+  return Number.isFinite(max) ? max + 1 : 1;
 }
 
 export async function uploadScannedHomeworkFileAction(
@@ -133,7 +191,20 @@ export async function uploadScannedHomeworkFileAction(
     };
   }
 
-  const path = `${submission.assignment_id}/${profile.id}/${blockId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  const { data: activeRows } = await supabase
+    .from("scanned_upload_files")
+    .select("submission_version")
+    .eq("submission_id", submissionId)
+    .eq("block_id", blockId)
+    .eq("is_active_version", true)
+    .limit(1);
+  const version =
+    activeRows?.[0]?.submission_version != null
+      ? Number(activeRows[0].submission_version)
+      : await nextSubmissionVersion(supabase, submissionId, blockId);
+
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `${submission.assignment_id}/${profile.id}/${blockId}/v${version}/${Date.now()}_${safeName}`;
   const buffer = Buffer.from(await file.arrayBuffer());
   const { error: uploadError } = await supabase.storage
     .from("student-submissions")
@@ -146,7 +217,7 @@ export async function uploadScannedHomeworkFileAction(
       submission_id: submissionId,
       block_id: blockId,
       question_id: questionId,
-      submission_version: 1,
+      submission_version: version,
       original_storage_path: path,
       preview_storage_path: path,
       original_file_name: file.name,
@@ -224,11 +295,14 @@ export async function removeScannedUploadFileAction(
   return updateScannedUploadFileAction(fileId, { is_active_version: false });
 }
 
-/** Deactivate all active files for a block before replacing after unsubmit. */
+/**
+ * Deactivate all active files for a block before replacing after unsubmit.
+ * Increments the submission version so the previous set cannot reappear as active.
+ */
 export async function replaceScannedUploadSetAction(
   submissionId: string,
   blockId: string,
-): Promise<ActionResult> {
+): Promise<ActionResult & { nextVersion?: number }> {
   const profile = await requireProfile(["student"]);
   const supabase = await createClient();
   const { data: submission } = await supabase
@@ -242,6 +316,7 @@ export async function replaceScannedUploadSetAction(
   if (submission.status === "submitted" || submission.status === "late") {
     return { error: "Unsubmit before replacing files" };
   }
+  const nextVersion = await nextSubmissionVersion(supabase, submissionId, blockId);
   const { error } = await supabase
     .from("scanned_upload_files")
     .update({ is_active_version: false })
@@ -251,5 +326,175 @@ export async function replaceScannedUploadSetAction(
   if (error && !/does not exist|schema cache/i.test(error.message)) {
     return { error: error.message };
   }
-  return { success: "Ready for replacement upload" };
+  return { success: "Ready for replacement upload", nextVersion };
+}
+
+/**
+ * Build a stable marking preview PDF from ordered active originals.
+ * Keeps originals unchanged; writes a separate preview object.
+ */
+export async function finalizeScannedUploadPreviewAction(
+  submissionId: string,
+  blockId: string,
+  options?: { combineImagesToPdf?: boolean },
+): Promise<
+  ActionResult & {
+    previewPath?: string | null;
+    pageCount?: number;
+    files?: ScannedUploadFileRow[];
+  }
+> {
+  const profile = await requireProfile(["student", "teacher", "admin"]);
+  const supabase = await createClient();
+  const { data: submission, error: subError } = await supabase
+    .from("submissions")
+    .select("id, student_id, status, assignment_id")
+    .eq("id", submissionId)
+    .maybeSingle();
+  if (subError || !submission) {
+    return { error: subError?.message ?? "Submission not found" };
+  }
+  if (profile.role === "student" && submission.student_id !== profile.id) {
+    return { error: "You do not have access to this upload" };
+  }
+  if (
+    profile.role === "student" &&
+    (submission.status === "submitted" || submission.status === "late")
+  ) {
+    return { error: "This homework is locked. Unsubmit to rebuild the preview." };
+  }
+
+  const { data: rows, error } = await supabase
+    .from("scanned_upload_files")
+    .select("*")
+    .eq("submission_id", submissionId)
+    .eq("block_id", blockId)
+    .eq("is_active_version", true)
+    .order("display_order", { ascending: true });
+  if (error) {
+    if (/does not exist|schema cache/i.test(error.message)) {
+      return { files: [] };
+    }
+    return { error: error.message };
+  }
+
+  const files = (rows ?? []).map((row) => mapFile(row as Record<string, unknown>));
+  if (!files.length) {
+    return { success: "No files to normalise", files: [], previewPath: null };
+  }
+
+  const combine = options?.combineImagesToPdf !== false;
+  const imageFiles = files.filter((f) => f.mime_type.startsWith("image/"));
+  const pdfFiles = files.filter((f) => f.mime_type === "application/pdf");
+  const needsCombine =
+    combine &&
+    (imageFiles.length > 1 ||
+      (imageFiles.length >= 1 && pdfFiles.length >= 1) ||
+      (imageFiles.length === 1 && imageFiles[0]!.rotation !== 0));
+
+  if (!needsCombine && files.length === 1 && files[0]!.mime_type === "application/pdf") {
+    // Single PDF: preview is the original.
+    await supabase
+      .from("scanned_upload_files")
+      .update({ preview_storage_path: files[0]!.original_storage_path })
+      .eq("id", files[0]!.id);
+    return {
+      success: "Preview ready",
+      previewPath: files[0]!.original_storage_path,
+      pageCount: files[0]!.page_count,
+      files,
+    };
+  }
+
+  if (!needsCombine && imageFiles.length <= 1 && pdfFiles.length === 0) {
+    return {
+      success: "Preview uses original image pages",
+      previewPath: files[0]?.preview_storage_path ?? files[0]?.original_storage_path,
+      pageCount: files.length,
+      files,
+    };
+  }
+
+  try {
+    const sources = [];
+    for (const file of files) {
+      if (
+        file.mime_type !== "application/pdf" &&
+        !file.mime_type.startsWith("image/")
+      ) {
+        // DOCX and unsupported types keep original only.
+        continue;
+      }
+      const { data: blob, error: dlError } = await supabase.storage
+        .from("student-submissions")
+        .download(file.original_storage_path);
+      if (dlError || !blob) {
+        return {
+          error:
+            dlError?.message ??
+            `Could not read “${file.original_file_name}” for preview. Original file is preserved — retry conversion.`,
+        };
+      }
+      const buffer = new Uint8Array(await blob.arrayBuffer());
+      sources.push({
+        bytes: buffer,
+        mimeType: file.mime_type,
+        fileName: file.original_file_name,
+        rotation: file.rotation,
+      });
+    }
+
+    if (!sources.length) {
+      return {
+        error:
+          "No convertible pages found for preview. Original uploads are preserved.",
+        files,
+      };
+    }
+
+    const { pdfBytes, pageCount } = await buildNormalisedMarkingPdf(sources);
+    const version = files[0]!.submission_version;
+    const previewPath = `${submission.assignment_id}/${submission.student_id}/${blockId}/v${version}/marking-preview.pdf`;
+    const { error: upError } = await supabase.storage
+      .from("student-submissions")
+      .upload(previewPath, Buffer.from(pdfBytes), {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+    if (upError) {
+      return {
+        error: `Preview conversion failed: ${upError.message}. Original uploads are preserved.`,
+        files,
+      };
+    }
+
+    const ids = files.map((f) => f.id);
+    const { error: updateError } = await supabase
+      .from("scanned_upload_files")
+      .update({
+        preview_storage_path: previewPath,
+        page_count: pageCount,
+      })
+      .in("id", ids);
+    if (updateError) {
+      return { error: updateError.message, files };
+    }
+
+    const refreshed = await listScannedUploadFilesAction(submissionId, blockId);
+    revalidatePath(`/student/homework/assignments/${submission.assignment_id}`);
+    return {
+      success: "Marking preview PDF created",
+      previewPath,
+      pageCount,
+      files: refreshed.files ?? files,
+    };
+  } catch (err) {
+    return {
+      error:
+        err instanceof Error
+          ? `${err.message} Original uploads are preserved — retry conversion.`
+          : "Preview conversion failed. Original uploads are preserved.",
+      files,
+    };
+  }
 }

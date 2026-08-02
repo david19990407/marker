@@ -64,6 +64,7 @@ const LIBRARY_GROUPS: Array<{ label: string; types: AssignmentBlockType[] }> = [
       "multiple_select",
       "tick_box",
       "file_upload",
+      "scanned_homework_upload",
       "table",
       "vocabulary_table",
     ],

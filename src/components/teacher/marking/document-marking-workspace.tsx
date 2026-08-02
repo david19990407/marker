@@ -40,7 +40,11 @@ import {
   type ResponseSnapshot,
 } from "@/lib/homework/completion";
 import { formatMarkLabel } from "@/lib/homework/marks";
-import { expandAssessableBlocks } from "@/lib/marking/expand-assessable";
+import {
+  expandAssessableBlocks,
+  parentScannedUploadBlockId,
+} from "@/lib/marking/expand-assessable";
+import type { ScannedUploadFileRow } from "@/lib/actions/scanned-uploads";
 import type {
   AssignmentFeedbackField,
   CommentBankItem,
@@ -92,6 +96,11 @@ type CentreView =
       fileName: string;
       path: string;
       bucket: "student-submissions" | "assignment-resources";
+      /** When true, annotation layer overlays the file (student script). */
+      annotatable?: boolean;
+      pageNumber?: number | null;
+      rotation?: number;
+      originalPath?: string | null;
     };
 
 type AnnotationGeometryPatch = Pick<
@@ -231,6 +240,7 @@ export function DocumentMarkingWorkspace({
   annotationDefaultVisibility = "teacher_only",
   legacyFileName = null,
   legacyStoragePath = null,
+  initialScannedFiles = [],
 }: {
   submissionId: string;
   assignmentId: string;
@@ -278,6 +288,7 @@ export function DocumentMarkingWorkspace({
   annotationDefaultVisibility?: "teacher_only" | "student_visible";
   legacyFileName?: string | null;
   legacyStoragePath?: string | null;
+  initialScannedFiles?: ScannedUploadFileRow[];
 }) {
   void annotationDefaultVisibility;
   void feedbackFields;
@@ -443,12 +454,73 @@ export function DocumentMarkingWorkspace({
     [assessable, selectedQuestionId],
   );
 
+  const scannedFilesByBlock = useMemo(() => {
+    const map = new Map<string, ScannedUploadFileRow[]>();
+    for (const file of initialScannedFiles) {
+      const list = map.get(file.block_id) ?? [];
+      list.push(file);
+      map.set(file.block_id, list);
+    }
+    for (const [, list] of map) {
+      list.sort((a, b) => a.display_order - b.display_order);
+    }
+    return map;
+  }, [initialScannedFiles]);
+
+  const openScannedBlock = useCallback(
+    (blockId: string) => {
+      const files = scannedFilesByBlock.get(blockId) ?? [];
+      if (!files.length) {
+        setCentreView({ kind: "worksheet" });
+        return;
+      }
+      const combinedPreview = files.find(
+        (f) =>
+          f.preview_storage_path &&
+          f.preview_storage_path !== f.original_storage_path &&
+          f.preview_storage_path.endsWith(".pdf"),
+      );
+      if (combinedPreview?.preview_storage_path) {
+        setCentreView({
+          kind: "file",
+          fileName: "Marking preview.pdf",
+          path: combinedPreview.preview_storage_path,
+          bucket: "student-submissions",
+          annotatable: true,
+          pageNumber: 1,
+          originalPath: combinedPreview.original_storage_path,
+        });
+        return;
+      }
+      const first = files[0]!;
+      setCentreView({
+        kind: "file",
+        fileName: first.original_file_name,
+        path: first.preview_storage_path || first.original_storage_path,
+        bucket: "student-submissions",
+        annotatable: true,
+        pageNumber: 1,
+        rotation: first.rotation,
+        originalPath: first.original_storage_path,
+      });
+    },
+    [scannedFilesByBlock],
+  );
+
   const selectedMark = selectedQuestionId
     ? marksByQuestion.get(selectedQuestionId)
     : undefined;
   const selectedQuestionIndex = selectedQuestionId
     ? questionIds.indexOf(selectedQuestionId)
     : -1;
+
+  useEffect(() => {
+    if (!selectedBlock || selectedBlock.block_type !== "scanned_homework_upload") {
+      return;
+    }
+    const parentId = parentScannedUploadBlockId(selectedBlock);
+    if (parentId) openScannedBlock(parentId);
+  }, [selectedBlock, openScannedBlock]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -649,13 +721,16 @@ export function DocumentMarkingWorkspace({
     const stampId =
       draft.stamp_definition_id ??
       (draft.annotation_type === "stamp" ? selectedStampId : null);
+    const parentBlockId =
+      parentScannedUploadBlockId(selectedBlock) ?? selectedBlock?._id ?? null;
     const created: SubmissionAnnotation = {
       id: tempId,
       submission_id: submissionId,
       assignment_id: assignmentId,
       question_id: selectedQuestionId,
-      block_id: selectedBlock?._id ?? null,
-      page_number: null,
+      block_id: parentBlockId,
+      page_number:
+        centreView.kind === "file" ? (centreView.pageNumber ?? 1) : null,
       target_kind: centreView.kind === "worksheet" ? "worksheet" : "file",
       target_path: centreView.kind === "file" ? centreView.path : null,
       annotation_type: draft.annotation_type,
@@ -1252,6 +1327,16 @@ export function DocumentMarkingWorkspace({
   const worksheetAnnotations = annotations.filter(
     (a) => a.target_kind === "worksheet" && !a.is_deleted,
   );
+  const fileAnnotations = annotations.filter((a) => {
+    if (a.is_deleted || a.target_kind === "worksheet") return false;
+    if (centreView.kind !== "file") return false;
+    if (!a.target_path) return true;
+    return a.target_path === centreView.path;
+  });
+  const scannedBlockMarkScheme =
+    selectedBlock?.block_type === "scanned_homework_upload"
+      ? selectedBlock.scannedUploadConfig
+      : null;
   const returnHref = `/teacher/marking/classes/${classId}/assignments/${assignmentId}${
     unmarkedOnly ? "?filter=unmarked" : ""
   }`;
@@ -1459,8 +1544,13 @@ export function DocumentMarkingWorkspace({
                             active ? "bg-brand-50 text-brand-900" : "hover:bg-slate-50"
                           }`}
                           onClick={() => {
-                            setCentreView({ kind: "worksheet" });
                             setSelectedQuestionId(qid);
+                            if (block.block_type === "scanned_homework_upload") {
+                              const parentId = parentScannedUploadBlockId(block);
+                              if (parentId) openScannedBlock(parentId);
+                            } else {
+                              setCentreView({ kind: "worksheet" });
+                            }
                           }}
                         >
                           <span className="flex items-start justify-between gap-2">
@@ -1482,6 +1572,56 @@ export function DocumentMarkingWorkspace({
 
               {leftTab === "files" ? (
                 <ul className="space-y-2">
+                  {[...scannedFilesByBlock.entries()].map(([blockId, files]) => {
+                    const preview = files.find(
+                      (f) =>
+                        f.preview_storage_path &&
+                        f.preview_storage_path !== f.original_storage_path,
+                    );
+                    return (
+                      <li key={blockId}>
+                        <button
+                          type="button"
+                          className="w-full rounded-xl border border-slate-100 px-2 py-2 text-left hover:bg-slate-50"
+                          onClick={() => openScannedBlock(blockId)}
+                        >
+                          <span className="block text-sm font-medium">
+                            Scanned homework
+                          </span>
+                          <span className="block text-[11px] text-slate-500">
+                            {files.length} file
+                            {files.length === 1 ? "" : "s"}
+                            {preview ? " · combined preview" : ""}
+                          </span>
+                        </button>
+                        <ul className="mt-1 space-y-1 pl-2">
+                          {files.map((file) => (
+                            <li key={file.id}>
+                              <button
+                                type="button"
+                                className="w-full rounded-lg px-2 py-1.5 text-left text-xs hover:bg-slate-50"
+                                onClick={() =>
+                                  setCentreView({
+                                    kind: "file",
+                                    fileName: file.original_file_name,
+                                    path:
+                                      file.preview_storage_path ||
+                                      file.original_storage_path,
+                                    bucket: "student-submissions",
+                                    annotatable: true,
+                                    rotation: file.rotation,
+                                    originalPath: file.original_storage_path,
+                                  })
+                                }
+                              >
+                                {file.original_file_name}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    );
+                  })}
                   {legacyFileName && legacyStoragePath ? (
                     <li>
                       <button
@@ -1493,6 +1633,7 @@ export function DocumentMarkingWorkspace({
                             fileName: legacyFileName,
                             path: legacyStoragePath,
                             bucket: "student-submissions",
+                            annotatable: true,
                           })
                         }
                       >
@@ -1513,6 +1654,7 @@ export function DocumentMarkingWorkspace({
                               fileName: r.file_name!,
                               path: r.storage_path!,
                               bucket: "student-submissions",
+                              annotatable: true,
                             })
                           }
                         >
@@ -1520,7 +1662,9 @@ export function DocumentMarkingWorkspace({
                         </button>
                       </li>
                     ))}
-                  {!legacyFileName && !responses.some((r) => r.storage_path) ? (
+                  {!legacyFileName &&
+                  !responses.some((r) => r.storage_path) &&
+                  scannedFilesByBlock.size === 0 ? (
                     <li className="text-xs text-slate-500">
                       No student file uploads
                     </li>
@@ -1651,13 +1795,51 @@ export function DocumentMarkingWorkspace({
 
           {centreView.kind === "file" ? (
             <div className="relative min-h-0 flex-1 overflow-auto">
-              <FileViewer
-                fileName={centreView.fileName}
-                storagePath={centreView.path}
-                bucket={centreView.bucket}
-                zoom={zoom}
-                fit={fit}
-              />
+              <div className="relative min-h-full">
+                <FileViewer
+                  fileName={centreView.fileName}
+                  storagePath={centreView.path}
+                  bucket={centreView.bucket}
+                  zoom={zoom}
+                  fit={fit}
+                  rotation={centreView.rotation}
+                  downloadPath={centreView.originalPath ?? centreView.path}
+                  onPageCount={(pages) => {
+                    if (centreView.kind !== "file") return;
+                    if (!centreView.pageNumber) {
+                      setCentreView({ ...centreView, pageNumber: 1 });
+                    }
+                    void pages;
+                  }}
+                />
+                {centreView.annotatable ? (
+                  <div className="pointer-events-none absolute inset-0 z-[6]">
+                    <div className="pointer-events-auto absolute inset-x-0 top-12 bottom-0 mx-auto max-w-4xl">
+                      <AnnotationLayer
+                        annotations={fileAnnotations}
+                        tool={tool}
+                        colour={colour}
+                        selectedId={selectedAnnotationId}
+                        editingId={editingAnnotationId}
+                        selectedStampId={selectedStampId}
+                        stamps={stamps}
+                        linkedCommentDrag={null}
+                        onSelect={handleAnnotationSelect}
+                        onCreate={createAnnotation}
+                        onCommitGeometry={handleCommitGeometry}
+                        onToggleCollapse={handleToggleCollapse}
+                        onBeginInlineEdit={handleBeginInlineEdit}
+                        onInlineTextChange={handleInlineTextChange}
+                        onEndInlineEdit={handleEndInlineEdit}
+                        onDeleteSelected={(id) => {
+                          const targetId = id ?? selectedAnnotationId;
+                          if (targetId) deleteAnnotationById(targetId);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
               <MarkAwardFlash flash={markFlash} />
             </div>
           ) : (
@@ -1797,7 +1979,9 @@ export function DocumentMarkingWorkspace({
                   />
                 </section>
 
-                {(selectedBlock?.mark_scheme_note || markSchemes.length > 0) && (
+                {(selectedBlock?.mark_scheme_note ||
+                  markSchemes.length > 0 ||
+                  scannedBlockMarkScheme?.mark_scheme_storage_path) && (
                   <details className="border-t border-slate-100 pt-3 text-xs text-slate-600">
                     <summary className="cursor-pointer font-medium text-slate-700">
                       Mark scheme
@@ -1807,6 +1991,26 @@ export function DocumentMarkingWorkspace({
                         <p className="whitespace-pre-wrap">
                           {selectedBlock.mark_scheme_note}
                         </p>
+                      ) : null}
+                      {scannedBlockMarkScheme?.mark_scheme_storage_path ? (
+                        <button
+                          type="button"
+                          className="block w-full text-left text-slate-700 underline-offset-2 hover:underline"
+                          onClick={() =>
+                            setCentreView({
+                              kind: "file",
+                              fileName:
+                                scannedBlockMarkScheme.mark_scheme_file_name ||
+                                "Mark scheme.pdf",
+                              path: scannedBlockMarkScheme.mark_scheme_storage_path!,
+                              bucket: "assignment-resources",
+                              annotatable: false,
+                            })
+                          }
+                        >
+                          {scannedBlockMarkScheme.mark_scheme_file_name ||
+                            "Block mark scheme"}
+                        </button>
                       ) : null}
                       {markSchemes.map((file) => (
                         <button
@@ -1819,6 +2023,7 @@ export function DocumentMarkingWorkspace({
                               fileName: file.file_name,
                               path: file.storage_path,
                               bucket: "assignment-resources",
+                              annotatable: false,
                             })
                           }
                         >

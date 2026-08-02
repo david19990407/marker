@@ -198,7 +198,11 @@ export function BlockSettingsPanel({
       ) : null}
 
       {block.block_type === "scanned_homework_upload" ? (
-        <ScannedUploadSettings block={block} onChange={onChange} />
+        <ScannedUploadSettings
+          block={block}
+          onChange={onChange}
+          assignmentId={assignmentId}
+        />
       ) : null}
 
       <div className="border-t border-slate-100 pt-3">
@@ -1007,9 +1011,11 @@ function titlePlaceholder(block: BuilderBlock) {
 function ScannedUploadSettings({
   block,
   onChange,
+  assignmentId,
 }: {
   block: BuilderBlock;
   onChange: (updater: BlockUpdater) => void;
+  assignmentId: string;
 }) {
   const config = block.scannedUploadConfig ?? defaultScannedUploadConfig();
   const subquestions = [...config.subquestions].sort(
@@ -1018,6 +1024,10 @@ function ScannedUploadSettings({
   const derivedTotal = subquestions
     .filter((q) => q.include_in_total)
     .reduce((sum, q) => sum + Number(q.maximum_mark || 0), 0);
+  const [schemeStatus, setSchemeStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [schemeError, setSchemeError] = useState<string | null>(null);
 
   function patchConfig(next: Partial<ScannedUploadConfig>) {
     onChange((prev) => {
@@ -1046,6 +1056,38 @@ function ScannedUploadSettings({
         q.id === id ? { ...q, ...patch } : q,
       ),
     });
+  }
+
+  async function uploadMarkScheme(file: File | null) {
+    if (!file) return;
+    if (!assignmentId) {
+      setSchemeError("Save the assignment before uploading a mark scheme.");
+      setSchemeStatus("error");
+      return;
+    }
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setSchemeError("Mark schemes must be PDF files.");
+      setSchemeStatus("error");
+      return;
+    }
+    setSchemeStatus("saving");
+    setSchemeError(null);
+    const { uploadBlockMediaAction } = await import(
+      "@/lib/actions/homework-builder"
+    );
+    const fd = new FormData();
+    fd.set("file", file);
+    const result = await uploadBlockMediaAction(assignmentId, "download", fd);
+    if (result.error || !result.media) {
+      setSchemeError(result.error ?? "Upload failed");
+      setSchemeStatus("error");
+      return;
+    }
+    patchConfig({
+      mark_scheme_storage_path: result.media.storage_path,
+      mark_scheme_file_name: result.media.file_name,
+    });
+    setSchemeStatus("saved");
   }
 
   return (
@@ -1203,6 +1245,66 @@ function ScannedUploadSettings({
             />
           </div>
         ))}
+      </div>
+
+      <div className="space-y-2 border-t border-slate-100 pt-3">
+        <p className="text-sm font-semibold text-slate-900">Mark scheme</p>
+        <p className="text-xs text-slate-500">
+          Staff-only PDF available in the marking interface. Students never see
+          this file.
+        </p>
+        {config.mark_scheme_file_name ? (
+          <p className="text-sm text-slate-700">
+            Current: {config.mark_scheme_file_name}
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500">No mark-scheme PDF attached.</p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-block">
+            <span className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-50">
+              {config.mark_scheme_storage_path
+                ? "Replace mark-scheme PDF"
+                : "Upload mark-scheme PDF"}
+            </span>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="sr-only"
+              onChange={(e) => {
+                void uploadMarkScheme(e.target.files?.[0] ?? null);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {config.mark_scheme_storage_path ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                patchConfig({
+                  mark_scheme_storage_path: null,
+                  mark_scheme_file_name: null,
+                })
+              }
+            >
+              Remove
+            </Button>
+          ) : null}
+          <span className="text-xs text-slate-500">
+            {schemeStatus === "saving"
+              ? "Saving"
+              : schemeStatus === "saved"
+                ? "Saved"
+                : schemeStatus === "error"
+                  ? "Save failed"
+                  : null}
+          </span>
+        </div>
+        {schemeError ? (
+          <p className="text-xs text-rose-700">{schemeError}</p>
+        ) : null}
       </div>
     </div>
   );

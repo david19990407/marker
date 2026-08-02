@@ -25,6 +25,8 @@ export function FileViewer({
   zoom,
   fit,
   onPageCount,
+  rotation = 0,
+  downloadPath,
 }: {
   fileName: string;
   storagePath: string;
@@ -32,6 +34,9 @@ export function FileViewer({
   zoom: number;
   fit: "width" | "page" | "none";
   onPageCount?: (pages: number) => void;
+  rotation?: number;
+  /** Optional path for Download original (defaults to storagePath). */
+  downloadPath?: string | null;
 }) {
   const kind = detectKind(fileName);
   const [url, setUrl] = useState<string | null>(null);
@@ -100,7 +105,10 @@ export function FileViewer({
               </Button>
             </>
           ) : null}
-          <DownloadButton bucket={bucket} path={storagePath} />
+          <DownloadButton
+            bucket={bucket}
+            path={downloadPath || storagePath}
+          />
         </div>
       </div>
 
@@ -109,7 +117,10 @@ export function FileViewer({
           <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
             <p className="mb-2 font-medium text-slate-800">Preview unavailable</p>
             <p className="mb-3">{error}</p>
-            <DownloadButton bucket={bucket} path={storagePath} />
+            <DownloadButton
+              bucket={bucket}
+              path={downloadPath || storagePath}
+            />
           </div>
         ) : null}
 
@@ -133,7 +144,7 @@ export function FileViewer({
             alt={fileName}
             className="mx-auto max-w-full rounded-sm bg-white shadow-lg"
             style={{
-              transform: `scale(${scale})`,
+              transform: `scale(${scale}) rotate(${rotation || 0}deg)`,
               transformOrigin: "top center",
             }}
           />

@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import {
+  finalizeScannedUploadPreviewAction,
   listScannedUploadFilesAction,
   removeScannedUploadFileAction,
+  replaceScannedUploadSetAction,
   updateScannedUploadFileAction,
   uploadScannedHomeworkFileAction,
   type ScannedUploadFileRow,
@@ -77,6 +79,27 @@ export function ScannedHomeworkUploadField({
     reload();
   }, [reload]);
 
+  async function rebuildPreview() {
+    if (!config.combine_images_to_pdf) return;
+    const result = await finalizeScannedUploadPreviewAction(
+      submissionId,
+      blockId,
+      { combineImagesToPdf: true },
+    );
+    if (result.error) {
+      setError(result.error);
+      setStatus("error");
+      return;
+    }
+    if (result.files) {
+      setFiles(result.files);
+      onFilesChanged?.({
+        file_count: result.files.length,
+        file_names: result.files.map((f) => f.original_file_name),
+      });
+    }
+  }
+
   async function uploadOne(file: File, order: number) {
     if (file.size > config.maximum_file_size_bytes) {
       setError(
@@ -110,7 +133,6 @@ export function ScannedHomeworkUploadField({
       return;
     }
     setStatus("saved");
-    reload();
   }
 
   async function onFilesSelected(list: FileList | null) {
@@ -127,6 +149,23 @@ export function ScannedHomeworkUploadField({
       await uploadOne(file, order);
       order += 1;
     }
+    reload();
+    await rebuildPreview();
+  }
+
+  async function replaceAll() {
+    if (!editable || !config.allow_replacement) return;
+    setStatus("uploading");
+    setError(null);
+    const result = await replaceScannedUploadSetAction(submissionId, blockId);
+    if (result.error) {
+      setError(result.error);
+      setStatus("error");
+      return;
+    }
+    setFiles([]);
+    onFilesChanged?.({ file_count: 0, file_names: [] });
+    setStatus("saved");
   }
 
   const typesLabel = [
@@ -189,6 +228,19 @@ export function ScannedHomeworkUploadField({
         </div>
       ) : null}
 
+      {editable && files.length > 0 && config.allow_replacement ? (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => startTransition(() => void replaceAll())}
+          >
+            Replace all files
+          </Button>
+        </div>
+      ) : null}
+
       {status === "uploading" || pending ? (
         <p className="text-xs text-slate-500">Uploading…</p>
       ) : status === "saved" ? (
@@ -210,6 +262,10 @@ export function ScannedHomeworkUploadField({
                 {formatBytes(file.file_size)}
                 {file.page_count ? ` · ${file.page_count} page(s)` : ""}
                 {file.rotation ? ` · rotated ${file.rotation}°` : ""}
+                {file.preview_storage_path &&
+                file.preview_storage_path !== file.original_storage_path
+                  ? " · marking preview ready"
+                  : ""}
               </p>
             </div>
             {editable ? (
@@ -230,6 +286,7 @@ export function ScannedHomeworkUploadField({
                         display_order: file.display_order,
                       });
                       reload();
+                      await rebuildPreview();
                     })
                   }
                 >
@@ -251,6 +308,7 @@ export function ScannedHomeworkUploadField({
                         display_order: file.display_order,
                       });
                       reload();
+                      await rebuildPreview();
                     })
                   }
                 >
@@ -267,6 +325,7 @@ export function ScannedHomeworkUploadField({
                           rotation: (file.rotation + 90) % 360,
                         });
                         reload();
+                        await rebuildPreview();
                       })
                     }
                   >
@@ -281,6 +340,7 @@ export function ScannedHomeworkUploadField({
                     startTransition(async () => {
                       await removeScannedUploadFileAction(file.id);
                       reload();
+                      await rebuildPreview();
                     })
                   }
                 >
