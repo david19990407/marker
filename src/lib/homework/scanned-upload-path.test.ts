@@ -58,6 +58,10 @@ describe("scanned upload phase labels", () => {
     expect(scannedUploadPhaseLabel("ready", 100)).toBe("Ready");
   });
 
+  it("labels queued as Queued, not Waiting", () => {
+    expect(scannedUploadPhaseLabel("queued", 0)).toBe("Queued");
+  });
+
   it("treats preview processing as not busy for submit gating", () => {
     expect(isScannedUploadBusyPhase("uploading")).toBe(true);
     expect(isScannedUploadBusyPhase("queued")).toBe(true);

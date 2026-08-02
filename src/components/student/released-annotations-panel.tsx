@@ -120,13 +120,19 @@ export function ReleasedAnnotationsPanel({
             {annotations.map((annotation) => (
               <div
                 key={`pos-${annotation.id}`}
-                className="absolute rounded-sm border border-rose-300/40"
+                className="absolute rounded-sm"
                 style={{
                   ...annotationStyle(annotation),
+                  border:
+                    annotation.annotation_type === "area_comment"
+                      ? `1.5px solid ${annotation.colour || "#dc2626"}`
+                      : "none",
                   backgroundColor:
                     annotation.annotation_type === "stamp"
                       ? "transparent"
-                      : annotation.colour,
+                      : annotation.annotation_type === "area_comment"
+                        ? "#ffffff"
+                        : annotation.colour,
                   opacity:
                     annotation.annotation_type === "stamp"
                       ? Number(
@@ -134,7 +140,9 @@ export function ReleasedAnnotationsPanel({
                             annotation.opacity ??
                             1,
                         )
-                      : Math.min(annotation.opacity, 0.35),
+                      : annotation.annotation_type === "area_comment"
+                        ? 1
+                        : Math.min(annotation.opacity, 0.35),
                 }}
                 aria-hidden
               >

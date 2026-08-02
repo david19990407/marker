@@ -40,6 +40,11 @@ import {
   type MarkingStamp,
   type SubmissionAnnotation,
 } from "@/lib/marking/annotation-types";
+import {
+  annotationSourceFields,
+  parseCommentDragPayload,
+  type CommentDragPayload,
+} from "@/lib/marking/comment-drag-source";
 
 type GeometryPatch = Pick<
   SubmissionAnnotation,
@@ -60,12 +65,23 @@ type CreateDraft = {
   text_content?: string | null;
   geometry?: Record<string, unknown>;
   source_comment_item_id?: string | null;
+  source_assignment_comment_id?: string | null;
+  source_type?: SubmissionAnnotation["source_type"];
+  text_snapshot?: string | null;
   stamp_definition_id?: string | null;
   /** Start inline editing immediately after create (box tool click). */
   begin_inline_edit?: boolean;
 };
 
-type DragMode = "move" | "resize-right" | "resize-left" | "resize-se";
+type DragMode =
+  | "move"
+  | "resize-right"
+  | "resize-left"
+  | "resize-se"
+  | "resize-n"
+  | "resize-s"
+  | "resize-e"
+  | "resize-w";
 
 const boxTextStyle: CSSProperties = {
   font: BOX_COMMENT_FONT,
@@ -102,6 +118,8 @@ function InlineBoxCommentEditor({
   const [draftText, setDraftText] = useState(initialText);
   const latestPatch = useRef<GeometryPatch | null>(null);
   const rafRef = useRef(createRafScheduler());
+  const committedRef = useRef(false);
+  const endedRef = useRef(false);
 
   useLayoutEffect(() => {
     const el = editRef.current;
@@ -171,6 +189,8 @@ function InlineBoxCommentEditor({
         resizeForText(next);
       }}
       onBlur={() => {
+        if (endedRef.current || committedRef.current) return;
+        committedRef.current = true;
         rafRef.current.cancel();
         const patch = latestPatch.current ?? {
           x_norm: annotation.x_norm,
@@ -191,6 +211,7 @@ function InlineBoxCommentEditor({
         if (e.key === "Escape") {
           e.preventDefault();
           e.stopPropagation();
+          endedRef.current = true;
           setDraftText(initialText);
           onLiveGeometry(null);
           latestPatch.current = null;
@@ -243,7 +264,33 @@ function StampResizeHandle({
       type="button"
       data-resize-handle="true"
       aria-label="Resize stamp"
-      className="absolute -bottom-1.5 -right-1.5 z-10 h-3 w-3 cursor-se-resize rounded-sm border border-slate-700/70 bg-white"
+      className="absolute -bottom-1.5 -right-1.5 z-10 h-3 w-3 cursor-se-resize rounded-sm border border-slate-700/30 bg-slate-900/20 opacity-0 transition-opacity group-hover:opacity-60 hover:opacity-100 focus-visible:opacity-100"
+      onPointerDown={onPointerDown}
+    />
+  );
+}
+
+function HighlightResizeEdge({
+  side,
+  onPointerDown,
+}: {
+  side: "n" | "s" | "e" | "w";
+  onPointerDown: (e: ReactPointerEvent) => void;
+}) {
+  const classes =
+    side === "n"
+      ? "-top-1 left-0 h-2 w-full cursor-ns-resize"
+      : side === "s"
+        ? "-bottom-1 left-0 h-2 w-full cursor-ns-resize"
+        : side === "e"
+          ? "right-0 -mr-1 top-0 h-full w-2 cursor-ew-resize"
+          : "left-0 -ml-1 top-0 h-full w-2 cursor-ew-resize";
+  return (
+    <button
+      type="button"
+      data-resize-handle="true"
+      aria-label={`Resize highlight ${side} edge`}
+      className={`absolute z-10 border-0 bg-slate-900/10 p-0 opacity-0 transition-opacity group-hover:opacity-30 hover:opacity-50 ${classes}`}
       onPointerDown={onPointerDown}
     />
   );
@@ -362,12 +409,57 @@ function AnnotationItem({
       }
 
       if (drag.mode === "resize-se" && isStamp) {
+        const aspectNorm = drag.ow > 0 ? drag.oh / drag.ow : 1;
+        const widthFromX = drag.ow + dx;
+        const widthFromY = drag.ow + dy / Math.max(0.001, aspectNorm);
+        const nextWRaw =
+          Math.abs(widthFromY - drag.ow) > Math.abs(widthFromX - drag.ow)
+            ? widthFromY
+            : widthFromX;
+        const maxW = Math.min(0.9, 1 - drag.ox, (1 - drag.oy) / aspectNorm);
+        const nextW = Math.min(maxW, Math.max(0.02, nextWRaw));
         publishLive(
           clampNormBox({
             x_norm: drag.ox,
             y_norm: drag.oy,
-            w_norm: Math.min(0.9, Math.max(0.04, drag.ow + dx)),
-            h_norm: Math.min(0.9, Math.max(0.04, drag.oh + dy)),
+            w_norm: nextW,
+            h_norm: nextW * aspectNorm,
+          }),
+        );
+        return;
+      }
+
+      if (
+        isHighlight &&
+        (drag.mode === "resize-n" ||
+          drag.mode === "resize-s" ||
+          drag.mode === "resize-e" ||
+          drag.mode === "resize-w")
+      ) {
+        const minSize = 0.02;
+        let x = drag.ox;
+        let y = drag.oy;
+        let w = drag.ow;
+        let h = drag.oh;
+        if (drag.mode === "resize-e") {
+          w = Math.min(1 - drag.ox, Math.max(minSize, drag.ow + dx));
+        } else if (drag.mode === "resize-w") {
+          const right = drag.ox + drag.ow;
+          x = Math.min(right - minSize, Math.max(0, drag.ox + dx));
+          w = right - x;
+        } else if (drag.mode === "resize-s") {
+          h = Math.min(1 - drag.oy, Math.max(minSize, drag.oh + dy));
+        } else if (drag.mode === "resize-n") {
+          const bottom = drag.oy + drag.oh;
+          y = Math.min(bottom - minSize, Math.max(0, drag.oy + dy));
+          h = bottom - y;
+        }
+        publishLive(
+          clampNormBox({
+            x_norm: x,
+            y_norm: y,
+            w_norm: w,
+            h_norm: h,
           }),
         );
         return;
@@ -399,7 +491,7 @@ function AnnotationItem({
         });
       }
     },
-    [annotation.geometry, canvasRef, isBox, isStamp, publishLive],
+    [annotation.geometry, canvasRef, isBox, isHighlight, isStamp, publishLive],
   );
 
   const endDrag = useCallback(
@@ -464,7 +556,8 @@ function AnnotationItem({
           width: 28,
           height: 28,
           cursor: interactive ? "move" : "default",
-          pointerEvents: interactive || tool === "delete" ? "auto" : "none",
+          pointerEvents:
+            editing || tool === "select" || tool === "delete" ? "auto" : "none",
         }}
         onClick={(e) => {
           e.stopPropagation();
@@ -495,7 +588,7 @@ function AnnotationItem({
       role="button"
       tabIndex={0}
       aria-label={`${annotation.annotation_type} annotation`}
-      className="absolute box-border"
+      className="group absolute box-border"
       style={{
         ...annotationStyle(display),
         zIndex: selected || editing ? 30 : 20,
@@ -508,12 +601,17 @@ function AnnotationItem({
         opacity: isHighlight ? annotation.opacity : 1,
         border: isBox || isBubble ? `1.5px solid ${outlineColour}` : "none",
         borderRadius: isBox ? 2 : 0,
-        boxShadow: selected && !editing ? "0 0 0 1px rgba(15,23,42,0.28)" : "none",
+        outline:
+          selected && !editing && (isStamp || isHighlight)
+            ? "1px dashed rgba(15,23,42,0.35)"
+            : "none",
+        boxShadow: "none",
         overflow: isBox || isStamp ? "visible" : "hidden",
         padding: isBox
           ? `${BOX_COMMENT_PAD_Y}px ${BOX_COMMENT_PAD_X}px`
           : 0,
-        pointerEvents: tool === "select" || tool === "delete" ? "auto" : "none",
+        pointerEvents:
+          editing || tool === "select" || tool === "delete" ? "auto" : "none",
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -619,6 +717,27 @@ function AnnotationItem({
       {selected && interactive && isStamp ? (
         <StampResizeHandle onPointerDown={(e) => beginDrag(e, "resize-se")} />
       ) : null}
+
+      {selected && interactive && isHighlight ? (
+        <>
+          <HighlightResizeEdge
+            side="n"
+            onPointerDown={(e) => beginDrag(e, "resize-n")}
+          />
+          <HighlightResizeEdge
+            side="s"
+            onPointerDown={(e) => beginDrag(e, "resize-s")}
+          />
+          <HighlightResizeEdge
+            side="e"
+            onPointerDown={(e) => beginDrag(e, "resize-e")}
+          />
+          <HighlightResizeEdge
+            side="w"
+            onPointerDown={(e) => beginDrag(e, "resize-w")}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -698,7 +817,7 @@ export function AnnotationLayer({
   colour: string;
   selectedId: string | null;
   editingId: string | null;
-  linkedCommentDrag: { itemId: string; text: string } | null;
+  linkedCommentDrag: CommentDragPayload | null;
   /** Stamp currently dragged from the palette (custom pointer drag). */
   paletteStampDragId?: string | null;
   onSelect: (id: string | null) => void;
@@ -712,6 +831,9 @@ export function AnnotationLayer({
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const draftOverlayRef = useRef<HTMLDivElement | null>(null);
+  const onCreateRef = useRef(onCreate);
+  const linkedCommentDragRef = useRef<CommentDragPayload | null>(linkedCommentDrag);
+  const linkedDropHandled = useRef(false);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const draftLatest = useRef<{ x: number; y: number; w: number; h: number } | null>(
     null,
@@ -722,9 +844,87 @@ export function AnnotationLayer({
     w: number;
     h: number;
   } | null>(null);
+  const [dropHint, setDropHint] = useState<{ x: number; y: number } | null>(null);
   const draftRafRef = useRef(createRafScheduler());
 
   useEffect(() => () => draftRafRef.current.cancel(), []);
+  useEffect(() => {
+    onCreateRef.current = onCreate;
+  }, [onCreate]);
+  useEffect(() => {
+    linkedCommentDragRef.current = linkedCommentDrag;
+    linkedDropHandled.current = false;
+  }, [linkedCommentDrag]);
+
+  const createLinkedCommentAtPoint = useCallback(
+    (payload: CommentDragPayload, clientX: number, clientY: number) => {
+      const root = rootRef.current;
+      if (!root || linkedDropHandled.current) return false;
+      const rect = root.getBoundingClientRect();
+      const inside =
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom;
+      if (!inside) return false;
+      linkedDropHandled.current = true;
+      const norm = pointerToNorm(clientX, clientY, rect);
+      const placed = placeBoxCommentAtPoint(
+        norm.x,
+        norm.y,
+        payload.text,
+        rect.width,
+        rect.height,
+      );
+      const source = annotationSourceFields(payload);
+      onCreateRef.current({
+        annotation_type: "area_comment",
+        ...placed,
+        text_content: source.text_content,
+        source_comment_item_id: source.source_comment_item_id,
+        source_assignment_comment_id: source.source_assignment_comment_id,
+        source_type: source.source_type,
+        text_snapshot: source.text_snapshot,
+        geometry: {
+          preferred_w_norm: placed.w_norm,
+          text_snapshot: source.text_snapshot,
+        },
+      });
+      setDropHint(null);
+      return true;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    function onWindowPointerMove(e: PointerEvent) {
+      const payload = linkedCommentDragRef.current;
+      const root = rootRef.current;
+      if (!payload || !root) return;
+      const rect = root.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      setDropHint(
+        inside ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : null,
+      );
+    }
+
+    function onWindowPointerUp(e: PointerEvent) {
+      const payload = linkedCommentDragRef.current;
+      if (!payload) return;
+      createLinkedCommentAtPoint(payload, e.clientX, e.clientY);
+    }
+
+    window.addEventListener("pointermove", onWindowPointerMove);
+    window.addEventListener("pointerup", onWindowPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onWindowPointerMove);
+      window.removeEventListener("pointerup", onWindowPointerUp);
+    };
+  }, [createLinkedCommentAtPoint]);
 
   // Complete palette stamp drops that end over the worksheet.
   useEffect(() => {
@@ -776,6 +976,12 @@ export function AnnotationLayer({
           e.dataTransfer.types.includes("application/x-marking-stamp")
         ) {
           e.preventDefault();
+          if (linkedCommentDrag) {
+            const rect = rootRef.current?.getBoundingClientRect();
+            if (rect) {
+              setDropHint({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            }
+          }
         }
       }}
       onDrop={(e) => {
@@ -795,46 +1001,18 @@ export function AnnotationLayer({
           }
           return;
         }
-        let itemId = linkedCommentDrag?.itemId ?? "";
-        let text = linkedCommentDrag?.text ?? "";
-        const raw = e.dataTransfer.getData("application/x-comment-bank-item");
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw) as { id?: string; text?: string };
-            itemId = parsed.id ?? itemId;
-            text = parsed.text ?? text;
-          } catch {
-            /* ignore */
-          }
-        }
-        if (!text) return;
+        const payload =
+          parseCommentDragPayload(
+            e.dataTransfer.getData("application/x-comment-bank-item") ||
+              e.dataTransfer.getData("text/plain"),
+          ) ?? linkedCommentDragRef.current;
+        if (!payload) return;
         e.preventDefault();
-        const rect = rootRef.current.getBoundingClientRect();
-        const norm = pointerToNorm(e.clientX, e.clientY, rect);
-        const placed = placeBoxCommentAtPoint(
-          norm.x,
-          norm.y,
-          text,
-          rect.width,
-          rect.height,
-        );
-        onCreate({
-          annotation_type: "area_comment",
-          ...placed,
-          text_content: text,
-          source_comment_item_id: itemId || null,
-          geometry: {
-            preferred_w_norm: placed.w_norm,
-            text_snapshot: text,
-          },
-        });
+        createLinkedCommentAtPoint(payload, e.clientX, e.clientY);
       }}
       onPointerDown={(e) => {
         if (!rootRef.current) return;
         if ((e.target as HTMLElement).closest("[data-annotation-item]")) return;
-        if (editingId) {
-          onEndInlineEdit(editingId, false);
-        }
         onSelect(null);
         if (tool === "select" || tool === "delete") return;
 
@@ -942,6 +1120,14 @@ export function AnnotationLayer({
             border: `1px dashed ${colour}`,
             borderRadius: 4,
           }}
+        />
+      ) : null}
+
+      {linkedCommentDrag && dropHint ? (
+        <div
+          className="pointer-events-none absolute z-[40] h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border border-dashed border-rose-500/70 bg-rose-500/10"
+          style={{ left: dropHint.x, top: dropHint.y }}
+          aria-hidden
         />
       ) : null}
     </div>

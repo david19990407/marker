@@ -6,8 +6,10 @@ export const BOX_COMMENT_FONT =
 export const BOX_COMMENT_LINE_HEIGHT = 1.25;
 export const BOX_COMMENT_PAD_X = 6;
 export const BOX_COMMENT_PAD_Y = 4;
-export const BOX_COMMENT_MIN_WIDTH_PX = 128;
-export const BOX_COMMENT_MAX_WIDTH_FRACTION = 0.45;
+/** Default new box comment width (~200px). */
+export const BOX_COMMENT_DEFAULT_WIDTH_PX = 200;
+export const BOX_COMMENT_MIN_WIDTH_PX = 140;
+export const BOX_COMMENT_MAX_WIDTH_FRACTION = 0.5;
 
 export function measureBoxCommentText(
   text: string,
@@ -63,14 +65,27 @@ export function sizeBoxCommentFromText(
   text: string,
   canvasWidthPx: number,
   canvasHeightPx: number,
+  preferredWidthPx = BOX_COMMENT_DEFAULT_WIDTH_PX,
 ): { w_norm: number; h_norm: number } {
   const maxWidthPx = Math.max(
     BOX_COMMENT_MIN_WIDTH_PX,
     canvasWidthPx * BOX_COMMENT_MAX_WIDTH_FRACTION,
   );
-  const { widthPx, heightPx } = measureBoxCommentText(text, maxWidthPx);
+  const targetWidth = Math.min(
+    maxWidthPx,
+    Math.max(BOX_COMMENT_MIN_WIDTH_PX, preferredWidthPx),
+  );
+  // Empty / new comments start at the default width; height still auto-fits.
+  const { heightPx, widthPx } = measureBoxCommentText(
+    text,
+    text.trim() ? maxWidthPx : targetWidth,
+    text.trim() ? BOX_COMMENT_MIN_WIDTH_PX : targetWidth,
+  );
+  const finalWidth = text.trim()
+    ? Math.min(maxWidthPx, Math.max(BOX_COMMENT_MIN_WIDTH_PX, widthPx))
+    : targetWidth;
   return {
-    w_norm: Math.min(0.95, Math.max(0.08, widthPx / Math.max(1, canvasWidthPx))),
+    w_norm: Math.min(0.95, Math.max(0.08, finalWidth / Math.max(1, canvasWidthPx))),
     h_norm: Math.min(0.9, Math.max(0.03, heightPx / Math.max(1, canvasHeightPx))),
   };
 }
@@ -82,7 +97,12 @@ export function placeBoxCommentAtPoint(
   canvasWidthPx: number,
   canvasHeightPx: number,
 ): { x_norm: number; y_norm: number; w_norm: number; h_norm: number } {
-  const size = sizeBoxCommentFromText(text, canvasWidthPx, canvasHeightPx);
+  const size = sizeBoxCommentFromText(
+    text,
+    canvasWidthPx,
+    canvasHeightPx,
+    BOX_COMMENT_DEFAULT_WIDTH_PX,
+  );
   return clampNormRect({
     x: Math.min(1 - size.w_norm, Math.max(0, xNorm)),
     y: Math.min(1 - size.h_norm, Math.max(0, yNorm)),

@@ -1,9 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import type { AssignmentCommentDraft } from "@/lib/types";
 import type { CommentBankItem } from "@/lib/feedback/types";
+import {
+  buildCommentDragPayload,
+  type CommentDragPayload,
+} from "@/lib/marking/comment-drag-source";
 
 type LinkedComment = Pick<
   AssignmentCommentDraft,
@@ -24,7 +28,10 @@ type Row = {
   label: string;
   text: string;
   group: string;
+  sourceType: CommentDragPayload["sourceType"];
 };
+
+const DRAG_THRESHOLD_PX = 5;
 
 export function LinkedCommentsPanel({
   selectedQuestionId,
@@ -37,10 +44,11 @@ export function LinkedCommentsPanel({
   assignmentComments: LinkedComment[];
   commentBankItems: CommentBankItem[];
   onInsertIntoFeedback: (text: string) => void;
-  onDragCreateBoxComment?: (comment: { id: string; text: string }) => void;
+  onDragCreateBoxComment?: (comment: CommentDragPayload | null) => void;
 }) {
-  void onDragCreateBoxComment;
   const [query, setQuery] = useState("");
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragActiveRef = useRef(false);
 
   const rows = useMemo(() => {
     const seenIds = new Set<string>();
@@ -69,24 +77,21 @@ export function LinkedCommentsPanel({
         label: c.short_label || c.category || "Comment",
         text: c.full_comment,
         group: isLinked ? "Question comments" : "Assignment comments",
+        sourceType: "assignment_comment",
       });
     }
 
     for (const item of commentBankItems) {
       if (!item.is_active) continue;
       if (seenIds.has(item.id)) continue;
-      const isLinked = Boolean(
-        selectedQuestionId && item.linked_question_id === selectedQuestionId,
-      );
-      // Selected banks for the assignment — show question-linked first, then others.
       seenIds.add(item.id);
       linked.push({
         id: item.id,
         label: item.short_label || item.title,
         text: item.full_text,
         group: item.group_name || item.bank_name || "Selected banks",
+        sourceType: "comment_bank_item",
       });
-      void isLinked;
     }
 
     const q = query.trim().toLowerCase();
@@ -98,7 +103,10 @@ export function LinkedCommentsPanel({
           c.text.toLowerCase().includes(q) ||
           c.group.toLowerCase().includes(q),
       )
-      .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+      .sort(
+        (a, b) =>
+          a.group.localeCompare(b.group) || a.label.localeCompare(b.label),
+      );
   }, [assignmentComments, commentBankItems, selectedQuestionId, query]);
 
   const byGroup = useMemo(() => {
@@ -111,6 +119,63 @@ export function LinkedCommentsPanel({
     return map;
   }, [rows]);
 
+  function beginPointerDrag(row: Row, e: React.PointerEvent) {
+    if (e.button !== 0) return;
+    const payload = buildCommentDragPayload({
+      sourceType: row.sourceType,
+      sourceId: row.id,
+      text: row.text,
+    });
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let started = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (
+        Math.abs(ev.clientX - startX) < DRAG_THRESHOLD_PX &&
+        Math.abs(ev.clientY - startY) < DRAG_THRESHOLD_PX
+      ) {
+        return;
+      }
+      if (!started) {
+        started = true;
+        dragActiveRef.current = true;
+        setDraggingId(row.id);
+        onDragCreateBoxComment?.(payload);
+      }
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey);
+      setDraggingId(null);
+      if (!started) {
+        onDragCreateBoxComment?.(null);
+        onInsertIntoFeedback(row.text);
+      } else {
+        window.setTimeout(() => onDragCreateBoxComment?.(null), 0);
+      }
+      window.setTimeout(() => {
+        dragActiveRef.current = false;
+      }, 0);
+    };
+
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      started = true;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey);
+      setDraggingId(null);
+      onDragCreateBoxComment?.(null);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("keydown", onKey);
+  }
+
   return (
     <div className="space-y-2">
       <Input
@@ -120,43 +185,64 @@ export function LinkedCommentsPanel({
         aria-label="Search linked comments"
       />
 
+      {draggingId ? (
+        <p className="text-[11px] text-slate-500">
+          Drop onto the worksheet to place a box comment. Esc cancels.
+        </p>
+      ) : null}
+
       {[...byGroup.entries()].map(([group, comments]) => (
         <div key={group}>
           <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
             {group}
           </p>
           <ul className="space-y-1">
-            {comments.map((c) => (
-              <li key={c.id}>
-                <div
-                  role="button"
-                  tabIndex={0}
-                  draggable
-                  aria-label={`Insert comment ${c.label}`}
-                  title="Click to insert into feedback. Drag onto worksheet for a box comment."
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData(
-                      "application/x-comment-bank-item",
-                      JSON.stringify({ id: c.id, text: c.text }),
-                    );
-                    e.dataTransfer.effectAllowed = "copy";
-                  }}
-                  onClick={() => onInsertIntoFeedback(c.text)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onInsertIntoFeedback(c.text);
-                    }
-                  }}
-                  className="cursor-grab rounded-lg border border-slate-100 px-2 py-1.5 text-left text-xs hover:bg-slate-50 active:cursor-grabbing"
-                >
-                  <span className="font-medium text-slate-800">{c.label}</span>
-                  <span className="mt-0.5 block line-clamp-3 text-slate-500">
-                    {c.text}
-                  </span>
-                </div>
-              </li>
-            ))}
+            {comments.map((c) => {
+              const payload = buildCommentDragPayload({
+                sourceType: c.sourceType,
+                sourceId: c.id,
+                text: c.text,
+              });
+              return (
+                <li key={`${c.sourceType}:${c.id}`}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    draggable
+                    aria-label={`Insert comment ${c.label}`}
+                    title="Click to insert into feedback. Drag onto worksheet for a box comment."
+                    className={`cursor-grab rounded-lg border px-2 py-1.5 text-left text-xs active:cursor-grabbing ${
+                      draggingId === c.id
+                        ? "border-rose-300 bg-rose-50 opacity-70"
+                        : "border-slate-100 hover:bg-slate-50"
+                    }`}
+                    onPointerDown={(e) => beginPointerDrag(c, e)}
+                    onDragStart={(e) => {
+                      const raw = JSON.stringify(payload);
+                      e.dataTransfer.setData(
+                        "application/x-comment-bank-item",
+                        raw,
+                      );
+                      e.dataTransfer.setData("text/plain", raw);
+                      e.dataTransfer.effectAllowed = "copy";
+                      onDragCreateBoxComment?.(payload);
+                    }}
+                    onDragEnd={() => onDragCreateBoxComment?.(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onInsertIntoFeedback(c.text);
+                      }
+                    }}
+                  >
+                    <span className="font-medium text-slate-800">{c.label}</span>
+                    <span className="mt-0.5 block line-clamp-3 text-slate-500">
+                      {c.text}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ))}

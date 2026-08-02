@@ -20,6 +20,7 @@ function getReducedMotion() {
 
 /**
  * Temporary centre-of-viewer mark confirmation — number only inside a large circle.
+ * Parent should be a non-scrolling overlay (or sticky equivalent) over the viewer.
  * pointer-events: none so it never blocks further marking.
  */
 export function MarkAwardFlash({
