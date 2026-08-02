@@ -18,7 +18,8 @@ export type CollectedResponseValue =
   | {
       type: "table";
       cells: Array<{ row_index: number; col_index: number; text: string }>;
-    };
+    }
+  | { type: "json"; json: Record<string, unknown> };
 
 export type CollectedStructuredResponse = {
   question_id: string;
@@ -54,6 +55,15 @@ function valueToFields(
   }
   if (value.type === "bool") {
     return { boolean_value: value.bool };
+  }
+  if (value.type === "json") {
+    const names = Array.isArray(value.json.file_names)
+      ? (value.json.file_names as string[])
+      : [];
+    return {
+      json_value: value.json,
+      text_value: names.join(", ") || null,
+    };
   }
   return {
     cells: value.cells.map((c) => ({

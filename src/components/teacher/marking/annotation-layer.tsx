@@ -19,7 +19,6 @@ import {
   exactAnnotationStyle,
   pointerToNorm,
   readCollapsed,
-  stampNormSize,
 } from "@/lib/marking/annotation-geometry";
 import {
   BOX_COMMENT_FONT,
@@ -549,6 +548,11 @@ function AnnotationItem({
             ) ?? null
           }
           geometry={annotation.geometry}
+          opacity={
+            typeof annotation.geometry?.opacity === "number"
+              ? (annotation.geometry.opacity as number)
+              : undefined
+          }
           alt={
             (typeof annotation.geometry?.accessible_label_snapshot === "string"
               ? annotation.geometry.accessible_label_snapshot
@@ -686,20 +690,23 @@ export function AnnotationLayer({
         if (tool === "stamp" && selectedStampId) {
           const stamp = stamps.find((s) => s.id === selectedStampId);
           if (!stamp) return;
-          const size = stampNormSize(
-            stamp.default_size_pct || 8,
-            rect.width / Math.max(1, rect.height),
+          const imageWidth = stamp.default_width_px || 64;
+          const imageHeight = stamp.default_height_px || 64;
+          const opacity =
+            typeof stamp.default_opacity === "number"
+              ? Math.min(1, Math.max(0.1, stamp.default_opacity))
+              : 1;
+          // Prefer configured display width in CSS pixels; fall back to % size.
+          const widthPx = Math.min(
+            300,
+            Math.max(16, imageWidth || (stamp.default_size_pct / 100) * rect.width),
           );
-          const imageWidth =
-            typeof (stamp as { default_width_px?: number }).default_width_px ===
-            "number"
-              ? (stamp as { default_width_px?: number }).default_width_px!
-              : 64;
-          const imageHeight =
-            typeof (stamp as { default_height_px?: number }).default_height_px ===
-            "number"
-              ? (stamp as { default_height_px?: number }).default_height_px!
-              : 64;
+          const aspect = imageHeight > 0 ? imageWidth / imageHeight : 1;
+          const heightPx = widthPx / Math.max(0.01, aspect);
+          const size = {
+            w: Math.min(0.9, Math.max(0.02, widthPx / Math.max(1, rect.width))),
+            h: Math.min(0.9, Math.max(0.02, heightPx / Math.max(1, rect.height))),
+          };
           const draft: CreateDraft = {
             annotation_type: "stamp",
             x_norm: Math.min(1 - size.w, Math.max(0, norm.x - size.w / 2)),
@@ -713,15 +720,14 @@ export function AnnotationLayer({
               storage_path: stamp.storage_path,
               image_width: imageWidth,
               image_height: imageHeight,
-              aspect_ratio: imageHeight > 0 ? imageWidth / imageHeight : 1,
+              display_width_px: widthPx,
+              display_height_px: heightPx,
+              aspect_ratio: aspect,
+              opacity,
               accessible_label_snapshot: stamp.accessible_label,
               stamp_name_snapshot: stamp.name,
               applied_at: new Date().toISOString(),
-              asset_version:
-                typeof (stamp as { asset_version?: number }).asset_version ===
-                "number"
-                  ? (stamp as { asset_version?: number }).asset_version
-                  : 1,
+              asset_version: stamp.asset_version || 1,
               stamp_normalised: true,
             },
           };

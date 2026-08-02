@@ -27,12 +27,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
     }
 
+    const expiresIn = 60 * 60;
     const unique = [...new Set(parsed.data.paths)];
     const entries = await Promise.all(
       unique.map(async (path) => {
         const { data, error } = await supabase.storage
           .from(parsed.data.bucket)
-          .createSignedUrl(path, 60);
+          .createSignedUrl(path, expiresIn);
         if (error || !data?.signedUrl) return [path, null] as const;
         return [path, data.signedUrl] as const;
       }),
@@ -43,7 +44,11 @@ export async function POST(request: Request) {
       if (url) urls[path] = url;
     }
 
-    return NextResponse.json({ urls });
+    return NextResponse.json({
+      urls,
+      expiresIn,
+      expiresAt: Date.now() + expiresIn * 1000,
+    });
   } catch {
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

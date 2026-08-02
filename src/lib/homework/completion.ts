@@ -173,11 +173,15 @@ export function isStructuredResponseAnswered(
     case "tick_box":
       return response.boolean_value === true;
     case "file_upload":
+    case "scanned_homework_upload": {
+      const json = response.json_value as { file_count?: number } | null;
+      if (json && Number(json.file_count) > 0) return true;
       return Boolean(
         response.storage_path ||
           response.file_name ||
           nonEmptyText(response.text_value),
       );
+    }
     case "table":
     case "vocabulary_table": {
       const editable = studentEditableTableCells(block);

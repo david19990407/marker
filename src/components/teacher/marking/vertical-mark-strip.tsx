@@ -7,20 +7,26 @@ import {
 } from "react";
 import { formatMarksLabel } from "@/lib/marking/annotation-types";
 
+export type MarkStripValue = number | "NA";
+
 export function VerticalMarkStrip({
   maximumMark,
   awarded,
+  notAttempted = false,
   allowDecimals = false,
   onAward,
+  onNotAttempted,
 }: {
   maximumMark: number;
   awarded: number | null;
+  notAttempted?: boolean;
   allowDecimals?: boolean;
   onAward: (mark: number) => void;
+  onNotAttempted: () => void;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement | null>(null);
-  const marks = allowDecimals
+  const numericMarks = allowDecimals
     ? Array.from(
         { length: Math.floor(maximumMark * 2) + 1 },
         (_, i) => i * 0.5,
@@ -29,30 +35,37 @@ export function VerticalMarkStrip({
         { length: Math.floor(maximumMark) + 1 },
         (_, i) => Math.floor(maximumMark) - i,
       );
+  const values: MarkStripValue[] = [...numericMarks, "NA"];
 
   useEffect(() => {
     selectedRef.current?.scrollIntoView({
       behavior: "smooth",
       block: "center",
     });
-  }, [awarded, maximumMark]);
+  }, [awarded, maximumMark, notAttempted]);
 
   function onKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown" && e.key !== "Enter") {
       return;
     }
     e.preventDefault();
-    const step = allowDecimals ? 0.5 : 1;
-    const current = awarded ?? 0;
+    const currentIndex = notAttempted
+      ? values.length - 1
+      : values.findIndex((v) => v !== "NA" && v === (awarded ?? 0));
+    const idx = currentIndex < 0 ? values.length - 1 : currentIndex;
     if (e.key === "Enter") {
-      onAward(current);
+      const current = values[idx];
+      if (current === "NA") onNotAttempted();
+      else if (typeof current === "number") onAward(current);
       return;
     }
-    const next =
+    const nextIndex =
       e.key === "ArrowUp"
-        ? Math.min(maximumMark, current + step)
-        : Math.max(0, current - step);
-    onAward(next);
+        ? Math.max(0, idx - 1)
+        : Math.min(values.length - 1, idx + 1);
+    const next = values[nextIndex];
+    if (next === "NA") onNotAttempted();
+    else if (typeof next === "number") onAward(next);
   }
 
   return (
@@ -78,22 +91,36 @@ export function VerticalMarkStrip({
         style={{ scrollbarWidth: "thin" }}
       >
         <div className="flex flex-col items-center gap-1.5">
-          {marks.map((n) => {
-            const selected = awarded === n;
+          {values.map((n) => {
+            const selected =
+              n === "NA" ? notAttempted : !notAttempted && awarded === n;
+            const label =
+              n === "NA"
+                ? "Mark as not attempted"
+                : n === 0
+                  ? `Award zero out of ${maximumMark}`
+                  : `Award ${n} out of ${maximumMark}`;
             return (
               <button
-                key={n}
+                key={String(n)}
                 ref={selected ? selectedRef : undefined}
                 type="button"
                 aria-pressed={selected}
-                aria-label={`Award ${n} out of ${maximumMark}`}
-                title={`Award ${formatMarksLabel(n)}`}
+                aria-label={label}
+                title={
+                  n === "NA"
+                    ? "Not attempted"
+                    : `Award ${formatMarksLabel(n)}`
+                }
                 className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold ${
                   selected
                     ? "border-slate-900 bg-slate-900 text-white ring-2 ring-slate-900 ring-offset-1"
                     : "border-slate-300 bg-white text-slate-800 hover:bg-slate-100"
                 }`}
-                onClick={() => onAward(n)}
+                onClick={() => {
+                  if (n === "NA") onNotAttempted();
+                  else onAward(n);
+                }}
               >
                 {n}
               </button>

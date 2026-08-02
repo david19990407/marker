@@ -41,6 +41,7 @@ export type ResponseWithCells = StudentResponse & {
 
 interface Props {
   assignmentId: string;
+  submissionId: string | null;
   sections: BuilderSection[];
   existingResponses: Record<string, ResponseWithCells>;
   editable: boolean;
@@ -53,6 +54,7 @@ type ResponseValue = WorksheetResponseValue;
 
 export function StructuredHomework({
   assignmentId,
+  submissionId,
   sections,
   existingResponses,
   editable,
@@ -340,6 +342,7 @@ export function StructuredHomework({
         errors={errors}
         onValueChange={setValue}
         submissionMeta={null}
+        submissionId={submissionId}
       />
 
       {editable ? (

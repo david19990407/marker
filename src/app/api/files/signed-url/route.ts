@@ -27,9 +27,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
     }
 
+    // One-hour signed URLs; clients refresh before expiry (see StampImage cache).
+    const expiresIn = 60 * 60;
     const { data, error } = await supabase.storage
       .from(parsed.data.bucket)
-      .createSignedUrl(parsed.data.path, 60);
+      .createSignedUrl(parsed.data.path, expiresIn);
 
     if (error || !data?.signedUrl) {
       return NextResponse.json(
@@ -38,7 +40,11 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({ url: data.signedUrl });
+    return NextResponse.json({
+      url: data.signedUrl,
+      expiresIn,
+      expiresAt: Date.now() + expiresIn * 1000,
+    });
   } catch {
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

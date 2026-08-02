@@ -36,6 +36,8 @@ import {
 } from "@/lib/homework/video-embed";
 import { formatMarkLabelBracketed } from "@/lib/homework/marks";
 import { formatFileSize } from "@/lib/utils/files";
+import { ScannedHomeworkUploadField } from "@/components/student/scanned-homework-upload-field";
+import { defaultScannedUploadConfig } from "@/lib/types";
 import type {
   BuilderBlock,
   BuilderSection,
@@ -59,7 +61,8 @@ export type WorksheetResponseValue =
   | {
       type: "table";
       cells: Array<{ row_index: number; col_index: number; text: string }>;
-    };
+    }
+  | { type: "json"; json: Record<string, unknown> };
 
 type ResponseWithCells = StudentResponse & {
   cells?: Array<{
@@ -81,6 +84,7 @@ export function StructuredWorksheetRenderer({
   submissionMeta,
   selectedQuestionId = null,
   onSelectQuestion,
+  submissionId = null,
 }: {
   sections: BuilderSection[];
   mode: WorksheetMode;
@@ -91,6 +95,8 @@ export function StructuredWorksheetRenderer({
   submissionMeta?: { status?: string | null; submittedAt?: string | null } | null;
   selectedQuestionId?: string | null;
   onSelectQuestion?: (questionId: string) => void;
+  /** Required for scanned homework upload persistence. */
+  submissionId?: string | null;
 }) {
   const visibilityMode: VisibilityMode =
     mode === "teacher_marking" ? "teacher_marking" : "student";
@@ -168,6 +174,7 @@ export function StructuredWorksheetRenderer({
               depth={0}
               selectedQuestionId={selectedQuestionId}
               onSelectQuestion={onSelectQuestion}
+              submissionId={submissionId}
             />
           ))
         )}
@@ -223,6 +230,19 @@ export function buildValuesFromResponses(
               (c.boolean_value != null ? String(c.boolean_value) : ""),
           })),
         };
+      } else if (block.block_type === "scanned_homework_upload") {
+        const json =
+          resp.json_value && typeof resp.json_value === "object"
+            ? (resp.json_value as Record<string, unknown>)
+            : {
+                file_count: resp.file_name || resp.text_value ? 1 : 0,
+                file_names: resp.file_name
+                  ? [resp.file_name]
+                  : resp.text_value
+                    ? [resp.text_value]
+                    : [],
+              };
+        result[qid] = { type: "json", json };
       } else {
         result[qid] = {
           type: "text",
@@ -260,6 +280,7 @@ function SectionView({
   depth = 0,
   selectedQuestionId = null,
   onSelectQuestion,
+  submissionId = null,
 }: {
   section: BuilderSection;
   mode: WorksheetMode;
@@ -272,6 +293,7 @@ function SectionView({
   depth?: number;
   selectedQuestionId?: string | null;
   onSelectQuestion?: (questionId: string) => void;
+  submissionId?: string | null;
 }) {
   const visibilityMode: VisibilityMode =
     mode === "teacher_marking" ? "teacher_marking" : "student";
@@ -308,6 +330,7 @@ function SectionView({
             editable={editable}
             showGuidance={showGuidance}
             startLineNumber={passageStarts.get(block._id)}
+            submissionId={submissionId}
           />
         );
         if (mode !== "teacher_marking" || !block.question_id) return body;
@@ -340,6 +363,7 @@ function SectionView({
             depth={depth + 1}
             selectedQuestionId={selectedQuestionId}
             onSelectQuestion={onSelectQuestion}
+            submissionId={submissionId}
           />
         </div>
       ))}
@@ -366,6 +390,7 @@ function BlockView({
   editable,
   showGuidance,
   startLineNumber,
+  submissionId = null,
 }: {
   block: BuilderBlock;
   mode: WorksheetMode;
@@ -374,6 +399,7 @@ function BlockView({
   onValueChange: (qid: string, v: WorksheetResponseValue) => void;
   editable: boolean;
   showGuidance: boolean;
+  submissionId?: string | null;
   startLineNumber?: number;
 }) {
   const qid = responseKey(block);
@@ -791,6 +817,45 @@ function BlockView({
         ) : (
           <p className="bg-slate-50 p-3 text-sm text-slate-700">
             {fileName || "No file"}
+          </p>
+        )}
+      </QuestionShell>
+    );
+  }
+
+  if (block.block_type === "scanned_homework_upload") {
+    const config = block.scannedUploadConfig ?? defaultScannedUploadConfig();
+    const summary =
+      (current as { type: "json"; json?: { file_count?: number } } | undefined)
+        ?.json?.file_count ?? 0;
+    return (
+      <QuestionShell
+        block={block}
+        fieldId={fieldId}
+        error={error}
+        showGuidance={showGuidance}
+      >
+        {submissionId ? (
+          <ScannedHomeworkUploadField
+            submissionId={submissionId}
+            blockId={block._id}
+            questionId={block.question_id ?? null}
+            config={config}
+            editable={editable}
+            required={block.required}
+            onFilesChanged={(summary) => {
+              if (!qid) return;
+              onValueChange(qid, { type: "json", json: summary });
+            }}
+          />
+        ) : previewControls || mode === "teacher_marking" ? (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+            Scanned homework upload
+            {summary ? ` · ${summary} file(s) on record` : " · student uploads appear here"}
+          </p>
+        ) : (
+          <p className="text-sm text-rose-700">
+            Upload is unavailable because the submission could not be loaded.
           </p>
         )}
       </QuestionShell>

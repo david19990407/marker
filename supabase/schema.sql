@@ -926,3 +926,12 @@ create policy "Teachers read submission files for their classes"
 --   supabase/phase_05_flexible_feedback_and_comment_banks.sql
 -- Do not duplicate here for live projects — run that additive migration.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Appendix: Phase 8 scanned homework uploads + NA marking + stamp opacity
+-- Full additive DDL lives in:
+--   supabase/phase_08_scanned_homework_uploads.sql
+--   supabase/fix_phase_08_stamp_editing_and_palette_visibility.sql
+-- Includes scanned_upload_* tables, question_marks.not_attempted,
+-- school_marking_symbols.default_opacity, and upsert_question_mark updates.
+-- ---------------------------------------------------------------------------

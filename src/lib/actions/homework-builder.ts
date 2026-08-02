@@ -8,6 +8,7 @@ import { evaluateStructuredCompletion } from "@/lib/homework/completion";
 import { isStructuredAssignment } from "@/lib/homework/assignment-mode";
 import {
   cloneSection,
+  flattenStudentBlocks,
   loadTemplateStructure,
   structureToPayload,
 } from "@/lib/homework/structure";
@@ -47,6 +48,9 @@ export async function saveHomeworkStructureAction(
 
   if (error) return { error: error.message };
 
+  // Keep dedicated scanned-upload tables aligned with block config JSON.
+  await syncScannedUploadTables(supabase, sections);
+
   // Local-first autosave: never return reloaded structure (would wipe in-progress typing).
   // Client IDs are preserved by the SQL upsert. Do not remount the builder.
   if (options?.revalidate) {
@@ -54,6 +58,72 @@ export async function saveHomeworkStructureAction(
   }
 
   return { success: "Structure saved", savedAt: new Date().toISOString() };
+}
+
+async function syncScannedUploadTables(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  sections: BuilderSection[],
+) {
+  const blocks = flattenStudentBlocks(sections).filter(
+    (b) => b.block_type === "scanned_homework_upload",
+  );
+  if (!blocks.length) return;
+
+  for (const block of blocks) {
+    const config = block.scannedUploadConfig;
+    if (!config) continue;
+    const settingsPayload = {
+      block_id: block._id,
+      maximum_files: config.maximum_files,
+      maximum_file_size_bytes: config.maximum_file_size_bytes,
+      allowed_mime_types: config.allowed_mime_types,
+      combine_images_to_pdf: config.combine_images_to_pdf,
+      allow_images: config.allow_images,
+      allow_pdf: config.allow_pdf,
+      allow_docx: config.allow_docx,
+      allow_replacement: config.allow_replacement,
+      mark_scheme_storage_path: config.mark_scheme_storage_path ?? null,
+      mark_scheme_file_name: config.mark_scheme_file_name ?? null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error: settingsError } = await supabase
+      .from("scanned_upload_block_settings")
+      .upsert(settingsPayload, { onConflict: "block_id" });
+    if (settingsError && !/does not exist|schema cache/i.test(settingsError.message)) {
+      console.warn("scanned_upload_block_settings sync:", settingsError.message);
+      continue;
+    }
+
+    const { error: deleteError } = await supabase
+      .from("scanned_upload_questions")
+      .delete()
+      .eq("block_id", block._id);
+    if (deleteError && !/does not exist|schema cache/i.test(deleteError.message)) {
+      console.warn("scanned_upload_questions clear:", deleteError.message);
+      continue;
+    }
+
+    if (config.subquestions.length) {
+      const rows = config.subquestions.map((q) => ({
+        id: q.id,
+        block_id: block._id,
+        question_label: q.question_label,
+        title: q.title,
+        description: q.description,
+        maximum_mark: q.maximum_mark,
+        is_required: q.is_required,
+        include_in_total: q.include_in_total,
+        marking_guidance: q.marking_guidance,
+        display_order: q.display_order,
+      }));
+      const { error: insertError } = await supabase
+        .from("scanned_upload_questions")
+        .insert(rows);
+      if (insertError && !/does not exist|schema cache/i.test(insertError.message)) {
+        console.warn("scanned_upload_questions sync:", insertError.message);
+      }
+    }
+  }
 }
 
 // ── Block media uploads (image / video / downloadable) ───────────────────────

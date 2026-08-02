@@ -9,7 +9,10 @@ import type {
   TableCellDef,
   TableConfig,
 } from "@/lib/types";
-import { RESPONSE_BLOCK_TYPES as RESPONSE_TYPES } from "@/lib/types";
+import {
+  RESPONSE_BLOCK_TYPES as RESPONSE_TYPES,
+  defaultScannedUploadConfig,
+} from "@/lib/types";
 import {
   getMcqOptionText,
   normalizeMcqOption,
@@ -61,6 +64,15 @@ export function cloneBlock(block: BuilderBlock): BuilderBlock {
         }
       : undefined,
     mediaConfig: block.mediaConfig ? { ...block.mediaConfig } : undefined,
+    scannedUploadConfig: block.scannedUploadConfig
+      ? {
+          ...block.scannedUploadConfig,
+          subquestions: block.scannedUploadConfig.subquestions.map((q) => ({
+            ...q,
+            id: newId(),
+          })),
+        }
+      : undefined,
     numericConfig: block.numericConfig ? { ...block.numericConfig } : undefined,
     tableConfig: block.tableConfig
       ? { ...block.tableConfig, col_labels: [...block.tableConfig.col_labels] }
@@ -164,7 +176,8 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     teacher_only: isTeacherOnly,
     student_visible: !isTeacherOnly,
     review_only: type === "teacher_review",
-    allow_attachments: type === "file_upload",
+    allow_attachments:
+      type === "file_upload" || type === "scanned_homework_upload",
     marks_apply: isResponseType(type) && type !== "teacher_review",
   };
 
@@ -274,6 +287,15 @@ export function createBlock(type: AssignmentBlockType): BuilderBlock {
     base.max_marks = null;
     base.required = false;
     base.table_marks_mode = "none";
+  }
+
+  if (type === "scanned_homework_upload") {
+    base.content = "Upload scanned or handwritten work";
+    base.prompt =
+      "Upload a clear scan or photograph of your handwritten work (PDF, JPG or PNG).";
+    base.max_marks = 8;
+    base.required = true;
+    base.scannedUploadConfig = defaultScannedUploadConfig();
   }
 
   return base;
@@ -465,6 +487,20 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
   }
   if (b.mediaConfig) config.media = b.mediaConfig;
   if (b.numericConfig) config.numeric = b.numericConfig;
+  let scannedTotalMarks: number | null = null;
+  if (b.scannedUploadConfig) {
+    const subquestions = b.scannedUploadConfig.subquestions ?? [];
+    config.scanned_upload = {
+      ...b.scannedUploadConfig,
+      subquestions,
+    };
+    if (subquestions.length > 0) {
+      // Mode B: total is derived from attached questions.
+      scannedTotalMarks = subquestions
+        .filter((q) => q.include_in_total)
+        .reduce((sum, q) => sum + Number(q.maximum_mark || 0), 0);
+    }
+  }
   const mediaUrl = b.mediaConfig?.external_url ?? b.external_url;
   if (mediaUrl) config.external_url = mediaUrl;
   const transcript = b.mediaConfig?.transcript ?? b.captions_text;
@@ -510,7 +546,8 @@ function blockToPayload(b: BuilderBlock): BlockPayload {
 
     payload.question_id = b.question_id ?? null;
     payload.prompt = b.prompt ?? "";
-    payload.max_marks = b.max_marks ?? null;
+    payload.max_marks =
+      scannedTotalMarks != null ? scannedTotalMarks : (b.max_marks ?? null);
     payload.required = b.required ?? false;
     // Persist full option objects; `text` is canonical answer content.
     payload.choices = isMcq
@@ -752,6 +789,49 @@ function dbBlockToBuilder(b: DbBlock): BuilderBlock {
       decimal_places: q.decimal_places,
       allow_decimals: q.allow_decimals ?? true,
     });
+  }
+
+  if (cfg.scanned_upload && typeof cfg.scanned_upload === "object") {
+    const raw = cfg.scanned_upload as Record<string, unknown>;
+    const defaults = defaultScannedUploadConfig();
+    const subs = Array.isArray(raw.subquestions)
+      ? (raw.subquestions as Array<Record<string, unknown>>).map((s, index) => ({
+          id: String(s.id ?? newId()),
+          question_label: String(s.question_label ?? ""),
+          title: String(s.title ?? ""),
+          description: String(s.description ?? ""),
+          maximum_mark: Number(s.maximum_mark ?? 0),
+          is_required: s.is_required !== false,
+          include_in_total: s.include_in_total !== false,
+          marking_guidance: String(s.marking_guidance ?? ""),
+          display_order: Number(s.display_order ?? index),
+        }))
+      : [];
+    block.scannedUploadConfig = {
+      maximum_files: Number(raw.maximum_files ?? defaults.maximum_files),
+      maximum_file_size_bytes: Number(
+        raw.maximum_file_size_bytes ?? defaults.maximum_file_size_bytes,
+      ),
+      allowed_mime_types: Array.isArray(raw.allowed_mime_types)
+        ? (raw.allowed_mime_types as string[])
+        : defaults.allowed_mime_types,
+      combine_images_to_pdf: raw.combine_images_to_pdf !== false,
+      allow_images: raw.allow_images !== false,
+      allow_pdf: raw.allow_pdf !== false,
+      allow_docx: Boolean(raw.allow_docx),
+      allow_replacement: raw.allow_replacement !== false,
+      mark_scheme_storage_path:
+        typeof raw.mark_scheme_storage_path === "string"
+          ? raw.mark_scheme_storage_path
+          : null,
+      mark_scheme_file_name:
+        typeof raw.mark_scheme_file_name === "string"
+          ? raw.mark_scheme_file_name
+          : null,
+      subquestions: subs,
+    };
+  } else if (bt === "scanned_homework_upload") {
+    block.scannedUploadConfig = defaultScannedUploadConfig();
   }
 
   if (q) {

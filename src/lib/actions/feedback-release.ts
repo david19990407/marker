@@ -52,6 +52,7 @@ function mapMark(row: Record<string, unknown>): QuestionMarkRecord {
     awarded_mark: row.awarded_mark == null ? null : Number(row.awarded_mark),
     maximum_mark: Number(row.maximum_mark ?? 0),
     review_state: (row.review_state as QuestionMarkRecord["review_state"]) ?? null,
+    not_attempted: Boolean(row.not_attempted),
     marking_status:
       (row.marking_status as QuestionMarkRecord["marking_status"]) ?? "unmarked",
     question_feedback: (row.question_feedback as string | null) ?? null,

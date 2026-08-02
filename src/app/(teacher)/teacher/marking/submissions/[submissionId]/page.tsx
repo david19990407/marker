@@ -30,6 +30,7 @@ import type {
 } from "@/lib/feedback/types";
 import type { Feedback } from "@/lib/types";
 import type { MarkingStamp } from "@/lib/marking/annotation-types";
+import type { ScannedUploadFileRow } from "@/lib/actions/scanned-uploads";
 
 export const dynamic = "force-dynamic";
 
@@ -188,6 +189,7 @@ export default async function MarkSubmissionPage({
     mark_range_max?: number | null;
     assessment_objective?: string | null;
   }> = [];
+  let scannedFiles: ScannedUploadFileRow[] = [];
 
   if (assignment.template_id) {
     try {
@@ -204,6 +206,7 @@ export default async function MarkSubmissionPage({
           { data: schemeRows },
           { data: bankLinks },
           commentsResult,
+          scannedResult,
         ] = await Promise.all([
           supabase
             .from("student_responses")
@@ -232,7 +235,34 @@ export default async function MarkSubmissionPage({
             )
             .eq("template_id", assignment.template_id)
             .order("sort_order", { ascending: true }),
+          supabase
+            .from("scanned_upload_files")
+            .select("*")
+            .eq("submission_id", submissionId)
+            .eq("is_active_version", true)
+            .order("display_order", { ascending: true }),
         ]);
+        if (!scannedResult.error && scannedResult.data) {
+          scannedFiles = scannedResult.data.map((row) => ({
+            id: String(row.id),
+            submission_id: String(row.submission_id),
+            block_id: String(row.block_id),
+            question_id: (row.question_id as string | null) ?? null,
+            submission_version: Number(row.submission_version ?? 1),
+            original_storage_path: String(row.original_storage_path),
+            preview_storage_path:
+              (row.preview_storage_path as string | null) ?? null,
+            original_file_name: String(row.original_file_name),
+            mime_type: String(row.mime_type),
+            file_size: Number(row.file_size ?? 0),
+            page_count:
+              row.page_count == null ? null : Number(row.page_count),
+            display_order: Number(row.display_order ?? 0),
+            rotation: Number(row.rotation ?? 0),
+            is_active_version: Boolean(row.is_active_version),
+            uploaded_at: String(row.uploaded_at ?? row.created_at ?? ""),
+          }));
+        }
 
         let commentRows: Array<Record<string, unknown>> = (commentsResult.data ??
           []) as Array<Record<string, unknown>>;
@@ -402,6 +432,7 @@ export default async function MarkSubmissionPage({
           annotationDefaultVisibility={annotationDefaultVisibility}
           legacyFileName={submission.file_name}
           legacyStoragePath={submission.storage_path}
+          initialScannedFiles={scannedFiles}
         />
       ) : (
         <div className="grid gap-6 xl:grid-cols-2">

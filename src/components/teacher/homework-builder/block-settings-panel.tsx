@@ -21,13 +21,16 @@ import {
 import {
   BLOCK_TYPE_LABELS,
   RESPONSE_BLOCK_TYPES,
+  defaultScannedUploadConfig,
   type AssignmentCommentDraft,
   type BuilderBlock,
   type BuilderSection,
   type PassageConfig,
   type PassageLine,
+  type ScannedUploadConfig,
+  type ScannedUploadSubquestion,
 } from "@/lib/types";
-import { normalizeNumericConfig } from "@/lib/homework/structure";
+import { newId, normalizeNumericConfig } from "@/lib/homework/structure";
 import {
   commentLinkedQuestionIds,
   type CommentBankOption,
@@ -192,6 +195,14 @@ export function BlockSettingsPanel({
 
       {block.block_type === "table" || block.block_type === "vocabulary_table" ? (
         <TableEditor block={block} onChange={onChange} />
+      ) : null}
+
+      {block.block_type === "scanned_homework_upload" ? (
+        <ScannedUploadSettings
+          block={block}
+          onChange={onChange}
+          assignmentId={assignmentId}
+        />
       ) : null}
 
       <div className="border-t border-slate-100 pt-3">
@@ -995,4 +1006,306 @@ function titlePlaceholder(block: BuilderBlock) {
     return "Question title";
   }
   return "Student-facing title";
+}
+
+function ScannedUploadSettings({
+  block,
+  onChange,
+  assignmentId,
+}: {
+  block: BuilderBlock;
+  onChange: (updater: BlockUpdater) => void;
+  assignmentId: string;
+}) {
+  const config = block.scannedUploadConfig ?? defaultScannedUploadConfig();
+  const subquestions = [...config.subquestions].sort(
+    (a, b) => a.display_order - b.display_order,
+  );
+  const derivedTotal = subquestions
+    .filter((q) => q.include_in_total)
+    .reduce((sum, q) => sum + Number(q.maximum_mark || 0), 0);
+  const [schemeStatus, setSchemeStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [schemeError, setSchemeError] = useState<string | null>(null);
+
+  function patchConfig(next: Partial<ScannedUploadConfig>) {
+    onChange((prev) => {
+      const current = prev.scannedUploadConfig ?? defaultScannedUploadConfig();
+      const merged = { ...current, ...next };
+      const total =
+        merged.subquestions.length > 0
+          ? merged.subquestions
+              .filter((q) => q.include_in_total)
+              .reduce((sum, q) => sum + Number(q.maximum_mark || 0), 0)
+          : prev.max_marks;
+      return {
+        ...prev,
+        scannedUploadConfig: merged,
+        max_marks: total,
+      };
+    });
+  }
+
+  function updateSub(
+    id: string,
+    patch: Partial<ScannedUploadSubquestion>,
+  ) {
+    patchConfig({
+      subquestions: config.subquestions.map((q) =>
+        q.id === id ? { ...q, ...patch } : q,
+      ),
+    });
+  }
+
+  async function uploadMarkScheme(file: File | null) {
+    if (!file) return;
+    if (!assignmentId) {
+      setSchemeError("Save the assignment before uploading a mark scheme.");
+      setSchemeStatus("error");
+      return;
+    }
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setSchemeError("Mark schemes must be PDF files.");
+      setSchemeStatus("error");
+      return;
+    }
+    setSchemeStatus("saving");
+    setSchemeError(null);
+    const { uploadBlockMediaAction } = await import(
+      "@/lib/actions/homework-builder"
+    );
+    const fd = new FormData();
+    fd.set("file", file);
+    const result = await uploadBlockMediaAction(assignmentId, "download", fd);
+    if (result.error || !result.media) {
+      setSchemeError(result.error ?? "Upload failed");
+      setSchemeStatus("error");
+      return;
+    }
+    patchConfig({
+      mark_scheme_storage_path: result.media.storage_path,
+      mark_scheme_file_name: result.media.file_name,
+    });
+    setSchemeStatus("saved");
+  }
+
+  return (
+    <div className="space-y-4 rounded-xl border border-slate-100 p-3">
+      <div>
+        <p className="text-sm font-semibold text-slate-900">Upload settings</p>
+        <p className="text-xs text-slate-500">
+          Students upload scanned or photographed work for marking.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-sm">
+          <span className="mb-1 block text-xs text-slate-500">Max files</span>
+          <Input
+            type="number"
+            min={1}
+            max={40}
+            value={config.maximum_files}
+            onChange={(e) =>
+              patchConfig({ maximum_files: Number(e.target.value) || 1 })
+            }
+          />
+        </label>
+        <label className="text-sm">
+          <span className="mb-1 block text-xs text-slate-500">
+            Max file size (MB)
+          </span>
+          <Input
+            type="number"
+            min={1}
+            max={50}
+            value={Math.round(config.maximum_file_size_bytes / (1024 * 1024))}
+            onChange={(e) =>
+              patchConfig({
+                maximum_file_size_bytes:
+                  Math.max(1, Number(e.target.value) || 15) * 1024 * 1024,
+              })
+            }
+          />
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-3 text-sm">
+        {(
+          [
+            ["allow_pdf", "Allow PDF"],
+            ["allow_images", "Allow images"],
+            ["allow_docx", "Allow DOCX"],
+            ["combine_images_to_pdf", "Combine images into one PDF"],
+            ["allow_replacement", "Allow replace before submit"],
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={Boolean(config[key])}
+              onChange={(e) => patchConfig({ [key]: e.target.checked })}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+
+      <div className="space-y-2 border-t border-slate-100 pt-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">
+              Attached questions
+            </p>
+            <p className="text-xs text-slate-500">
+              Mode A uses the block maximum. Mode B sums attached questions
+              {subquestions.length
+                ? ` · total ${derivedTotal} marks`
+                : " · currently Mode A"}
+              .
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              const next: ScannedUploadSubquestion = {
+                id: newId(),
+                question_label: `Q${subquestions.length + 1}`,
+                title: "",
+                description: "",
+                maximum_mark: 4,
+                is_required: true,
+                include_in_total: true,
+                marking_guidance: "",
+                display_order: subquestions.length,
+              };
+              patchConfig({ subquestions: [...config.subquestions, next] });
+            }}
+          >
+            Add question
+          </Button>
+        </div>
+        {subquestions.map((q) => (
+          <div
+            key={q.id}
+            className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/70 p-3"
+          >
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Input
+                value={q.question_label}
+                placeholder="Label (e.g. Q1a)"
+                onChange={(e) =>
+                  updateSub(q.id, { question_label: e.target.value })
+                }
+              />
+              <Input
+                value={q.title}
+                placeholder="Title"
+                onChange={(e) => updateSub(q.id, { title: e.target.value })}
+              />
+              <Input
+                type="number"
+                min={0}
+                value={q.maximum_mark}
+                onChange={(e) =>
+                  updateSub(q.id, {
+                    maximum_mark: Number(e.target.value) || 0,
+                  })
+                }
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  patchConfig({
+                    subquestions: config.subquestions.filter(
+                      (row) => row.id !== q.id,
+                    ),
+                  })
+                }
+              >
+                Remove
+              </Button>
+            </div>
+            <Textarea
+              value={q.description}
+              placeholder="Description"
+              rows={2}
+              onChange={(e) => updateSub(q.id, { description: e.target.value })}
+            />
+            <Textarea
+              value={q.marking_guidance}
+              placeholder="Teacher marking guidance"
+              rows={2}
+              onChange={(e) =>
+                updateSub(q.id, { marking_guidance: e.target.value })
+              }
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-2 border-t border-slate-100 pt-3">
+        <p className="text-sm font-semibold text-slate-900">Mark scheme</p>
+        <p className="text-xs text-slate-500">
+          Staff-only PDF available in the marking interface. Students never see
+          this file.
+        </p>
+        {config.mark_scheme_file_name ? (
+          <p className="text-sm text-slate-700">
+            Current: {config.mark_scheme_file_name}
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500">No mark-scheme PDF attached.</p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-block">
+            <span className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-50">
+              {config.mark_scheme_storage_path
+                ? "Replace mark-scheme PDF"
+                : "Upload mark-scheme PDF"}
+            </span>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="sr-only"
+              onChange={(e) => {
+                void uploadMarkScheme(e.target.files?.[0] ?? null);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {config.mark_scheme_storage_path ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                patchConfig({
+                  mark_scheme_storage_path: null,
+                  mark_scheme_file_name: null,
+                })
+              }
+            >
+              Remove
+            </Button>
+          ) : null}
+          <span className="text-xs text-slate-500">
+            {schemeStatus === "saving"
+              ? "Saving"
+              : schemeStatus === "saved"
+                ? "Saved"
+                : schemeStatus === "error"
+                  ? "Save failed"
+                  : null}
+          </span>
+        </div>
+        {schemeError ? (
+          <p className="text-xs text-rose-700">{schemeError}</p>
+        ) : null}
+      </div>
+    </div>
+  );
 }
