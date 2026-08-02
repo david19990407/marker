@@ -329,8 +329,7 @@ export async function loadAssignmentSubmissionList(
     const status = sub?.status ?? "draft";
     const statuses = sub ? marksBySubmission.get(sub.id) ?? [] : [];
     const markingReady =
-      statuses.length > 0 &&
-      statuses.every((s) => s === "marked" || s === "flagged");
+      statuses.length > 0 && statuses.every((s) => s === "marked");
     const releasedAt =
       feedback && "released_at" in (feedback as object)
         ? ((feedback as { released_at?: string | null }).released_at ?? null)
