@@ -31,12 +31,10 @@ export function ReleasedAnnotationsPanel({
   }, [scriptPath]);
 
   const [scriptUrl, setScriptUrl] = useState<string | null>(null);
+  const [loadedPath, setLoadedPath] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!scriptPath) {
-      setScriptUrl(null);
-      return;
-    }
+    if (!scriptPath) return;
     let cancelled = false;
     async function load() {
       try {
@@ -49,9 +47,15 @@ export function ReleasedAnnotationsPanel({
           }),
         });
         const json = (await res.json()) as { url?: string };
-        if (!cancelled) setScriptUrl(json.url ?? null);
+        if (!cancelled) {
+          setScriptUrl(json.url ?? null);
+          setLoadedPath(scriptPath);
+        }
       } catch {
-        if (!cancelled) setScriptUrl(null);
+        if (!cancelled) {
+          setScriptUrl(null);
+          setLoadedPath(scriptPath);
+        }
       }
     }
     void load();
@@ -59,6 +63,8 @@ export function ReleasedAnnotationsPanel({
       cancelled = true;
     };
   }, [scriptPath]);
+
+  const activeScriptUrl = loadedPath === scriptPath ? scriptUrl : null;
 
   if (!annotations.length) {
     return (
@@ -80,22 +86,22 @@ export function ReleasedAnnotationsPanel({
     <div className="space-y-4">
       <div className="relative min-h-[16rem] overflow-hidden rounded-2xl border border-slate-100 bg-slate-50">
         <div className="relative mx-auto min-h-[16rem] max-w-3xl bg-white p-4 shadow-sm">
-          {scriptUrl && isPdf ? (
+          {activeScriptUrl && isPdf ? (
             <iframe
               title={scriptName ?? "Submitted script"}
-              src={scriptUrl}
+              src={activeScriptUrl}
               className="mb-4 min-h-[60vh] w-full rounded border border-slate-100 bg-white"
             />
           ) : null}
-          {scriptUrl && isImage ? (
+          {activeScriptUrl && isImage ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={scriptUrl}
+              src={activeScriptUrl}
               alt={scriptName ?? "Submitted script"}
               className="mb-4 mx-auto max-h-[70vh] max-w-full rounded border border-slate-100 bg-white"
             />
           ) : null}
-          {!scriptUrl && scriptPath ? (
+          {!activeScriptUrl && scriptPath ? (
             <p className="mb-4 text-xs text-slate-500">
               Loading submitted script…
             </p>

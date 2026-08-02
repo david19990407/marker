@@ -515,14 +515,6 @@ export function DocumentMarkingWorkspace({
     : -1;
 
   useEffect(() => {
-    if (!selectedBlock || selectedBlock.block_type !== "scanned_homework_upload") {
-      return;
-    }
-    const parentId = parentScannedUploadBlockId(selectedBlock);
-    if (parentId) openScannedBlock(parentId);
-  }, [selectedBlock, openScannedBlock]);
-
-  useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -925,7 +917,15 @@ export function DocumentMarkingWorkspace({
       : 0;
     const next =
       questionIds[Math.min(questionIds.length - 1, Math.max(0, idx + direction))];
-    if (next) setSelectedQuestionId(next);
+    if (!next) return;
+    setSelectedQuestionId(next);
+    const block = assessable.find((b) => b.question_id === next);
+    if (block?.block_type === "scanned_homework_upload") {
+      const parentId = parentScannedUploadBlockId(block);
+      if (parentId) openScannedBlock(parentId);
+    } else {
+      setCentreView({ kind: "worksheet" });
+    }
   }
 
   function appendCommentToFeedback(text: string) {
@@ -1320,9 +1320,19 @@ export function DocumentMarkingWorkspace({
     fullscreen,
   ]);
 
-  const onSelectQuestion = useCallback((qid: string) => {
-    setSelectedQuestionId(qid);
-  }, []);
+  const onSelectQuestion = useCallback(
+    (qid: string) => {
+      setSelectedQuestionId(qid);
+      const block = assessable.find((b) => b.question_id === qid);
+      if (block?.block_type === "scanned_homework_upload") {
+        const parentId = parentScannedUploadBlockId(block);
+        if (parentId) openScannedBlock(parentId);
+      } else {
+        setCentreView({ kind: "worksheet" });
+      }
+    },
+    [assessable, openScannedBlock],
+  );
 
   const worksheetAnnotations = annotations.filter(
     (a) => a.target_kind === "worksheet" && !a.is_deleted,

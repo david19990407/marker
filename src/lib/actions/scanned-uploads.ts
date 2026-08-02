@@ -401,7 +401,7 @@ export async function finalizeScannedUploadPreviewAction(
     return {
       success: "Preview ready",
       previewPath: files[0]!.original_storage_path,
-      pageCount: files[0]!.page_count,
+      pageCount: files[0]!.page_count ?? undefined,
       files,
     };
   }

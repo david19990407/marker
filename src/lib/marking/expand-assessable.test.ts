@@ -12,6 +12,7 @@ describe("expandAssessableBlocks", () => {
       {
         _id: "s1",
         title: "Section",
+        subsections: [],
         blocks: [
           {
             _id: "b1",
@@ -39,6 +40,7 @@ describe("expandAssessableBlocks", () => {
       {
         _id: "s1",
         title: "Section",
+        subsections: [],
         blocks: [
           {
             _id: "b1",
