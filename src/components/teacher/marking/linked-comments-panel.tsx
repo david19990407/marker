@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { AssignmentCommentDraft } from "@/lib/types";
 import type { CommentBankItem } from "@/lib/feedback/types";
@@ -25,8 +24,6 @@ type Row = {
   label: string;
   text: string;
   group: string;
-  bank: string;
-  priority: number;
 };
 
 export function LinkedCommentsPanel({
@@ -34,34 +31,18 @@ export function LinkedCommentsPanel({
   assignmentComments,
   commentBankItems,
   onInsertIntoFeedback,
-  onClickInsertAnnotation,
+  onDragCreateBoxComment,
 }: {
   selectedQuestionId: string | null;
   assignmentComments: LinkedComment[];
   commentBankItems: CommentBankItem[];
   onInsertIntoFeedback: (text: string) => void;
-  onClickInsertAnnotation: (comment: {
-    id: string;
-    text: string;
-  }) => void;
+  onDragCreateBoxComment?: (comment: { id: string; text: string }) => void;
 }) {
+  void onDragCreateBoxComment;
   const [query, setQuery] = useState("");
-  const [showAll, setShowAll] = useState(false);
-  const [showFavourites, setShowFavourites] = useState(false);
-  const [favourites, setFavourites] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      return new Set(
-        JSON.parse(
-          window.localStorage.getItem("marking:comment-favourites") || "[]",
-        ) as string[],
-      );
-    } catch {
-      return new Set();
-    }
-  });
 
-  const grouped = useMemo(() => {
+  const rows = useMemo(() => {
     const seenIds = new Set<string>();
     const linked: Row[] = [];
 
@@ -76,16 +57,18 @@ export function LinkedCommentsPanel({
       const isLinked = selectedQuestionId
         ? ids.includes(selectedQuestionId)
         : false;
-      if (!isLinked && !c.available_for_overall && !showAll) continue;
-      if (!isLinked && !showAll && !c.available_for_question) continue;
+      const available =
+        isLinked ||
+        c.available_for_question ||
+        c.available_for_overall ||
+        c.available_for_annotation;
+      if (!available) continue;
       seenIds.add(c._id);
       linked.push({
         id: c._id,
         label: c.short_label || c.category || "Comment",
         text: c.full_comment,
         group: isLinked ? "Question comments" : "Assignment comments",
-        bank: isLinked ? "Question comments" : "Assignment comments",
-        priority: isLinked ? 0 : 2,
       });
     }
 
@@ -95,16 +78,15 @@ export function LinkedCommentsPanel({
       const isLinked = Boolean(
         selectedQuestionId && item.linked_question_id === selectedQuestionId,
       );
-      if (!isLinked && !showAll && !query.trim()) continue;
+      // Selected banks for the assignment — show question-linked first, then others.
       seenIds.add(item.id);
       linked.push({
         id: item.id,
         label: item.short_label || item.title,
         text: item.full_text,
-        group: item.group_name || item.category || "General",
-        bank: item.bank_name || "Selected banks",
-        priority: isLinked ? 0 : 1,
+        group: item.group_name || item.bank_name || "Selected banks",
       });
+      void isLinked;
     }
 
     const q = query.trim().toLowerCase();
@@ -114,46 +96,20 @@ export function LinkedCommentsPanel({
           !q ||
           c.label.toLowerCase().includes(q) ||
           c.text.toLowerCase().includes(q) ||
-          c.group.toLowerCase().includes(q) ||
-          c.bank.toLowerCase().includes(q),
+          c.group.toLowerCase().includes(q),
       )
-      .sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label));
-  }, [
-    assignmentComments,
-    commentBankItems,
-    selectedQuestionId,
-    showAll,
-    query,
-  ]);
+      .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+  }, [assignmentComments, commentBankItems, selectedQuestionId, query]);
 
-  const byBank = useMemo(() => {
-    const map = new Map<string, Map<string, Row[]>>();
-    for (const item of grouped) {
-      if (!map.has(item.bank)) map.set(item.bank, new Map());
-      const groups = map.get(item.bank)!;
-      if (!groups.has(item.group)) groups.set(item.group, []);
-      groups.get(item.group)!.push(item);
+  const byGroup = useMemo(() => {
+    const map = new Map<string, Row[]>();
+    for (const row of rows) {
+      const list = map.get(row.group) ?? [];
+      list.push(row);
+      map.set(row.group, list);
     }
     return map;
-  }, [grouped]);
-
-  const favouriteRows = useMemo(
-    () => grouped.filter((c) => favourites.has(c.id)),
-    [grouped, favourites],
-  );
-
-  function toggleFavourite(id: string) {
-    setFavourites((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      window.localStorage.setItem(
-        "marking:comment-favourites",
-        JSON.stringify([...next]),
-      );
-      return next;
-    });
-  }
+  }, [rows]);
 
   return (
     <div className="space-y-2">
@@ -161,146 +117,55 @@ export function LinkedCommentsPanel({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search comments"
-        aria-label="Search comments"
+        aria-label="Search linked comments"
       />
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant={showAll ? "secondary" : "outline"}
-          onClick={() => setShowAll((v) => !v)}
-        >
-          {showAll ? "Question linked" : "Show all selected"}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={showFavourites ? "secondary" : "outline"}
-          onClick={() => setShowFavourites((v) => !v)}
-        >
-          Favourites
-        </Button>
-      </div>
 
-      {showFavourites ? (
-        <div>
-          <p className="mb-1 text-[11px] font-semibold uppercase text-slate-400">
-            Favourites
+      {[...byGroup.entries()].map(([group, comments]) => (
+        <div key={group}>
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            {group}
           </p>
-          {favouriteRows.length ? (
-            <ul className="space-y-1">
-              {favouriteRows.map((c) => (
-                <CommentRow
-                  key={`fav-${c.id}`}
-                  comment={c}
-                  favourite
-                  onFavourite={() => toggleFavourite(c.id)}
-                  onInsertFeedback={() => onInsertIntoFeedback(c.text)}
-                  onInsertAnnotation={() =>
-                    onClickInsertAnnotation({ id: c.id, text: c.text })
-                  }
-                />
-              ))}
-            </ul>
-          ) : (
-            <p className="text-xs text-slate-500">No favourites yet.</p>
-          )}
-        </div>
-      ) : null}
-
-      {[...byBank.entries()].map(([bank, groups]) => (
-        <div key={bank} className="space-y-2">
-          <p className="text-xs font-semibold text-slate-800">{bank}</p>
-          {[...groups.entries()].map(([group, comments]) => (
-            <div key={`${bank}-${group}`}>
-              <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                {group}
-              </p>
-              <ul className="space-y-1">
-                {comments.map((c) => (
-                  <CommentRow
-                    key={c.id}
-                    comment={c}
-                    favourite={favourites.has(c.id)}
-                    onFavourite={() => toggleFavourite(c.id)}
-                    onInsertFeedback={() => onInsertIntoFeedback(c.text)}
-                    onInsertAnnotation={() =>
-                      onClickInsertAnnotation({ id: c.id, text: c.text })
+          <ul className="space-y-1">
+            {comments.map((c) => (
+              <li key={c.id}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  draggable
+                  aria-label={`Insert comment ${c.label}`}
+                  title="Click to insert into feedback. Drag onto worksheet for a box comment."
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(
+                      "application/x-comment-bank-item",
+                      JSON.stringify({ id: c.id, text: c.text }),
+                    );
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  onClick={() => onInsertIntoFeedback(c.text)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onInsertIntoFeedback(c.text);
                     }
-                  />
-                ))}
-              </ul>
-            </div>
-          ))}
+                  }}
+                  className="cursor-grab rounded-lg border border-slate-100 px-2 py-1.5 text-left text-xs hover:bg-slate-50 active:cursor-grabbing"
+                >
+                  <span className="font-medium text-slate-800">{c.label}</span>
+                  <span className="mt-0.5 block line-clamp-3 text-slate-500">
+                    {c.text}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       ))}
 
-      {!grouped.length ? (
+      {!rows.length ? (
         <p className="text-xs text-slate-500">
           No linked comments for this question.
         </p>
       ) : null}
     </div>
-  );
-}
-
-function CommentRow({
-  comment,
-  favourite,
-  onFavourite,
-  onInsertFeedback,
-  onInsertAnnotation,
-}: {
-  comment: { id: string; label: string; text: string };
-  favourite: boolean;
-  onFavourite: () => void;
-  onInsertFeedback: () => void;
-  onInsertAnnotation: () => void;
-}) {
-  return (
-    <li>
-      <div
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData(
-            "application/x-comment-bank-item",
-            JSON.stringify({ id: comment.id, text: comment.text }),
-          );
-          e.dataTransfer.effectAllowed = "copy";
-        }}
-        className="rounded-lg border border-slate-100 px-2 py-1.5 text-left text-xs hover:bg-slate-50"
-      >
-        <div className="flex items-start justify-between gap-2">
-          <button
-            type="button"
-            className="min-w-0 flex-1 text-left"
-            onClick={onInsertAnnotation}
-            title="Drag onto worksheet or click to place"
-          >
-            <span className="font-medium text-slate-800">{comment.label}</span>
-            <span className="mt-0.5 block line-clamp-2 text-slate-500">
-              {comment.text}
-            </span>
-          </button>
-          <button
-            type="button"
-            className="shrink-0 text-amber-500"
-            title={favourite ? "Remove favourite" : "Favourite"}
-            aria-label={favourite ? "Remove favourite" : "Favourite"}
-            onClick={onFavourite}
-          >
-            {favourite ? "★" : "☆"}
-          </button>
-        </div>
-        <div className="mt-1 flex gap-1">
-          <Button type="button" size="sm" variant="outline" onClick={onInsertFeedback}>
-            Into feedback
-          </Button>
-          <Button type="button" size="sm" variant="outline" onClick={onInsertAnnotation}>
-            Onto work
-          </Button>
-        </div>
-      </div>
-    </li>
   );
 }

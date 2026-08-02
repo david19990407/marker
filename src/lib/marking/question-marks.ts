@@ -47,9 +47,8 @@ export function isQuestionMarkingComplete(
   record: QuestionMarkRecord | undefined,
 ): boolean {
   if (!record) return false;
-  return (
-    record.marking_status === "marked" || record.marking_status === "flagged"
-  );
+  // Flag status is preserved historically but no longer treated as completion.
+  return record.marking_status === "marked";
 }
 
 /** Display like `3/4`, `0/1`, or `-/4` when unmarked. */
