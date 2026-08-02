@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronUp,
   Highlighter,
-  MessageCircle,
   MousePointer2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -13,7 +12,10 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react";
-import { StampImage } from "@/components/shared/stamp-image";
+import {
+  StampImage,
+  isStampImageReady,
+} from "@/components/shared/stamp-image";
 import type { AnnotationTool, MarkingStamp } from "@/lib/marking/annotation-types";
 import { cn } from "@/lib/utils";
 
@@ -42,12 +44,6 @@ const TOOLS: Array<{
     Icon: Square,
   },
   {
-    id: "text_comment",
-    tip: "Place a speech-bubble comment",
-    label: "Speech-bubble comment",
-    Icon: MessageCircle,
-  },
-  {
     id: "delete",
     tip: "Delete selected annotation",
     label: "Delete selected annotation",
@@ -72,6 +68,7 @@ export function AnnotationToolbar({
   colour,
   stamps,
   selectedStampId,
+  readyStampPaths = new Set<string>(),
   canUndo,
   canRedo,
   docked,
@@ -90,6 +87,7 @@ export function AnnotationToolbar({
   colour: string;
   stamps: MarkingStamp[];
   selectedStampId: string | null;
+  readyStampPaths?: Set<string>;
   canUndo: boolean;
   canRedo: boolean;
   docked: boolean;
@@ -240,33 +238,50 @@ export function AnnotationToolbar({
             <>
               <div className="my-1 h-px w-8 bg-slate-200" />
               <div className="flex max-h-36 flex-col gap-1 overflow-y-auto px-1">
-                {stamps.map((stamp) => (
-                  <button
-                    key={stamp.id}
-                    type="button"
-                    title={stamp.accessible_label}
-                    aria-label={stamp.accessible_label}
-                    aria-pressed={
-                      selectedStampId === stamp.id && tool === "stamp"
-                    }
-                    className={cn(
-                      "flex h-10 w-10 items-center justify-center rounded-xl",
-                      selectedStampId === stamp.id && tool === "stamp"
-                        ? "bg-rose-100"
-                        : "bg-slate-50",
-                    )}
-                    onClick={() => {
-                      onStampSelect(stamp.id);
-                      onToolChange("stamp");
-                    }}
-                  >
-                    <StampImage
-                      storagePath={stamp.storage_path}
-                      alt={stamp.accessible_label}
-                      className="h-5 w-5 object-contain"
-                    />
-                  </button>
-                ))}
+                {stamps.map((stamp) => {
+                  const path = stamp.storage_path?.trim() || "";
+                  const ready =
+                    Boolean(path) &&
+                    (readyStampPaths.has(path) || isStampImageReady(path));
+                  return (
+                    <button
+                      key={stamp.id}
+                      type="button"
+                      title={
+                        ready
+                          ? stamp.accessible_label
+                          : `${stamp.accessible_label} (loading)`
+                      }
+                      aria-label={
+                        ready
+                          ? stamp.accessible_label
+                          : `${stamp.accessible_label}, still loading`
+                      }
+                      aria-pressed={
+                        selectedStampId === stamp.id && tool === "stamp"
+                      }
+                      disabled={!ready}
+                      className={cn(
+                        "flex h-10 w-10 items-center justify-center rounded-xl",
+                        selectedStampId === stamp.id && tool === "stamp"
+                          ? "bg-rose-100"
+                          : "bg-slate-50",
+                        !ready && "opacity-40",
+                      )}
+                      onClick={() => {
+                        if (!ready) return;
+                        onStampSelect(stamp.id);
+                        onToolChange("stamp");
+                      }}
+                    >
+                      <StampImage
+                        storagePath={stamp.storage_path}
+                        alt={stamp.accessible_label}
+                        className="h-5 w-5 object-contain"
+                      />
+                    </button>
+                  );
+                })}
               </div>
             </>
           ) : null}

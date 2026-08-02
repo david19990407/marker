@@ -141,6 +141,24 @@ describe("question-level marking helpers", () => {
         flagged: true,
       }),
     ).toBe("flagged");
+    expect(
+      isQuestionMarkingComplete({
+        submission_id: "s1",
+        question_id: "q1",
+        marking_mode: "numeric",
+        awarded_mark: 2,
+        maximum_mark: 4,
+        review_state: null,
+        marking_status: "flagged",
+        question_feedback: null,
+        teacher_only_note: null,
+        automatic_mark: null,
+        override_mark: null,
+        override_reason: null,
+        flagged: true,
+        client_version: 1,
+      }),
+    ).toBe(false);
   });
 
   it("does not treat a bare zero award without marked status as complete", () => {

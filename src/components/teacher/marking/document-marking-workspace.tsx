@@ -42,10 +42,12 @@ import type {
   CommentBankItem,
   FeedbackFieldValue,
 } from "@/lib/feedback/types";
+import { normalizeStampDimensions } from "@/lib/marking/annotation-geometry";
 import {
-  normalizeStampDimensions,
-  speechBubbleBox,
-} from "@/lib/marking/annotation-geometry";
+  appendFeedbackAvoidingDuplicate,
+  placeBoxCommentAtPoint,
+  resizeBoxCommentForText,
+} from "@/lib/marking/box-comment-size";
 import type {
   AnnotationTool,
   MarkingStamp,
@@ -58,12 +60,10 @@ import {
   inferMarkingMode,
   isQuestionMarkingComplete,
   listIncompleteQuestionLabels,
-  nextUnmarkedQuestionId,
   sumAwardedMarks,
 } from "@/lib/marking/question-marks";
 import {
   QUESTION_FEEDBACK_DEBOUNCE_MS,
-  appendFeedbackText,
   mergeServerMarkIfFresh,
 } from "@/lib/marking/question-mark-sync";
 import { createUndoStack } from "@/lib/marking/undo-stack";
@@ -107,10 +107,12 @@ const TOOLBAR_DOCKED_KEY = "marking:toolbar-docked";
 const TOOLBAR_COLLAPSED_KEY = "marking:toolbar-collapsed";
 const TOOLBAR_POS_KEY = "marking:toolbar-pos";
 const RIGHT_WIDTH_KEY = "marking:right-panel-width";
+const LEFT_WIDTH_KEY = "marking:left-nav-width";
 const DEFAULT_FLOATING_POS = { x: 56, y: 72 };
-const DEFAULT_COMMENT_BOX = { w: 0.24, h: 0.09 };
 const TOOLBAR_MIN_WIDTH = 56;
-const NAV_MIN_WIDTH = 220;
+const LEFT_MIN_WIDTH = 180;
+const LEFT_DEFAULT_WIDTH = 240;
+const LEFT_MAX_WIDTH = 420;
 const RIGHT_MIN_WIDTH = 280;
 const RIGHT_MAX_WIDTH = 520;
 const RIGHT_DEFAULT_WIDTH = 360;
@@ -126,6 +128,13 @@ function readStoredRightWidth() {
   const raw = Number(window.localStorage.getItem(RIGHT_WIDTH_KEY));
   if (!Number.isFinite(raw)) return RIGHT_DEFAULT_WIDTH;
   return clamp(raw, RIGHT_MIN_WIDTH, RIGHT_MAX_WIDTH);
+}
+
+function readStoredLeftWidth() {
+  if (typeof window === "undefined") return LEFT_DEFAULT_WIDTH;
+  const raw = Number(window.localStorage.getItem(LEFT_WIDTH_KEY));
+  if (!Number.isFinite(raw)) return LEFT_DEFAULT_WIDTH;
+  return clamp(raw, LEFT_MIN_WIDTH, LEFT_MAX_WIDTH);
 }
 
 function readStoredBoolean(key: string, fallback: boolean) {
@@ -167,28 +176,6 @@ function clampToolbarPos(
     x: clamp(pos.x, 8, Math.max(8, width - TOOLBAR_MIN_WIDTH - 8)),
     y: clamp(pos.y, 8, Math.max(8, height - 72)),
   };
-}
-
-function boxAroundPoint(point: { x: number; y: number }) {
-  const w = DEFAULT_COMMENT_BOX.w;
-  const h = DEFAULT_COMMENT_BOX.h;
-  return {
-    x: clamp(point.x - w / 2, 0, 1 - w),
-    y: clamp(point.y - h / 2, 0, 1 - h),
-    w,
-    h,
-  };
-}
-
-function askCommentAnnotationKind(
-  fallback: "area_comment" | "text_comment" = "area_comment",
-) {
-  const raw = window.prompt(
-    "Create as box or bubble comment?",
-    fallback === "text_comment" ? "bubble" : "box",
-  );
-  if (raw == null) return null;
-  return raw.trim().toLowerCase() === "bubble" ? "text_comment" : "area_comment";
 }
 
 function normalizeLoadedAnnotations(
@@ -324,15 +311,20 @@ export function DocumentMarkingWorkspace({
   const [leftTab, setLeftTab] = useState<"questions" | "files" | "resources">(
     "questions",
   );
-  const [leftWidth, setLeftWidth] = useState(260);
+  const [leftWidth, setLeftWidth] = useState(readStoredLeftWidth);
   const [rightWidth, setRightWidth] = useState(readStoredRightWidth);
   const [centreView, setCentreView] = useState<CentreView>({ kind: "worksheet" });
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState<"none" | "width" | "page">("width");
-  const [tool, setTool] = useState<AnnotationTool>("select");
+  const [tool, setToolRaw] = useState<AnnotationTool>("select");
+  const setTool = useCallback((next: AnnotationTool) => {
+    // Speech-bubble tool removed from the workflow.
+    setToolRaw(next === "text_comment" ? "area_comment" : next);
+  }, []);
   const [colour, setColour] = useState("#dc2626");
-  const [selectedStampId, setSelectedStampId] = useState<string | null>(
-    stamps[0]?.id ?? null,
+  const [selectedStampId, setSelectedStampId] = useState<string | null>(null);
+  const [readyStampPaths, setReadyStampPaths] = useState<Set<string>>(
+    () => new Set(),
   );
   const [annotations, setAnnotations] = useState<SubmissionAnnotation[]>(() => {
     const { annotations: normalised } =
@@ -498,6 +490,10 @@ export function DocumentMarkingWorkspace({
   }, [rightWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem(LEFT_WIDTH_KEY, String(leftWidth));
+  }, [leftWidth]);
+
+  useEffect(() => {
     function clampToWorkspace() {
       setFloatingPos((prev) => clampToolbarPos(prev, workspaceRef.current));
     }
@@ -509,8 +505,17 @@ export function DocumentMarkingWorkspace({
   useEffect(() => {
     let cancelled = false;
     const paths = stamps.map((s) => s.storage_path);
-    void prefetchStampUrls(paths).finally(() => {
-      if (!cancelled) setStampsReady(true);
+    void prefetchStampUrls(paths).then((readyPaths) => {
+      if (cancelled) return;
+      setReadyStampPaths(new Set(readyPaths));
+      setStampsReady(true);
+      const firstReady = stamps.find(
+        (s) => s.storage_path && readyPaths.includes(s.storage_path),
+      );
+      setSelectedStampId((prev) => {
+        if (prev && stamps.some((s) => s.id === prev)) return prev;
+        return firstReady?.id ?? null;
+      });
     });
     return () => {
       cancelled = true;
@@ -800,16 +805,6 @@ export function DocumentMarkingWorkspace({
     if (next) setSelectedQuestionId(next);
   }
 
-  async function goNextUnmarked() {
-    await flushPending();
-    const next = nextUnmarkedQuestionId(
-      questionIds,
-      marksByQuestion,
-      selectedQuestionId,
-    );
-    if (next) setSelectedQuestionId(next);
-  }
-
   function appendCommentToFeedback(text: string) {
     if (!selectedQuestionId) return;
     const existing = questionMarksRef.current.find(
@@ -817,7 +812,7 @@ export function DocumentMarkingWorkspace({
     );
     updateMark(
       {
-        question_feedback: appendFeedbackText(
+        question_feedback: appendFeedbackAvoidingDuplicate(
           existing?.question_feedback,
           text,
         ),
@@ -878,32 +873,14 @@ export function DocumentMarkingWorkspace({
     }
   }
 
-  function createCommentAnnotation(
+  function createBoxCommentAtPoint(
     point: { x: number; y: number },
     comment: CommentPayload,
-    kind: "area_comment" | "text_comment",
   ) {
-    if (kind === "text_comment") {
-      const bubble = speechBubbleBox(point);
-      createAnnotation({
-        annotation_type: "text_comment",
-        x_norm: bubble.x,
-        y_norm: bubble.y,
-        w_norm: bubble.w,
-        h_norm: bubble.h,
-        text_content: comment.text,
-        source_comment_item_id: comment.id,
-        geometry: {
-          collapsed: false,
-          tail_edge: "bottom",
-          tail_offset: 0.5,
-          tail_length: 0.35,
-        },
-      });
-      return;
-    }
-
-    const box = boxAroundPoint(point);
+    const paper = paperRef.current;
+    const width = paper?.clientWidth ?? 800;
+    const height = paper?.clientHeight ?? 1100;
+    const box = placeBoxCommentAtPoint(point, comment.text, width, height);
     createAnnotation({
       annotation_type: "area_comment",
       x_norm: box.x,
@@ -917,24 +894,7 @@ export function DocumentMarkingWorkspace({
   }
 
   function handleCommentDrop(point: { x: number; y: number }, comment: CommentPayload) {
-    if (tool === "area_comment" || tool === "text_comment") {
-      createCommentAnnotation(point, comment, tool);
-      return;
-    }
-    const kind = askCommentAnnotationKind("area_comment");
-    if (!kind) return;
-    createCommentAnnotation(point, comment, kind);
-  }
-
-  function handleClickInsertAnnotation(comment: CommentPayload) {
-    const point = { x: 0.5, y: 0.5 };
-    if (tool === "area_comment" || tool === "text_comment") {
-      createCommentAnnotation(point, comment, tool);
-      return;
-    }
-    const kind = askCommentAnnotationKind("area_comment");
-    if (!kind) return;
-    createCommentAnnotation(point, comment, kind);
+    createBoxCommentAtPoint(point, comment);
   }
 
   function deleteAnnotationById(id: string) {
@@ -1037,8 +997,38 @@ export function DocumentMarkingWorkspace({
     const current = annotationsRef.current.find((a) => a.id === id);
     if (!current || current.text_content === text) return;
     const previous = annotationsRef.current;
+    const paper = paperRef.current;
+    let x_norm = current.x_norm;
+    let y_norm = current.y_norm;
+    let w_norm = current.w_norm;
+    let h_norm = current.h_norm;
+    if (
+      current.annotation_type === "area_comment" &&
+      paper?.clientWidth &&
+      paper.clientHeight
+    ) {
+      const resized = resizeBoxCommentForText(
+        {
+          x: current.x_norm,
+          y: current.y_norm,
+          w: current.w_norm,
+          h: current.h_norm,
+        },
+        text,
+        paper.clientWidth,
+        paper.clientHeight,
+      );
+      x_norm = resized.x;
+      y_norm = resized.y;
+      w_norm = resized.w;
+      h_norm = resized.h;
+    }
     const next = {
       ...current,
+      x_norm,
+      y_norm,
+      w_norm,
+      h_norm,
       text_content: text,
       client_version: current.client_version + 1,
       updated_at: new Date().toISOString(),
@@ -1059,6 +1049,26 @@ export function DocumentMarkingWorkspace({
     function onMove(ev: PointerEvent) {
       const delta = startX - ev.clientX;
       setRightWidth(clamp(startWidth + delta, RIGHT_MIN_WIDTH, RIGHT_MAX_WIDTH));
+    }
+    function onUp(ev: PointerEvent) {
+      target.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  function beginLeftResize(e: ReactPointerEvent) {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = leftWidth;
+
+    function onMove(ev: PointerEvent) {
+      const delta = ev.clientX - startX;
+      setLeftWidth(clamp(startWidth + delta, LEFT_MIN_WIDTH, LEFT_MAX_WIDTH));
     }
     function onUp(ev: PointerEvent) {
       target.releasePointerCapture(ev.pointerId);
@@ -1117,8 +1127,6 @@ export function DocumentMarkingWorkspace({
       }
       if (e.key === "ArrowLeft") void goQuestion(-1);
       if (e.key === "ArrowRight") void goQuestion(1);
-      if (e.key === "u") void goNextUnmarked();
-      if (e.key === "f") updateMark({ flagged: !selectedMark?.flagged });
       if (/^[0-9]$/.test(e.key) && selectedBlock) {
         const max = Number(selectedBlock.max_marks ?? 0);
         const value = Number(e.key);
@@ -1268,8 +1276,8 @@ export function DocumentMarkingWorkspace({
         className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
         style={{
           gridTemplateColumns: toolbarDocked
-            ? `${TOOLBAR_MIN_WIDTH}px minmax(${leftOpen ? NAV_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`
-            : `minmax(${leftOpen ? NAV_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`,
+            ? `${TOOLBAR_MIN_WIDTH}px minmax(${leftOpen ? LEFT_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`
+            : `minmax(${leftOpen ? LEFT_MIN_WIDTH : 40}px, ${leftOpen ? leftWidth : 40}px) minmax(0, 1fr) minmax(${rightOpen ? RIGHT_MIN_WIDTH : 40}px, ${rightOpen ? rightWidth : 40}px)`,
         }}
       >
         {toolbarDocked ? (
@@ -1278,6 +1286,7 @@ export function DocumentMarkingWorkspace({
             colour={colour}
             stamps={stamps}
             selectedStampId={selectedStampId}
+            readyStampPaths={readyStampPaths}
             canUndo={canUndo}
             canRedo={canRedo}
             docked
@@ -1307,10 +1316,16 @@ export function DocumentMarkingWorkspace({
         ) : null}
 
         {leftOpen ? (
-          <aside
-            className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
-          >
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-2 py-2">
+          <aside className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white">
+            <button
+              type="button"
+              aria-label="Resize question navigation. Drag to resize. Double-click to reset."
+              title="Drag to resize navigation"
+              className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize bg-transparent hover:bg-slate-300/70"
+              onPointerDown={beginLeftResize}
+              onDoubleClick={() => setLeftWidth(LEFT_DEFAULT_WIDTH)}
+            />
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-2 py-2 pr-3">
               <div className="flex min-w-0 gap-1">
                 {(["questions", "files", "resources"] as const).map((tab) => (
                   <button
@@ -1367,7 +1382,6 @@ export function DocumentMarkingWorkspace({
                             <span className="shrink-0 tabular-nums text-[11px] text-slate-600">
                               {progress}
                               {complete ? " ✓" : ""}
-                              {mark?.flagged ? " ⚑" : ""}
                             </span>
                           </span>
                         </button>
@@ -1479,18 +1493,6 @@ export function DocumentMarkingWorkspace({
                   </div>
                 </div>
               ) : null}
-            </div>
-            <div className="shrink-0 border-t border-slate-100 p-2 text-[11px] text-slate-500">
-              Navigation width · {leftWidth}px
-              <input
-                type="range"
-                min={200}
-                max={420}
-                value={leftWidth}
-                onChange={(e) => setLeftWidth(Number(e.target.value))}
-                className="mt-1 w-full"
-                aria-label="Resize left pane"
-              />
             </div>
           </aside>
         ) : (
@@ -1656,16 +1658,22 @@ export function DocumentMarkingWorkspace({
                 {selectedBlock && selectedQuestionId ? (
                   <QuestionMarkControls
                     questionId={selectedQuestionId}
+                    questionIndex={Math.max(0, selectedQuestionIndex)}
                     questionLabel={
                       selectedBlock.content ||
                       selectedBlock.prompt ||
-                      "Question"
+                      ""
                     }
                     maximumMark={Number(selectedBlock.max_marks ?? 0)}
                     mode={inferMarkingMode(selectedBlock)}
                     record={selectedMark}
                     circularThreshold={circularThreshold}
                     allowDecimals={allowDecimalMarks}
+                    canGoPrev={selectedQuestionIndex > 0}
+                    canGoNext={
+                      selectedQuestionIndex >= 0 &&
+                      selectedQuestionIndex < questionIds.length - 1
+                    }
                     onAward={(mark) => updateMark({ awarded_mark: mark })}
                     onReview={(state) => updateMark({ review_state: state })}
                     onFeedback={(text) =>
@@ -1674,10 +1682,8 @@ export function DocumentMarkingWorkspace({
                         { debounceMs: QUESTION_FEEDBACK_DEBOUNCE_MS },
                       )
                     }
-                    onFlag={(flagged) => updateMark({ flagged })}
                     onPrev={() => void goQuestion(-1)}
                     onNext={() => void goQuestion(1)}
-                    onNextUnmarked={() => void goNextUnmarked()}
                   />
                 ) : (
                   <p className="text-sm text-slate-500">No assessable questions.</p>
@@ -1693,7 +1699,6 @@ export function DocumentMarkingWorkspace({
                   assignmentComments={assignmentComments}
                   commentBankItems={commentBankItems}
                   onInsertIntoFeedback={appendCommentToFeedback}
-                  onClickInsertAnnotation={handleClickInsertAnnotation}
                 />
               </section>
 
@@ -1755,6 +1760,7 @@ export function DocumentMarkingWorkspace({
           colour={colour}
           stamps={stamps}
           selectedStampId={selectedStampId}
+          readyStampPaths={readyStampPaths}
           canUndo={canUndo}
           canRedo={canRedo}
           docked={false}

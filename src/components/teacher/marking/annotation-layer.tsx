@@ -17,11 +17,11 @@ import {
   pointerToNorm,
   readCollapsed,
   readSpeechTail,
-  speechBubbleBox,
   stampNormSize,
   tailFromPointer,
   type TailEdge,
 } from "@/lib/marking/annotation-geometry";
+import { placeBoxCommentAtPoint } from "@/lib/marking/box-comment-size";
 import {
   annotationStyle,
   type AnnotationTool,
@@ -671,37 +671,24 @@ export function AnnotationLayer({
           return;
         }
 
-        if (tool === "text_comment") {
-          const text = promptText("Speech-bubble comment");
-          if (!text) return;
-          const bubble = speechBubbleBox(start);
-          onCreate({
-            annotation_type: "text_comment",
-            x_norm: bubble.x,
-            y_norm: bubble.y,
-            w_norm: bubble.w,
-            h_norm: bubble.h,
-            text_content: text,
-            geometry: {
-              collapsed: false,
-              tail_edge: "bottom",
-              tail_offset: 0.5,
-              tail_length: 0.35,
-            },
-          });
-          return;
-        }
+        // Speech-bubble creation removed from the marking workflow.
+        // Historical text_comment annotations still render for compatibility.
 
         if (tool === "area_comment") {
-          if (box.w < 0.005 && box.h < 0.005) return;
           const text = promptText("Box comment");
           if (!text) return;
+          const placed = placeBoxCommentAtPoint(
+            { x: box.w < 0.005 && box.h < 0.005 ? start.x : box.x, y: box.w < 0.005 && box.h < 0.005 ? start.y : box.y },
+            text,
+            rect.width,
+            rect.height,
+          );
           onCreate({
             annotation_type: "area_comment",
-            x_norm: box.x,
-            y_norm: box.y,
-            w_norm: Math.max(0.04, box.w),
-            h_norm: Math.max(0.03, box.h),
+            x_norm: placed.x,
+            y_norm: placed.y,
+            w_norm: placed.w,
+            h_norm: placed.h,
             text_content: text,
             geometry: { collapsed: false },
           });
@@ -747,16 +734,13 @@ export function AnnotationLayer({
           className="pointer-events-none absolute box-border"
           style={{
             ...exactAnnotationStyle(draftBox),
-            backgroundColor:
-              tool === "area_comment" || tool === "text_comment"
-                ? "#ffffff"
-                : colour,
+            backgroundColor: tool === "area_comment" ? "#ffffff" : colour,
             opacity: tool === "text_highlight" ? 0.35 : 0.9,
             border:
-              tool === "area_comment" || tool === "text_comment"
-                ? `2px solid ${colour || "#dc2626"}`
+              tool === "area_comment"
+                ? `1.5px solid ${colour || "#dc2626"}`
                 : `1px dashed ${colour}`,
-            borderRadius: 6,
+            borderRadius: 4,
           }}
         />
       ) : null}
