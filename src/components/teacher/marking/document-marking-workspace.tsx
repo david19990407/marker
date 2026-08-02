@@ -29,10 +29,10 @@ import {
   saveAnnotationAction,
   saveQuestionMarkAction,
 } from "@/lib/actions/marking-annotations";
+import { releaseSubmissionFeedbackAction } from "@/lib/actions/feedback-release";
 import {
   evaluateStructuredCompletion,
   isAssessableStudentBlock,
-  isStructuredResponseAnswered,
   type ResponseSnapshot,
 } from "@/lib/homework/completion";
 import { formatMarkLabel } from "@/lib/homework/marks";
@@ -54,10 +54,18 @@ import type {
 } from "@/lib/marking/annotation-types";
 import {
   deriveMarkingStatus,
+  formatQuestionMarkProgress,
   inferMarkingMode,
+  isQuestionMarkingComplete,
+  listIncompleteQuestionLabels,
   nextUnmarkedQuestionId,
   sumAwardedMarks,
 } from "@/lib/marking/question-marks";
+import {
+  QUESTION_FEEDBACK_DEBOUNCE_MS,
+  appendFeedbackText,
+  mergeServerMarkIfFresh,
+} from "@/lib/marking/question-mark-sync";
 import { createUndoStack } from "@/lib/marking/undo-stack";
 import type {
   AssignmentCommentDraft,
@@ -172,10 +180,6 @@ function boxAroundPoint(point: { x: number; y: number }) {
   };
 }
 
-function appendFeedback(existing: string | null | undefined, text: string) {
-  return [existing?.trim(), text.trim()].filter(Boolean).join("\n\n");
-}
-
 function askCommentAnnotationKind(
   fallback: "area_comment" | "text_comment" = "area_comment",
 ) {
@@ -288,7 +292,6 @@ export function DocumentMarkingWorkspace({
   legacyStoragePath?: string | null;
 }) {
   void annotationDefaultVisibility;
-  void feedback;
   void feedbackFields;
   void feedbackFieldValues;
   void commentBanks;
@@ -364,6 +367,16 @@ export function DocumentMarkingWorkspace({
   const workspaceRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const annotationsRef = useRef(annotations);
+  const questionMarksRef = useRef(questionMarks);
+  questionMarksRef.current = questionMarks;
+  const markMutationSeq = useRef(0);
+  const latestMarkMutation = useRef(new Map<string, number>());
+  const feedbackDebounceTimers = useRef(new Map<string, number>());
+  const pendingMarkDrafts = useRef(new Map<string, QuestionMarkRecord>());
+  const [releaseBusy, setReleaseBusy] = useState(false);
+  const [feedbackReleasedAt, setFeedbackReleasedAt] = useState<string | null>(
+    feedback?.released_at ?? null,
+  );
 
   const updateAnnotations = useCallback(
     (updater: (prev: SubmissionAnnotation[]) => SubmissionAnnotation[]) => {
@@ -385,12 +398,6 @@ export function DocumentMarkingWorkspace({
     setCanUndo(undoRef.current.canUndo());
     setCanRedo(undoRef.current.canRedo());
   }
-
-  const responseMap = useMemo(() => {
-    const map = new Map<string, MarkingResponse>();
-    for (const response of responses) map.set(response.question_id, response);
-    return map;
-  }, [responses]);
 
   const snapshots: ResponseSnapshot[] = useMemo(
     () =>
@@ -449,6 +456,17 @@ export function DocumentMarkingWorkspace({
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, []);
+
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (pendingSaves.current > 0 || feedbackDebounceTimers.current.size > 0) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
   useEffect(() => {
@@ -539,6 +557,14 @@ export function DocumentMarkingWorkspace({
 
   const flushPending = useCallback(async () => {
     window.dispatchEvent(new Event("marking:save-before-nav"));
+    // Flush debounced question-feedback saves immediately.
+    for (const [qid, timer] of feedbackDebounceTimers.current.entries()) {
+      window.clearTimeout(timer);
+      feedbackDebounceTimers.current.delete(qid);
+      window.dispatchEvent(
+        new CustomEvent("marking:flush-question-mark", { detail: { questionId: qid } }),
+      );
+    }
     setSaveStatus("saving");
     const deadline = Date.now() + 8000;
     while (pendingSaves.current > 0 && Date.now() < deadline) {
@@ -646,16 +672,63 @@ export function DocumentMarkingWorkspace({
     });
   }
 
-  function updateMark(patch: Partial<QuestionMarkRecord>) {
-    if (!selectedQuestionId || !selectedBlock) return;
-    const mode = inferMarkingMode(selectedBlock);
-    const existing = marksByQuestion.get(selectedQuestionId);
+  function persistQuestionMark(next: QuestionMarkRecord, mutationId: number) {
+    pendingSaves.current += 1;
+    setSaveStatus("saving");
+    setSaveError(null);
+    startTransition(async () => {
+      try {
+        const result = await saveQuestionMarkAction(next);
+        const latest = latestMarkMutation.current.get(next.question_id) ?? 0;
+        if (result.error) {
+          // Keep local draft — never roll feedback back to empty on failure.
+          if (latest === mutationId) {
+            setSaveStatus("error");
+            setSaveError(result.error);
+          }
+          return;
+        }
+        if (result.mark) {
+          setQuestionMarks((prev) => {
+            const local = prev.find((m) => m.question_id === result.mark!.question_id);
+            const merged = mergeServerMarkIfFresh(
+              local,
+              result.mark!,
+              latestMarkMutation.current.get(result.mark!.question_id) ?? 0,
+              mutationId,
+            );
+            const others = prev.filter(
+              (m) => m.question_id !== result.mark!.question_id,
+            );
+            return [...others, merged];
+          });
+        }
+        if (latest === mutationId) setSaveStatus("saved");
+      } finally {
+        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      }
+    });
+  }
+
+  function updateMark(
+    patch: Partial<QuestionMarkRecord>,
+    options?: { debounceMs?: number; questionId?: string },
+  ) {
+    const qid = options?.questionId ?? selectedQuestionId;
+    if (!qid) return;
+    const block =
+      assessable.find((b) => b.question_id === qid) ?? selectedBlock;
+    if (!block) return;
+    const mode = inferMarkingMode(block);
+    const existing =
+      pendingMarkDrafts.current.get(qid) ??
+      questionMarksRef.current.find((m) => m.question_id === qid);
     const next: QuestionMarkRecord = {
       submission_id: submissionId,
-      question_id: selectedQuestionId,
+      question_id: qid,
       marking_mode: mode,
       awarded_mark: existing?.awarded_mark ?? null,
-      maximum_mark: Number(selectedBlock.max_marks ?? 0),
+      maximum_mark: Number(block.max_marks ?? 0),
       review_state: existing?.review_state ?? null,
       marking_status: existing?.marking_status ?? "unmarked",
       question_feedback: existing?.question_feedback ?? null,
@@ -674,35 +747,47 @@ export function DocumentMarkingWorkspace({
       feedback: next.question_feedback,
       flagged: next.flagged,
     });
+
+    const mutationId = ++markMutationSeq.current;
+    latestMarkMutation.current.set(qid, mutationId);
+    pendingMarkDrafts.current.set(qid, next);
+
     setQuestionMarks((prev) => {
-      const others = prev.filter((m) => m.question_id !== selectedQuestionId);
+      const others = prev.filter((m) => m.question_id !== qid);
       return [...others, next];
     });
-    pendingSaves.current += 1;
-    setSaveStatus("saving");
-    setSaveError(null);
-    startTransition(async () => {
-      try {
-        const result = await saveQuestionMarkAction(next);
-        if (result.error) {
-          setSaveStatus("error");
-          setSaveError(result.error);
-          return;
-        }
-        if (result.mark) {
-          setQuestionMarks((prev) => {
-            const others = prev.filter(
-              (m) => m.question_id !== result.mark!.question_id,
-            );
-            return [...others, result.mark!];
-          });
-        }
-        setSaveStatus("saved");
-      } finally {
-        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
-      }
-    });
+
+    const debounceMs = options?.debounceMs ?? 0;
+    const existingTimer = feedbackDebounceTimers.current.get(qid);
+    if (existingTimer) window.clearTimeout(existingTimer);
+
+    if (debounceMs > 0) {
+      const timer = window.setTimeout(() => {
+        feedbackDebounceTimers.current.delete(qid);
+        const draft = pendingMarkDrafts.current.get(qid) ?? next;
+        const id = latestMarkMutation.current.get(qid) ?? mutationId;
+        persistQuestionMark(draft, id);
+      }, debounceMs);
+      feedbackDebounceTimers.current.set(qid, timer);
+      return;
+    }
+
+    persistQuestionMark(next, mutationId);
   }
+
+  useEffect(() => {
+    function onFlush(ev: Event) {
+      const qid = (ev as CustomEvent<{ questionId: string }>).detail?.questionId;
+      if (!qid) return;
+      const current = questionMarksRef.current.find((m) => m.question_id === qid);
+      if (!current) return;
+      const mutationId = latestMarkMutation.current.get(qid) ?? ++markMutationSeq.current;
+      latestMarkMutation.current.set(qid, mutationId);
+      persistQuestionMark(current, mutationId);
+    }
+    window.addEventListener("marking:flush-question-mark", onFlush);
+    return () => window.removeEventListener("marking:flush-question-mark", onFlush);
+  }, [submissionId]);
 
   async function goQuestion(direction: -1 | 1) {
     if (!questionIds.length) return;
@@ -726,9 +811,71 @@ export function DocumentMarkingWorkspace({
   }
 
   function appendCommentToFeedback(text: string) {
-    updateMark({
-      question_feedback: appendFeedback(selectedMark?.question_feedback, text),
-    });
+    if (!selectedQuestionId) return;
+    const existing = questionMarksRef.current.find(
+      (m) => m.question_id === selectedQuestionId,
+    );
+    updateMark(
+      {
+        question_feedback: appendFeedbackText(
+          existing?.question_feedback,
+          text,
+        ),
+      },
+      { debounceMs: QUESTION_FEEDBACK_DEBOUNCE_MS },
+    );
+  }
+
+  async function handleReleaseFeedback() {
+    const labels = new Map(
+      assessable.map((b, index) => [
+        b.question_id!,
+        `Q${index + 1}. ${b.content || b.prompt || "Question"}`,
+      ]),
+    );
+    const incomplete = listIncompleteQuestionLabels(
+      questionIds,
+      labels,
+      marksByQuestion,
+    );
+    if (incomplete.length) {
+      window.alert(
+        `Marking incomplete. Finish these questions before release:\n\n${incomplete
+          .slice(0, 12)
+          .join("\n")}${incomplete.length > 12 ? "\n…" : ""}`,
+      );
+      return;
+    }
+    const ok = window.confirm(
+      feedbackReleasedAt
+        ? "Re-release feedback to the student? They will see the latest marks, question feedback and annotations."
+        : "Release feedback to the student? They will see marks, question feedback and annotations.",
+    );
+    if (!ok) return;
+    setReleaseBusy(true);
+    try {
+      const flushed = await flushPending();
+      if (!flushed) return;
+      const labelsObj = Object.fromEntries(labels);
+      const result = await releaseSubmissionFeedbackAction(submissionId, {
+        questionIds,
+        labelsByQuestion: labelsObj,
+      });
+      if (result.error) {
+        setSaveStatus("error");
+        setSaveError(
+          result.incomplete?.length
+            ? `${result.error}: ${result.incomplete.slice(0, 6).join("; ")}`
+            : result.error,
+        );
+        return;
+      }
+      setFeedbackReleasedAt(result.releasedAt ?? new Date().toISOString());
+      setSaveStatus("saved");
+      setSaveError(null);
+    } finally {
+      setReleaseBusy(false);
+    }
   }
 
   function createCommentAnnotation(
@@ -1099,6 +1246,16 @@ export function DocumentMarkingWorkspace({
           </Button>
           <Button
             size="sm"
+            variant="secondary"
+            disabled={releaseBusy}
+            onClick={() => void handleReleaseFeedback()}
+          >
+            {feedbackReleasedAt
+              ? "Re-release feedback"
+              : "Release feedback to student"}
+          </Button>
+          <Button
+            size="sm"
             variant="outline"
             onClick={() => setFullscreen((v) => !v)}
           >
@@ -1184,9 +1341,10 @@ export function DocumentMarkingWorkspace({
                   {assessable.map((block, index) => {
                     const qid = block.question_id!;
                     const mark = marksByQuestion.get(qid);
-                    const answered = isStructuredResponseAnswered(
-                      block,
-                      responseMap.get(qid) ?? null,
+                    const complete = isQuestionMarkingComplete(mark);
+                    const progress = formatQuestionMarkProgress(
+                      mark,
+                      Number(block.max_marks ?? 0),
                     );
                     const active = selectedQuestionId === qid;
                     return (
@@ -1201,14 +1359,16 @@ export function DocumentMarkingWorkspace({
                             setSelectedQuestionId(qid);
                           }}
                         >
-                          <span className="block truncate font-medium">
-                            Q{index + 1}. {block.content || block.prompt || "Question"}
-                          </span>
-                          <span className="text-[11px] text-slate-500">
-                            {answered ? "Answered" : "Unanswered"} ·{" "}
-                            {mark?.awarded_mark ?? "—"}/{block.max_marks ?? 0}
-                            {block.required ? " · Required" : ""}
-                            {mark?.flagged ? " · Flagged" : ""}
+                          <span className="flex items-start justify-between gap-2">
+                            <span className="min-w-0 flex-1 truncate font-medium">
+                              Q{index + 1}{" "}
+                              {block.content || block.prompt || "Question"}
+                            </span>
+                            <span className="shrink-0 tabular-nums text-[11px] text-slate-600">
+                              {progress}
+                              {complete ? " ✓" : ""}
+                              {mark?.flagged ? " ⚑" : ""}
+                            </span>
                           </span>
                         </button>
                       </li>
@@ -1403,7 +1563,10 @@ export function DocumentMarkingWorkspace({
               />
             </div>
           ) : (
-            <div className="min-h-0 flex-1 overflow-auto bg-slate-300/50 p-6">
+            <div
+              data-marking-worksheet-scroll="true"
+              className="min-h-0 flex-1 overflow-auto bg-slate-300/50 p-6"
+            >
               <div
                 ref={paperRef}
                 className="relative mx-auto max-w-4xl rounded-sm bg-white p-8 shadow-xl"
@@ -1490,8 +1653,9 @@ export function DocumentMarkingWorkspace({
             </div>
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 pl-4">
               <section className="space-y-3">
-                {selectedBlock ? (
+                {selectedBlock && selectedQuestionId ? (
                   <QuestionMarkControls
+                    questionId={selectedQuestionId}
                     questionLabel={
                       selectedBlock.content ||
                       selectedBlock.prompt ||
@@ -1504,7 +1668,12 @@ export function DocumentMarkingWorkspace({
                     allowDecimals={allowDecimalMarks}
                     onAward={(mark) => updateMark({ awarded_mark: mark })}
                     onReview={(state) => updateMark({ review_state: state })}
-                    onFeedback={(text) => updateMark({ question_feedback: text })}
+                    onFeedback={(text) =>
+                      updateMark(
+                        { question_feedback: text },
+                        { debounceMs: QUESTION_FEEDBACK_DEBOUNCE_MS },
+                      )
+                    }
                     onFlag={(flagged) => updateMark({ flagged })}
                     onPrev={() => void goQuestion(-1)}
                     onNext={() => void goQuestion(1)}

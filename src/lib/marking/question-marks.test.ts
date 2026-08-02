@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveMarkingStatus,
+  formatQuestionMarkProgress,
   inferMarkingMode,
+  isQuestionMarkingComplete,
   nextUnmarkedQuestionId,
   sumAwardedMarks,
 } from "./question-marks";
@@ -139,5 +141,34 @@ describe("question-level marking helpers", () => {
         flagged: true,
       }),
     ).toBe("flagged");
+  });
+
+  it("does not treat a bare zero award without marked status as complete", () => {
+    const unmarkedZero: QuestionMarkRecord = {
+      submission_id: "s1",
+      question_id: "q1",
+      marking_mode: "numeric",
+      awarded_mark: null,
+      maximum_mark: 4,
+      review_state: null,
+      marking_status: "unmarked",
+      question_feedback: null,
+      teacher_only_note: null,
+      automatic_mark: null,
+      override_mark: null,
+      override_reason: null,
+      flagged: false,
+      client_version: 1,
+    };
+    expect(isQuestionMarkingComplete(unmarkedZero)).toBe(false);
+    expect(formatQuestionMarkProgress(unmarkedZero, 4)).toBe("-/4");
+
+    const awardedZero = {
+      ...unmarkedZero,
+      awarded_mark: 0,
+      marking_status: "marked" as const,
+    };
+    expect(isQuestionMarkingComplete(awardedZero)).toBe(true);
+    expect(formatQuestionMarkProgress(awardedZero, 4)).toBe("0/4");
   });
 });

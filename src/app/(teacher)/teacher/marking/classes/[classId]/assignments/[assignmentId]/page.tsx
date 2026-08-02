@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { BulkReleasePanel } from "@/components/teacher/marking/bulk-release-panel";
 import { requireProfile } from "@/lib/auth/get-profile";
 import { loadAssignmentSubmissionList } from "@/lib/marking/queries";
 import type {
@@ -79,6 +80,8 @@ export default async function AssignmentMarkingPage({
         </p>
       </Card>
 
+      <BulkReleasePanel assignmentId={assignmentId} rows={data.rows} />
+
       <div className="flex flex-wrap gap-2">
         {filters.map((f) => (
           <Link
@@ -115,14 +118,16 @@ export default async function AssignmentMarkingPage({
                 <div className="mb-1 flex flex-wrap gap-2">
                   <Badge
                     tone={
-                      row.status === "late" || row.isLate
-                        ? "danger"
-                        : row.status === "draft" || !row.submissionId
-                          ? "neutral"
-                          : "brand"
+                      row.displayStatus === "Released"
+                        ? "brand"
+                        : row.displayStatus === "Ready to release"
+                          ? "success"
+                          : row.isLate
+                            ? "danger"
+                            : "neutral"
                     }
                   >
-                    {row.submissionId ? row.status : "not submitted"}
+                    {row.displayStatus}
                   </Badge>
                   {row.mark != null ? (
                     <Badge tone="neutral">Mark {row.mark}</Badge>
@@ -133,6 +138,9 @@ export default async function AssignmentMarkingPage({
                   {row.submittedAt
                     ? `Submitted ${new Date(row.submittedAt).toLocaleString("en-GB")}`
                     : "Not submitted"}
+                  {row.releasedAt
+                    ? ` · Released ${new Date(row.releasedAt).toLocaleString("en-GB")}`
+                    : ""}
                 </p>
               </div>
               {row.submissionId ? (
@@ -141,7 +149,7 @@ export default async function AssignmentMarkingPage({
                     filter === "unmarked" ? "?filter=unmarked" : ""
                   }`}
                 >
-                  <Button size="sm">Open</Button>
+                  <Button size="sm">Open marking</Button>
                 </Link>
               ) : (
                 <Button size="sm" variant="outline" disabled>

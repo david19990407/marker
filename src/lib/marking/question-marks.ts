@@ -42,6 +42,27 @@ export function deriveMarkingStatus(input: {
   return "unmarked";
 }
 
+/** True only when the teacher has completed marking (not merely awarded 0). */
+export function isQuestionMarkingComplete(
+  record: QuestionMarkRecord | undefined,
+): boolean {
+  if (!record) return false;
+  return (
+    record.marking_status === "marked" || record.marking_status === "flagged"
+  );
+}
+
+/** Display like `3/4`, `0/1`, or `-/4` when unmarked. */
+export function formatQuestionMarkProgress(
+  record: QuestionMarkRecord | undefined,
+  maximumMark: number,
+): string {
+  const max = Number(maximumMark ?? 0);
+  if (!isQuestionMarkingComplete(record)) return `-/${max}`;
+  const awarded = Number(record?.awarded_mark ?? record?.override_mark ?? 0);
+  return `${awarded}/${max}`;
+}
+
 export function sumAwardedMarks(
   records: QuestionMarkRecord[],
 ): { awarded: number; maximumCompleted: number; markedCount: number } {
@@ -49,15 +70,10 @@ export function sumAwardedMarks(
   let maximumCompleted = 0;
   let markedCount = 0;
   for (const row of records) {
-    if (
-      row.marking_status === "marked" ||
-      row.marking_status === "flagged" ||
-      row.awarded_mark != null
-    ) {
-      markedCount += 1;
-      awarded += Number(row.awarded_mark ?? row.override_mark ?? 0);
-      maximumCompleted += Number(row.maximum_mark ?? 0);
-    }
+    if (!isQuestionMarkingComplete(row)) continue;
+    markedCount += 1;
+    awarded += Number(row.awarded_mark ?? row.override_mark ?? 0);
+    maximumCompleted += Number(row.maximum_mark ?? 0);
   }
   return { awarded, maximumCompleted, markedCount };
 }
@@ -72,7 +88,17 @@ export function nextUnmarkedQuestionId(
     const idx = (start + i) % questionIds.length;
     const id = questionIds[idx]!;
     const record = recordsByQuestion.get(id);
-    if (!record || record.marking_status === "unmarked") return id;
+    if (!isQuestionMarkingComplete(record)) return id;
   }
   return null;
+}
+
+export function listIncompleteQuestionLabels(
+  questionIds: string[],
+  labelsByQuestion: Map<string, string>,
+  recordsByQuestion: Map<string, QuestionMarkRecord>,
+): string[] {
+  return questionIds
+    .filter((id) => !isQuestionMarkingComplete(recordsByQuestion.get(id)))
+    .map((id, index) => labelsByQuestion.get(id) ?? `Question ${index + 1}`);
 }

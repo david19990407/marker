@@ -92,66 +92,73 @@ function SpeechTail({
   onTailPointerDown?: (e: ReactPointerEvent) => void;
 }) {
   const o = Math.min(0.9, Math.max(0.1, offset));
-  const base: CSSProperties = {
-    position: "absolute",
-    width: 0,
-    height: 0,
-    pointerEvents: interactive ? "auto" : "none",
-    cursor: interactive ? "grab" : "default",
-    zIndex: 2,
-  };
+  const tip: CSSProperties =
+    edge === "bottom"
+      ? { left: `${o * 100}%`, bottom: -22, transform: "translateX(-50%)" }
+      : edge === "top"
+        ? { left: `${o * 100}%`, top: -22, transform: "translateX(-50%)" }
+        : edge === "left"
+          ? { top: `${o * 100}%`, left: -22, transform: "translateY(-50%)" }
+          : { top: `${o * 100}%`, right: -22, transform: "translateY(-50%)" };
 
-  let style: CSSProperties = { ...base };
-  if (edge === "bottom") {
-    style = {
-      ...base,
-      left: `${o * 100}%`,
-      bottom: -10,
-      transform: "translateX(-50%)",
-      borderLeft: "8px solid transparent",
-      borderRight: "8px solid transparent",
-      borderTop: `10px solid ${colour}`,
-    };
-  } else if (edge === "top") {
-    style = {
-      ...base,
-      left: `${o * 100}%`,
-      top: -10,
-      transform: "translateX(-50%)",
-      borderLeft: "8px solid transparent",
-      borderRight: "8px solid transparent",
-      borderBottom: `10px solid ${colour}`,
-    };
-  } else if (edge === "left") {
-    style = {
-      ...base,
-      top: `${o * 100}%`,
-      left: -10,
-      transform: "translateY(-50%)",
-      borderTop: "8px solid transparent",
-      borderBottom: "8px solid transparent",
-      borderRight: `10px solid ${colour}`,
-    };
-  } else {
-    style = {
-      ...base,
-      top: `${o * 100}%`,
-      right: -10,
-      transform: "translateY(-50%)",
-      borderTop: "8px solid transparent",
-      borderBottom: "8px solid transparent",
-      borderLeft: `10px solid ${colour}`,
-    };
-  }
+  const triangle: CSSProperties =
+    edge === "bottom"
+      ? {
+          left: `${o * 100}%`,
+          bottom: -10,
+          transform: "translateX(-50%)",
+          borderLeft: "8px solid transparent",
+          borderRight: "8px solid transparent",
+          borderTop: `10px solid ${colour}`,
+        }
+      : edge === "top"
+        ? {
+            left: `${o * 100}%`,
+            top: -10,
+            transform: "translateX(-50%)",
+            borderLeft: "8px solid transparent",
+            borderRight: "8px solid transparent",
+            borderBottom: `10px solid ${colour}`,
+          }
+        : edge === "left"
+          ? {
+              top: `${o * 100}%`,
+              left: -10,
+              transform: "translateY(-50%)",
+              borderTop: "8px solid transparent",
+              borderBottom: "8px solid transparent",
+              borderRight: `10px solid ${colour}`,
+            }
+          : {
+              top: `${o * 100}%`,
+              right: -10,
+              transform: "translateY(-50%)",
+              borderTop: "8px solid transparent",
+              borderBottom: "8px solid transparent",
+              borderLeft: `10px solid ${colour}`,
+            };
 
   return (
-    <span
-      role={interactive ? "button" : undefined}
-      aria-label={interactive ? "Move speech-bubble tail" : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      style={style}
-      onPointerDown={interactive ? onTailPointerDown : undefined}
-    />
+    <>
+      <span
+        aria-hidden
+        className="pointer-events-none absolute h-0 w-0"
+        style={triangle}
+      />
+      <span
+        role={interactive ? "button" : undefined}
+        aria-label={interactive ? "Move speech-bubble tail" : undefined}
+        tabIndex={interactive ? 0 : undefined}
+        className="absolute h-3 w-3 rotate-45 border border-red-600 bg-amber-300"
+        style={{
+          ...tip,
+          pointerEvents: interactive ? "auto" : "none",
+          cursor: interactive ? "grab" : "default",
+          zIndex: 3,
+        }}
+        onPointerDown={interactive ? onTailPointerDown : undefined}
+      />
+    </>
   );
 }
 
@@ -166,6 +173,7 @@ function AnnotationItem({
   onToggleCollapse,
   onEditText,
   onDelete,
+  workspaceSelector = "[data-marking-worksheet-scroll]",
 }: {
   annotation: SubmissionAnnotation;
   selected: boolean;
@@ -177,8 +185,8 @@ function AnnotationItem({
   onToggleCollapse: (id: string) => void;
   onEditText: (id: string) => void;
   onDelete: (id: string) => void;
+  workspaceSelector?: string;
 }) {
-  // onDelete receives the annotation id directly.
   const elRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
     mode: DragMode;
@@ -302,6 +310,24 @@ function AnnotationItem({
       if (d) cancelAnimationFrame(d.raf);
       dragRef.current = null;
       setLiveTail(null);
+
+      // Dragging outside the grey worksheet workspace deletes the annotation.
+      if (d?.mode === "move") {
+        const scroll = document.querySelector(workspaceSelector);
+        if (scroll) {
+          const bounds = scroll.getBoundingClientRect();
+          const outside =
+            ev.clientX < bounds.left ||
+            ev.clientX > bounds.right ||
+            ev.clientY < bounds.top ||
+            ev.clientY > bounds.bottom;
+          if (outside) {
+            onDelete(annotation.id);
+            return;
+          }
+        }
+      }
+
       if (d?.pending) {
         onCommit(annotation.id, d.pending);
       }
@@ -360,7 +386,6 @@ function AnnotationItem({
             title={annotation.text_content ?? "Comment"}
           />
         )}
-        <SelectionOutline show={selected} />
       </div>
     );
   }
@@ -387,12 +412,11 @@ function AnnotationItem({
         opacity: isHighlight ? annotation.opacity : 1,
         border:
           isBox || isBubble
-            ? `2px solid ${outlineColour}`
+            ? `1.5px solid ${outlineColour}`
             : "none",
-        borderRadius: isBox || isBubble ? 6 : 0,
-        boxShadow:
-          isBox || isBubble ? "0 1px 2px rgba(15, 23, 42, 0.08)" : "none",
-        overflow: isBubble ? "visible" : isStamp ? "visible" : "hidden",
+        borderRadius: isBubble ? 8 : isBox ? 2 : 0,
+        boxShadow: "none",
+        overflow: isBubble || isBox || isStamp ? "visible" : "hidden",
         padding: isBox || isBubble ? 4 : 0,
         pointerEvents:
           tool === "select" || tool === "delete"
@@ -414,6 +438,19 @@ function AnnotationItem({
         beginDrag(e, "move");
       }}
     >
+      {isBox ? (
+        <>
+          <span
+            aria-hidden
+            className="absolute -left-1.5 -top-1.5 h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: outlineColour }}
+          />
+          <p className="max-h-full overflow-auto text-[11px] leading-snug text-slate-900">
+            {annotation.text_content || ""}
+          </p>
+        </>
+      ) : null}
+
       {isBubble ? (
         <>
           <span data-tail-handle="true">
@@ -434,12 +471,6 @@ function AnnotationItem({
         </>
       ) : null}
 
-      {isBox ? (
-        <p className="max-h-full overflow-auto text-[11px] leading-snug text-slate-900">
-          {annotation.text_content || ""}
-        </p>
-      ) : null}
-
       {isStamp ? (
         <StampImage
           storagePath={stamp?.storage_path}
@@ -448,9 +479,10 @@ function AnnotationItem({
         />
       ) : null}
 
-      <SelectionOutline show={selected} />
+      {/* Stamps: image only — no selection frame or resize handles. */}
+      <SelectionOutline show={selected && !isStamp && !isBox} />
 
-      {selected && interactive && (isBox || isHighlight || isStamp || isBubble) ? (
+      {selected && interactive && (isBox || isHighlight || isBubble) ? (
         <span data-resize-handle="true">
           <ResizeHandle
             onPointerDown={(e) => {
@@ -461,7 +493,7 @@ function AnnotationItem({
         </span>
       ) : null}
 
-      {selected && interactive && (isBox || isBubble) ? (
+      {selected && interactive && isBubble ? (
         <button
           type="button"
           data-collapse-btn="true"
@@ -473,20 +505,6 @@ function AnnotationItem({
           }}
         >
           –
-        </button>
-      ) : null}
-
-      {selected && interactive ? (
-        <button
-          type="button"
-          aria-label="Delete annotation"
-          className="absolute -left-2 -top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-red-300 bg-white text-[10px] text-red-600 shadow"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(annotation.id);
-          }}
-        >
-          ×
         </button>
       ) : null}
     </div>
