@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/marking/annotation-types";
 
 export function QuestionMarkControls({
+  questionId,
   questionLabel,
   maximumMark,
   mode,
@@ -26,6 +27,7 @@ export function QuestionMarkControls({
   onNext,
   onNextUnmarked,
 }: {
+  questionId: string;
   questionLabel: string;
   maximumMark: number;
   mode: QuestionMarkRecord["marking_mode"];
@@ -42,7 +44,19 @@ export function QuestionMarkControls({
 }) {
   const circular = useCircularMarkButtons(maximumMark, circularThreshold);
   const awarded = record?.awarded_mark ?? null;
-  const [feedbackExpanded, setFeedbackExpanded] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(true);
+  const [localFeedback, setLocalFeedback] = useState(
+    () => record?.question_feedback ?? "",
+  );
+  const questionIdRef = useRef(questionId);
+
+  // Sync draft only when the selected question changes — never on server save.
+  useEffect(() => {
+    if (questionIdRef.current === questionId) return;
+    questionIdRef.current = questionId;
+    setLocalFeedback(record?.question_feedback ?? "");
+    setFeedbackOpen(true);
+  }, [questionId, record?.question_feedback]);
 
   return (
     <div className="space-y-3">
@@ -157,28 +171,31 @@ export function QuestionMarkControls({
         </p>
       ) : null}
 
-      <label className="block text-sm">
-        <span className="mb-1 flex items-center justify-between text-slate-500">
+      <div className="space-y-1">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between text-left text-xs font-medium text-slate-600"
+          onClick={() => setFeedbackOpen((v) => !v)}
+        >
           <span>Question feedback</span>
-          <button
-            type="button"
-            className="text-[11px] text-slate-500 underline-offset-2 hover:underline"
-            onClick={(e) => {
-              e.preventDefault();
-              setFeedbackExpanded((v) => !v);
+          <span className="text-slate-400">{feedbackOpen ? "Hide" : "Show"}</span>
+        </button>
+        {feedbackOpen ? (
+          <Textarea
+            value={localFeedback}
+            onChange={(e) => {
+              const value = e.target.value;
+              setLocalFeedback(value);
+              onFeedback(value);
             }}
-          >
-            {feedbackExpanded ? "Compact" : "Expand"}
-          </button>
-        </span>
-        <Textarea
-          value={record?.question_feedback ?? ""}
-          onChange={(e) => onFeedback(e.target.value)}
-          placeholder="Feedback for this question"
-          rows={feedbackExpanded ? 8 : 3}
-          className={feedbackExpanded ? "min-h-40" : "min-h-[4.5rem]"}
-        />
-      </label>
+            placeholder="Feedback for this question"
+            rows={3}
+            className="min-h-[4.5rem]"
+          />
+        ) : localFeedback.trim() ? (
+          <p className="line-clamp-2 text-xs text-slate-500">{localFeedback}</p>
+        ) : null}
+      </div>
 
       <label className="flex items-center gap-2 text-sm">
         <input
@@ -190,13 +207,13 @@ export function QuestionMarkControls({
       </label>
 
       <div className="flex flex-wrap gap-2">
-        <Button type="button" variant="outline" onClick={onPrev}>
-          Previous question
+        <Button type="button" size="sm" variant="outline" onClick={onPrev}>
+          Previous
         </Button>
-        <Button type="button" variant="outline" onClick={onNext}>
-          Next question
+        <Button type="button" size="sm" variant="outline" onClick={onNext}>
+          Next
         </Button>
-        <Button type="button" variant="secondary" onClick={onNextUnmarked}>
+        <Button type="button" size="sm" variant="secondary" onClick={onNextUnmarked}>
           Next unmarked
         </Button>
       </div>

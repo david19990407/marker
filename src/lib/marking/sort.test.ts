@@ -123,6 +123,12 @@ describe("marking queue sorting", () => {
   });
 
   it("orders students by earliest unmarked submission", () => {
+    const extra = {
+      releasedAt: null as string | null,
+      markingReady: false,
+      updatedSinceRelease: false,
+      displayStatus: "Marking",
+    };
     const rows: AssignmentSubmissionRow[] = [
       {
         submissionId: "s2",
@@ -133,6 +139,7 @@ describe("marking queue sorting", () => {
         isLate: false,
         mark: null,
         feedbackStatus: null,
+        ...extra,
       },
       {
         submissionId: "s1",
@@ -143,6 +150,7 @@ describe("marking queue sorting", () => {
         isLate: false,
         mark: null,
         feedbackStatus: null,
+        ...extra,
       },
       {
         submissionId: "s3",
@@ -153,6 +161,7 @@ describe("marking queue sorting", () => {
         isLate: false,
         mark: 8,
         feedbackStatus: "draft",
+        ...extra,
       },
     ];
     expect(
@@ -191,6 +200,12 @@ describe("marking queue sorting", () => {
   });
 
   it("filters not-submitted rows", () => {
+    const extra = {
+      releasedAt: null as string | null,
+      markingReady: false,
+      updatedSinceRelease: false,
+      displayStatus: "Marking",
+    };
     const rows: AssignmentSubmissionRow[] = [
       {
         submissionId: null,
@@ -201,6 +216,8 @@ describe("marking queue sorting", () => {
         isLate: false,
         mark: null,
         feedbackStatus: null,
+        ...extra,
+        displayStatus: "Not submitted",
       },
       {
         submissionId: "s",
@@ -211,6 +228,7 @@ describe("marking queue sorting", () => {
         isLate: false,
         mark: null,
         feedbackStatus: null,
+        ...extra,
       },
     ];
     expect(filterSubmissionRows(rows, "not_submitted")).toHaveLength(1);

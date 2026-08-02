@@ -20,6 +20,15 @@ type LinkedComment = Pick<
   | "available_for_annotation"
 >;
 
+type Row = {
+  id: string;
+  label: string;
+  text: string;
+  group: string;
+  bank: string;
+  priority: number;
+};
+
 export function LinkedCommentsPanel({
   selectedQuestionId,
   assignmentComments,
@@ -38,6 +47,7 @@ export function LinkedCommentsPanel({
 }) {
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [showFavourites, setShowFavourites] = useState(false);
   const [favourites, setFavourites] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -50,32 +60,14 @@ export function LinkedCommentsPanel({
       return new Set();
     }
   });
-  const [recent, setRecent] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      return JSON.parse(
-        window.localStorage.getItem("marking:comment-recent") || "[]",
-      ) as string[];
-    } catch {
-      return [];
-    }
-  });
 
   const grouped = useMemo(() => {
-    const seen = new Set<string>();
-    const linked: Array<{
-      id: string;
-      label: string;
-      text: string;
-      group: string;
-      bank: string;
-      priority: number;
-    }> = [];
+    const seenIds = new Set<string>();
+    const linked: Row[] = [];
 
     for (const c of assignmentComments) {
       if (!c.is_active) continue;
-      const key = c.full_comment.trim().toLowerCase();
-      if (seen.has(key)) continue;
+      if (seenIds.has(c._id)) continue;
       const ids = c.linked_question_ids?.length
         ? c.linked_question_ids
         : c.linked_question_id
@@ -86,32 +78,31 @@ export function LinkedCommentsPanel({
         : false;
       if (!isLinked && !c.available_for_overall && !showAll) continue;
       if (!isLinked && !showAll && !c.available_for_question) continue;
-      seen.add(key);
+      seenIds.add(c._id);
       linked.push({
         id: c._id,
         label: c.short_label || c.category || "Comment",
         text: c.full_comment,
-        group: isLinked ? "Linked to question" : "Other comments",
-        bank: "Assignment comments",
+        group: isLinked ? "Question comments" : "Assignment comments",
+        bank: isLinked ? "Question comments" : "Assignment comments",
         priority: isLinked ? 0 : 2,
       });
     }
 
     for (const item of commentBankItems) {
       if (!item.is_active) continue;
-      const key = item.full_text.trim().toLowerCase();
-      if (seen.has(key)) continue;
+      if (seenIds.has(item.id)) continue;
       const isLinked = Boolean(
         selectedQuestionId && item.linked_question_id === selectedQuestionId,
       );
-      if (!isLinked && !showAll) continue;
-      seen.add(key);
+      if (!isLinked && !showAll && !query.trim()) continue;
+      seenIds.add(item.id);
       linked.push({
         id: item.id,
         label: item.short_label || item.title,
         text: item.full_text,
         group: item.group_name || item.category || "General",
-        bank: item.bank_name || "Comment bank",
+        bank: item.bank_name || "Selected banks",
         priority: isLinked ? 0 : 1,
       });
     }
@@ -123,7 +114,8 @@ export function LinkedCommentsPanel({
           !q ||
           c.label.toLowerCase().includes(q) ||
           c.text.toLowerCase().includes(q) ||
-          c.group.toLowerCase().includes(q),
+          c.group.toLowerCase().includes(q) ||
+          c.bank.toLowerCase().includes(q),
       )
       .sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label));
   }, [
@@ -135,7 +127,7 @@ export function LinkedCommentsPanel({
   ]);
 
   const byBank = useMemo(() => {
-    const map = new Map<string, Map<string, typeof grouped>>();
+    const map = new Map<string, Map<string, Row[]>>();
     for (const item of grouped) {
       if (!map.has(item.bank)) map.set(item.bank, new Map());
       const groups = map.get(item.bank)!;
@@ -145,13 +137,10 @@ export function LinkedCommentsPanel({
     return map;
   }, [grouped]);
 
-  function remember(id: string) {
-    setRecent((prev) => {
-      const next = [id, ...prev.filter((x) => x !== id)].slice(0, 8);
-      window.localStorage.setItem("marking:comment-recent", JSON.stringify(next));
-      return next;
-    });
-  }
+  const favouriteRows = useMemo(
+    () => grouped.filter((c) => favourites.has(c.id)),
+    [grouped, favourites],
+  );
 
   function toggleFavourite(id: string) {
     setFavourites((prev) => {
@@ -181,35 +170,41 @@ export function LinkedCommentsPanel({
           variant={showAll ? "secondary" : "outline"}
           onClick={() => setShowAll((v) => !v)}
         >
-          {showAll ? "Showing all groups" : "Expand other groups"}
+          {showAll ? "Question linked" : "Show all selected"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={showFavourites ? "secondary" : "outline"}
+          onClick={() => setShowFavourites((v) => !v)}
+        >
+          Favourites
         </Button>
       </div>
 
-      {recent.length ? (
+      {showFavourites ? (
         <div>
           <p className="mb-1 text-[11px] font-semibold uppercase text-slate-400">
-            Recent
+            Favourites
           </p>
-          <ul className="space-y-1">
-            {grouped
-              .filter((c) => recent.includes(c.id))
-              .map((c) => (
+          {favouriteRows.length ? (
+            <ul className="space-y-1">
+              {favouriteRows.map((c) => (
                 <CommentRow
-                  key={`recent-${c.id}`}
+                  key={`fav-${c.id}`}
                   comment={c}
-                  favourite={favourites.has(c.id)}
+                  favourite
                   onFavourite={() => toggleFavourite(c.id)}
-                  onInsertFeedback={() => {
-                    remember(c.id);
-                    onInsertIntoFeedback(c.text);
-                  }}
-                  onInsertAnnotation={() => {
-                    remember(c.id);
-                    onClickInsertAnnotation({ id: c.id, text: c.text });
-                  }}
+                  onInsertFeedback={() => onInsertIntoFeedback(c.text)}
+                  onInsertAnnotation={() =>
+                    onClickInsertAnnotation({ id: c.id, text: c.text })
+                  }
                 />
               ))}
-          </ul>
+            </ul>
+          ) : (
+            <p className="text-xs text-slate-500">No favourites yet.</p>
+          )}
         </div>
       ) : null}
 
@@ -228,14 +223,10 @@ export function LinkedCommentsPanel({
                     comment={c}
                     favourite={favourites.has(c.id)}
                     onFavourite={() => toggleFavourite(c.id)}
-                    onInsertFeedback={() => {
-                      remember(c.id);
-                      onInsertIntoFeedback(c.text);
-                    }}
-                    onInsertAnnotation={() => {
-                      remember(c.id);
-                      onClickInsertAnnotation({ id: c.id, text: c.text });
-                    }}
+                    onInsertFeedback={() => onInsertIntoFeedback(c.text)}
+                    onInsertAnnotation={() =>
+                      onClickInsertAnnotation({ id: c.id, text: c.text })
+                    }
                   />
                 ))}
               </ul>
@@ -245,7 +236,9 @@ export function LinkedCommentsPanel({
       ))}
 
       {!grouped.length ? (
-        <p className="text-xs text-slate-500">No linked comments for this question.</p>
+        <p className="text-xs text-slate-500">
+          No linked comments for this question.
+        </p>
       ) : null}
     </div>
   );
@@ -282,7 +275,7 @@ function CommentRow({
             type="button"
             className="min-w-0 flex-1 text-left"
             onClick={onInsertAnnotation}
-            title="Insert with current comment tool"
+            title="Drag onto worksheet or click to place"
           >
             <span className="font-medium text-slate-800">{comment.label}</span>
             <span className="mt-0.5 block line-clamp-2 text-slate-500">

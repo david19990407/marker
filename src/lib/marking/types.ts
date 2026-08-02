@@ -65,6 +65,11 @@ export type AssignmentSubmissionRow = {
   isLate: boolean;
   mark: number | null;
   feedbackStatus: string | null;
+  releasedAt: string | null;
+  /** True when every known question_mark row is marked/flagged. */
+  markingReady: boolean;
+  updatedSinceRelease: boolean;
+  displayStatus: string;
 };
 
 export type AssignmentProgress = {

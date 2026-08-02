@@ -295,7 +295,7 @@ export async function loadAssignmentSubmissionList(
     supabase
       .from("submissions")
       .select(
-        "id, student_id, status, submitted_at, feedback(mark, status)",
+        "id, student_id, status, submitted_at, marked_at, updated_at, feedback(mark, status, released_at)",
       )
       .eq("assignment_id", assignmentId),
   ]);
@@ -303,6 +303,20 @@ export async function loadAssignmentSubmissionList(
   const byStudent = new Map(
     (submissions ?? []).map((s) => [s.student_id, s]),
   );
+  const submissionIds = (submissions ?? []).map((s) => s.id);
+  const { data: markRows } = submissionIds.length
+    ? await supabase
+        .from("question_marks")
+        .select("submission_id, marking_status")
+        .in("submission_id", submissionIds)
+    : { data: [] as Array<{ submission_id: string; marking_status: string }> };
+
+  const marksBySubmission = new Map<string, string[]>();
+  for (const row of markRows ?? []) {
+    const list = marksBySubmission.get(row.submission_id) ?? [];
+    list.push(String(row.marking_status));
+    marksBySubmission.set(row.submission_id, list);
+  }
 
   const rows: AssignmentSubmissionRow[] = (members ?? []).map((m) => {
     const student = Array.isArray(m.student) ? m.student[0] : m.student;
@@ -313,6 +327,30 @@ export async function loadAssignmentSubmissionList(
         : sub.feedback
       : null;
     const status = sub?.status ?? "draft";
+    const statuses = sub ? marksBySubmission.get(sub.id) ?? [] : [];
+    const markingReady =
+      statuses.length > 0 &&
+      statuses.every((s) => s === "marked" || s === "flagged");
+    const releasedAt =
+      feedback && "released_at" in (feedback as object)
+        ? ((feedback as { released_at?: string | null }).released_at ?? null)
+        : null;
+    const feedbackStatus = feedback?.status ?? null;
+    const updatedSinceRelease = Boolean(
+      releasedAt &&
+        sub?.updated_at &&
+        new Date(sub.updated_at).getTime() > new Date(releasedAt).getTime(),
+    );
+    let displayStatus = "Not submitted";
+    if (!sub?.id || status === "draft") displayStatus = "Not submitted";
+    else if (feedbackStatus === "released" && updatedSinceRelease) {
+      displayStatus = "Updated since release";
+    } else if (feedbackStatus === "released") displayStatus = "Released";
+    else if (markingReady) displayStatus = "Ready to release";
+    else if (status === "submitted" || status === "late") displayStatus = "Marking";
+    else if (status === "marked" || status === "returned") displayStatus = "Marking";
+    else displayStatus = "Submitted";
+
     return {
       submissionId: sub?.id ?? null,
       studentId: m.student_id,
@@ -321,7 +359,11 @@ export async function loadAssignmentSubmissionList(
       submittedAt: sub?.submitted_at ?? null,
       isLate: status === "late",
       mark: feedback?.mark != null ? Number(feedback.mark) : null,
-      feedbackStatus: feedback?.status ?? null,
+      feedbackStatus,
+      releasedAt,
+      markingReady,
+      updatedSinceRelease,
+      displayStatus,
     };
   });
 
