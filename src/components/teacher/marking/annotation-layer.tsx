@@ -1,13 +1,26 @@
 "use client";
 
-import { memo, useRef, useState } from "react";
-import { MessageCircle } from "lucide-react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
 import { StampImage } from "@/components/shared/stamp-image";
 import {
   dragBoxFromPoints,
   exactAnnotationStyle,
   pointerToNorm,
+  readCollapsed,
+  readSpeechTail,
   speechBubbleBox,
+  stampNormSize,
+  tailFromPointer,
+  type TailEdge,
 } from "@/lib/marking/annotation-geometry";
 import {
   annotationStyle,
@@ -15,6 +28,16 @@ import {
   type MarkingStamp,
   type SubmissionAnnotation,
 } from "@/lib/marking/annotation-types";
+
+type GeometryPatch = Pick<
+  SubmissionAnnotation,
+  "x_norm" | "y_norm" | "w_norm" | "h_norm"
+> & {
+  geometry?: Record<string, unknown>;
+  text_content?: string | null;
+  colour?: string;
+  opacity?: number;
+};
 
 type CreateDraft = {
   annotation_type: SubmissionAnnotation["annotation_type"];
@@ -27,116 +50,327 @@ type CreateDraft = {
   source_comment_item_id?: string | null;
 };
 
+type DragMode = "move" | "resize" | "tail";
+
+function SelectionOutline({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute inset-0 rounded-[2px]"
+      style={{ outline: "2px solid #0f172a", outlineOffset: 1 }}
+    />
+  );
+}
+
+function ResizeHandle({
+  onPointerDown,
+}: {
+  onPointerDown: (e: ReactPointerEvent) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="Resize annotation"
+      className="absolute -bottom-1.5 -right-1.5 z-10 h-3 w-3 cursor-se-resize rounded-sm border border-slate-900 bg-white"
+      onPointerDown={onPointerDown}
+    />
+  );
+}
+
+function SpeechTail({
+  edge,
+  offset,
+  colour,
+  interactive,
+  onTailPointerDown,
+}: {
+  edge: TailEdge;
+  offset: number;
+  colour: string;
+  interactive: boolean;
+  onTailPointerDown?: (e: ReactPointerEvent) => void;
+}) {
+  const o = Math.min(0.9, Math.max(0.1, offset));
+  const base: CSSProperties = {
+    position: "absolute",
+    width: 0,
+    height: 0,
+    pointerEvents: interactive ? "auto" : "none",
+    cursor: interactive ? "grab" : "default",
+    zIndex: 2,
+  };
+
+  let style: CSSProperties = { ...base };
+  if (edge === "bottom") {
+    style = {
+      ...base,
+      left: `${o * 100}%`,
+      bottom: -10,
+      transform: "translateX(-50%)",
+      borderLeft: "8px solid transparent",
+      borderRight: "8px solid transparent",
+      borderTop: `10px solid ${colour}`,
+    };
+  } else if (edge === "top") {
+    style = {
+      ...base,
+      left: `${o * 100}%`,
+      top: -10,
+      transform: "translateX(-50%)",
+      borderLeft: "8px solid transparent",
+      borderRight: "8px solid transparent",
+      borderBottom: `10px solid ${colour}`,
+    };
+  } else if (edge === "left") {
+    style = {
+      ...base,
+      top: `${o * 100}%`,
+      left: -10,
+      transform: "translateY(-50%)",
+      borderTop: "8px solid transparent",
+      borderBottom: "8px solid transparent",
+      borderRight: `10px solid ${colour}`,
+    };
+  } else {
+    style = {
+      ...base,
+      top: `${o * 100}%`,
+      right: -10,
+      transform: "translateY(-50%)",
+      borderTop: "8px solid transparent",
+      borderBottom: "8px solid transparent",
+      borderLeft: `10px solid ${colour}`,
+    };
+  }
+
+  return (
+    <span
+      role={interactive ? "button" : undefined}
+      aria-label={interactive ? "Move speech-bubble tail" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      style={style}
+      onPointerDown={interactive ? onTailPointerDown : undefined}
+    />
+  );
+}
+
 function AnnotationItem({
   annotation,
   selected,
   tool,
   stamps,
-  openBubbleId,
+  canvasRef,
   onSelect,
-  onMoveLive,
-  onMoveEnd,
-  onResizeLive,
-  onResizeEnd,
-  onToggleBubble,
+  onCommit,
+  onToggleCollapse,
   onEditText,
+  onDelete,
 }: {
   annotation: SubmissionAnnotation;
   selected: boolean;
   tool: AnnotationTool;
   stamps: MarkingStamp[];
-  openBubbleId: string | null;
+  canvasRef: RefObject<HTMLDivElement | null>;
   onSelect: (id: string) => void;
-  onMoveLive: (
-    id: string,
-    next: Pick<SubmissionAnnotation, "x_norm" | "y_norm" | "w_norm" | "h_norm">,
-  ) => void;
-  onMoveEnd: (id: string) => void;
-  onResizeLive: (
-    id: string,
-    next: Pick<SubmissionAnnotation, "x_norm" | "y_norm" | "w_norm" | "h_norm">,
-  ) => void;
-  onResizeEnd: (id: string) => void;
-  onToggleBubble: (id: string) => void;
+  onCommit: (id: string, patch: GeometryPatch) => void;
+  onToggleCollapse: (id: string) => void;
   onEditText: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
+  // onDelete receives the annotation id directly.
+  const elRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    mode: DragMode;
+    startX: number;
+    startY: number;
+    origin: { x: number; y: number; w: number; h: number };
+    rectW: number;
+    rectH: number;
+    pending: GeometryPatch | null;
+    raf: number;
+  } | null>(null);
+  const [liveTail, setLiveTail] = useState<{
+    tail_edge: TailEdge;
+    tail_offset: number;
+  } | null>(null);
+
   const stamp = annotation.stamp_id
     ? stamps.find((s) => s.id === annotation.stamp_id)
     : null;
   const isBubble = annotation.annotation_type === "text_comment";
   const isBox = annotation.annotation_type === "area_comment";
   const isHighlight = annotation.annotation_type === "text_highlight";
+  const isStamp = annotation.annotation_type === "stamp";
+  const collapsed = readCollapsed(annotation.geometry);
+  const tail = readSpeechTail(annotation.geometry);
+  const displayTail = liveTail ?? {
+    tail_edge: tail.tail_edge,
+    tail_offset: tail.tail_offset,
+  };
+  const interactive = tool === "select";
 
-  function beginPointerDrag(
-    e: React.PointerEvent,
-    mode: "move" | "resize",
-    canvasEl: HTMLElement | null,
-  ) {
+  const applyLiveStyle = useCallback((patch: GeometryPatch) => {
+    const el = elRef.current;
+    if (!el) return;
+    el.style.left = `${patch.x_norm * 100}%`;
+    el.style.top = `${patch.y_norm * 100}%`;
+    el.style.width = `${patch.w_norm * 100}%`;
+    el.style.height = `${patch.h_norm * 100}%`;
+  }, []);
+
+  function beginDrag(e: ReactPointerEvent, mode: DragMode) {
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
+    const canvas = canvasRef.current;
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
-    const rect = canvasEl?.getBoundingClientRect();
+    const rect = canvas?.getBoundingClientRect();
     if (!rect) return;
-    const start = pointerToNorm(e.clientX, e.clientY, rect);
-    const origin = {
-      x: annotation.x_norm,
-      y: annotation.y_norm,
-      w: annotation.w_norm,
-      h: annotation.h_norm,
+
+    dragRef.current = {
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      origin: {
+        x: annotation.x_norm,
+        y: annotation.y_norm,
+        w: annotation.w_norm,
+        h: annotation.h_norm,
+      },
+      rectW: rect.width,
+      rectH: rect.height,
+      pending: null,
+      raf: 0,
     };
-    let raf = 0;
-    let latest = origin;
+
+    onSelect(annotation.id);
 
     function onMove(ev: PointerEvent) {
-      if (!rect) return;
-      const point = pointerToNorm(ev.clientX, ev.clientY, rect);
-      const dx = point.x - start.x;
-      const dy = point.y - start.y;
-      if (mode === "move") {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = (ev.clientX - d.startX) / d.rectW;
+      const dy = (ev.clientY - d.startY) / d.rectH;
+
+      if (d.mode === "tail") {
+        const bubbleEl = elRef.current;
+        if (!bubbleEl) return;
+        const bubbleRect = bubbleEl.getBoundingClientRect();
+        const nextTail = tailFromPointer(ev.clientX, ev.clientY, bubbleRect);
+        d.pending = {
+          x_norm: d.origin.x,
+          y_norm: d.origin.y,
+          w_norm: d.origin.w,
+          h_norm: d.origin.h,
+          geometry: {
+            ...annotation.geometry,
+            ...nextTail,
+          },
+        };
+        cancelAnimationFrame(d.raf);
+        d.raf = requestAnimationFrame(() => setLiveTail(nextTail));
+        return;
+      }
+
+      let latest: GeometryPatch;
+      if (d.mode === "move") {
         latest = {
-          x: Math.min(1 - origin.w, Math.max(0, origin.x + dx)),
-          y: Math.min(1 - origin.h, Math.max(0, origin.y + dy)),
-          w: origin.w,
-          h: origin.h,
+          x_norm: Math.min(1 - d.origin.w, Math.max(0, d.origin.x + dx)),
+          y_norm: Math.min(1 - d.origin.h, Math.max(0, d.origin.y + dy)),
+          w_norm: d.origin.w,
+          h_norm: d.origin.h,
         };
       } else {
         latest = {
-          x: origin.x,
-          y: origin.y,
-          w: Math.min(1 - origin.x, Math.max(0.005, origin.w + dx)),
-          h: Math.min(1 - origin.y, Math.max(0.005, origin.h + dy)),
+          x_norm: d.origin.x,
+          y_norm: d.origin.y,
+          w_norm: Math.min(1 - d.origin.x, Math.max(0.008, d.origin.w + dx)),
+          h_norm: Math.min(1 - d.origin.y, Math.max(0.008, d.origin.h + dy)),
         };
       }
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        const payload = {
-          x_norm: latest.x,
-          y_norm: latest.y,
-          w_norm: latest.w,
-          h_norm: latest.h,
-        };
-        if (mode === "move") onMoveLive(annotation.id, payload);
-        else onResizeLive(annotation.id, payload);
-      });
+      d.pending = latest;
+      cancelAnimationFrame(d.raf);
+      d.raf = requestAnimationFrame(() => applyLiveStyle(latest));
     }
 
     function onUp(ev: PointerEvent) {
+      const d = dragRef.current;
       target.releasePointerCapture(ev.pointerId);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      cancelAnimationFrame(raf);
-      if (mode === "move") onMoveEnd(annotation.id);
-      else onResizeEnd(annotation.id);
+      if (d) cancelAnimationFrame(d.raf);
+      dragRef.current = null;
+      setLiveTail(null);
+      if (d?.pending) {
+        onCommit(annotation.id, d.pending);
+      }
     }
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   }
 
+  // Collapsed marker: compact footprint at the annotation origin.
+  if ((isBox || isBubble) && collapsed) {
+    return (
+      <div
+        ref={elRef}
+        data-annotation-item="true"
+        role="button"
+        tabIndex={0}
+        aria-label={`Collapsed ${isBubble ? "speech bubble" : "box"} comment`}
+        className="absolute z-20"
+        style={{
+          left: `${annotation.x_norm * 100}%`,
+          top: `${annotation.y_norm * 100}%`,
+          width: 28,
+          height: 28,
+          cursor: interactive ? "move" : "default",
+          pointerEvents: interactive || tool === "delete" ? "auto" : "none",
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(annotation.id);
+          onToggleCollapse(annotation.id);
+        }}
+        onPointerDown={(e) => beginDrag(e, "move")}
+      >
+        {isBubble ? (
+          <span
+            className="relative flex h-7 w-7 items-center justify-center rounded-full border-2 bg-white text-[10px] font-semibold shadow-sm"
+            style={{ borderColor: annotation.colour || "#dc2626", color: "#dc2626" }}
+            title={annotation.text_content ?? "Comment"}
+          >
+            …
+            <span
+              aria-hidden
+              className="absolute -bottom-1 left-1/2 h-0 w-0 -translate-x-1/2"
+              style={{
+                borderLeft: "5px solid transparent",
+                borderRight: "5px solid transparent",
+                borderTop: `6px solid ${annotation.colour || "#dc2626"}`,
+              }}
+            />
+          </span>
+        ) : (
+          <span
+            className="block h-4 w-4 rounded-sm border-2 bg-white shadow-sm"
+            style={{ borderColor: annotation.colour || "#dc2626" }}
+            title={annotation.text_content ?? "Comment"}
+          />
+        )}
+        <SelectionOutline show={selected} />
+      </div>
+    );
+  }
+
+  const outlineColour = annotation.colour || "#dc2626";
+
   return (
     <div
+      ref={elRef}
+      data-annotation-item="true"
       role="button"
       tabIndex={0}
       aria-label={`${annotation.annotation_type} annotation`}
@@ -144,75 +378,116 @@ function AnnotationItem({
       style={{
         ...annotationStyle(annotation),
         zIndex: selected ? 30 : 20,
-        outline: selected ? "2px solid #0f172a" : "none",
-        outlineOffset: 0,
+        cursor: interactive ? "move" : "default",
         backgroundColor: isHighlight
           ? annotation.colour
-          : isBox
-            ? `${annotation.colour}33`
+          : isBox || isBubble
+            ? "#ffffff"
             : "transparent",
         opacity: isHighlight ? annotation.opacity : 1,
-        border: isBox ? `2px solid ${annotation.colour}` : "none",
-        pointerEvents: "auto",
+        border:
+          isBox || isBubble
+            ? `2px solid ${outlineColour}`
+            : "none",
+        borderRadius: isBox || isBubble ? 6 : 0,
+        boxShadow:
+          isBox || isBubble ? "0 1px 2px rgba(15, 23, 42, 0.08)" : "none",
+        overflow: isBubble ? "visible" : isStamp ? "visible" : "hidden",
+        padding: isBox || isBubble ? 4 : 0,
+        pointerEvents:
+          tool === "select" || tool === "delete"
+            ? "auto"
+            : "none",
       }}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(annotation.id);
-        if (isBubble) onToggleBubble(annotation.id);
       }}
       onDoubleClick={(e) => {
         e.stopPropagation();
         if (isBox || isBubble) onEditText(annotation.id);
       }}
       onPointerDown={(e) => {
-        const canvas = (e.currentTarget.parentElement as HTMLElement) ?? null;
-        beginPointerDrag(e, "move", canvas);
+        if ((e.target as HTMLElement).closest("[data-resize-handle],[data-tail-handle],[data-collapse-btn]")) {
+          return;
+        }
+        beginDrag(e, "move");
       }}
     >
       {isBubble ? (
-        <div
-          className="flex h-full w-full items-center justify-center rounded-full shadow"
-          style={{ backgroundColor: annotation.colour, color: "#fff" }}
-          title={annotation.text_content ?? "Comment"}
-        >
-          <MessageCircle className="h-3 w-3" aria-hidden />
-        </div>
+        <>
+          <span data-tail-handle="true">
+            <SpeechTail
+              edge={displayTail.tail_edge}
+              offset={displayTail.tail_offset}
+              colour={outlineColour}
+              interactive={selected && interactive}
+              onTailPointerDown={(e) => {
+                e.stopPropagation();
+                beginDrag(e, "tail");
+              }}
+            />
+          </span>
+          <p className="max-h-full overflow-auto text-[11px] leading-snug text-slate-900">
+            {annotation.text_content || "Comment"}
+          </p>
+        </>
       ) : null}
 
-      {isBox && annotation.text_content ? (
-        <p className="max-h-full overflow-auto p-1 text-[11px] leading-snug text-slate-900">
-          {annotation.text_content}
+      {isBox ? (
+        <p className="max-h-full overflow-auto text-[11px] leading-snug text-slate-900">
+          {annotation.text_content || ""}
         </p>
       ) : null}
 
-      {annotation.annotation_type === "stamp" ? (
-        <div className="flex h-full w-full items-center justify-center">
-          <StampImage
-            storagePath={stamp?.storage_path}
-            alt={stamp?.accessible_label ?? "Stamp"}
-            className="h-full w-full object-contain"
-          />
-        </div>
-      ) : null}
-
-      {selected && (isBox || isHighlight) ? (
-        <button
-          type="button"
-          aria-label="Resize annotation"
-          className="absolute -bottom-1.5 -right-1.5 h-3 w-3 cursor-se-resize rounded-sm border border-slate-900 bg-white"
-          onPointerDown={(e) => {
-            const canvas =
-              (e.currentTarget.parentElement?.parentElement as HTMLElement) ??
-              null;
-            beginPointerDrag(e, "resize", canvas);
-          }}
+      {isStamp ? (
+        <StampImage
+          storagePath={stamp?.storage_path}
+          alt={stamp?.accessible_label ?? "Stamp"}
+          className="pointer-events-none block h-full w-full object-contain"
         />
       ) : null}
 
-      {isBubble && openBubbleId === annotation.id && annotation.text_content ? (
-        <div className="absolute left-full top-0 z-40 ml-2 w-48 rounded-xl border border-slate-200 bg-white p-2 text-xs text-slate-700 shadow-lg">
-          {annotation.text_content}
-        </div>
+      <SelectionOutline show={selected} />
+
+      {selected && interactive && (isBox || isHighlight || isStamp || isBubble) ? (
+        <span data-resize-handle="true">
+          <ResizeHandle
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              beginDrag(e, "resize");
+            }}
+          />
+        </span>
+      ) : null}
+
+      {selected && interactive && (isBox || isBubble) ? (
+        <button
+          type="button"
+          data-collapse-btn="true"
+          aria-label="Collapse comment"
+          className="absolute -right-2 -top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] text-slate-700 shadow"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleCollapse(annotation.id);
+          }}
+        >
+          –
+        </button>
+      ) : null}
+
+      {selected && interactive ? (
+        <button
+          type="button"
+          aria-label="Delete annotation"
+          className="absolute -left-2 -top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-red-300 bg-white text-[10px] text-red-600 shadow"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(annotation.id);
+          }}
+        >
+          ×
+        </button>
       ) : null}
     </div>
   );
@@ -229,9 +504,10 @@ export function AnnotationLayer({
   stamps = [],
   onSelect,
   onCreate,
-  onMoveLive,
-  onMoveEnd,
+  onCommitGeometry,
   onEditText,
+  onToggleCollapse,
+  onDeleteSelected,
   onCommentDrop,
 }: {
   annotations: SubmissionAnnotation[];
@@ -242,12 +518,11 @@ export function AnnotationLayer({
   stamps?: MarkingStamp[];
   onSelect: (id: string | null) => void;
   onCreate: (draft: CreateDraft) => void;
-  onMoveLive: (
-    id: string,
-    next: Pick<SubmissionAnnotation, "x_norm" | "y_norm" | "w_norm" | "h_norm">,
-  ) => void;
-  onMoveEnd: (id: string) => void;
+  /** Persist geometry only after pointer release — never during drag. */
+  onCommitGeometry: (id: string, patch: GeometryPatch) => void;
   onEditText: (id: string, text: string) => void;
+  onToggleCollapse: (id: string) => void;
+  onDeleteSelected: (id?: string) => void;
   onCommentDrop?: (
     point: { x: number; y: number },
     comment: { id: string; text: string },
@@ -261,7 +536,6 @@ export function AnnotationLayer({
     w: number;
     h: number;
   } | null>(null);
-  const [openBubbleId, setOpenBubbleId] = useState<string | null>(null);
   const draftRaf = useRef(0);
 
   function canvasRect() {
@@ -271,6 +545,31 @@ export function AnnotationLayer({
   function promptText(label: string, initial = "") {
     return window.prompt(label, initial)?.trim() || null;
   }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const inEditor =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (e.key === "Escape") {
+        onSelect(null);
+        return;
+      }
+      if (
+        !inEditor &&
+        selectedId &&
+        (e.key === "Delete" || e.key === "Backspace")
+      ) {
+        e.preventDefault();
+        onDeleteSelected(selectedId);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onDeleteSelected, onSelect, selectedId]);
 
   return (
     <div
@@ -284,6 +583,9 @@ export function AnnotationLayer({
             : tool === "delete"
               ? "not-allowed"
               : "crosshair",
+      }}
+      onClick={() => {
+        if (tool === "select") onSelect(null);
       }}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("application/x-comment-bank-item")) {
@@ -338,13 +640,15 @@ export function AnnotationLayer({
         setDraftBox(null);
 
         if (tool === "stamp") {
-          const size = stampSizePct / 100;
+          const aspect = rect.width / Math.max(1, rect.height);
+          const size = stampNormSize(stampSizePct, aspect);
           onCreate({
             annotation_type: "stamp",
-            x_norm: start.x,
-            y_norm: start.y,
-            w_norm: size,
-            h_norm: size,
+            x_norm: clampPoint(start.x, size.w),
+            y_norm: clampPoint(start.y, size.h),
+            w_norm: size.w,
+            h_norm: size.h,
+            geometry: { stamp_normalised: true },
           });
           return;
         }
@@ -355,13 +659,17 @@ export function AnnotationLayer({
           const bubble = speechBubbleBox(start);
           onCreate({
             annotation_type: "text_comment",
-            ...{
-              x_norm: bubble.x,
-              y_norm: bubble.y,
-              w_norm: bubble.w,
-              h_norm: bubble.h,
-            },
+            x_norm: bubble.x,
+            y_norm: bubble.y,
+            w_norm: bubble.w,
+            h_norm: bubble.h,
             text_content: text,
+            geometry: {
+              collapsed: false,
+              tail_edge: "bottom",
+              tail_offset: 0.5,
+              tail_length: 0.35,
+            },
           });
           return;
         }
@@ -374,9 +682,10 @@ export function AnnotationLayer({
             annotation_type: "area_comment",
             x_norm: box.x,
             y_norm: box.y,
-            w_norm: box.w,
-            h_norm: box.h,
+            w_norm: Math.max(0.04, box.w),
+            h_norm: Math.max(0.03, box.h),
             text_content: text,
+            geometry: { collapsed: false },
           });
           return;
         }
@@ -394,45 +703,49 @@ export function AnnotationLayer({
       }}
     >
       {annotations.map((annotation) => (
-        <div key={annotation.id} data-annotation-item="true">
-          <MemoAnnotationItem
-            annotation={annotation}
-            selected={selectedId === annotation.id}
-            tool={tool}
-            stamps={stamps}
-            openBubbleId={openBubbleId}
-            onSelect={onSelect}
-            onMoveLive={onMoveLive}
-            onMoveEnd={onMoveEnd}
-            onResizeLive={onMoveLive}
-            onResizeEnd={onMoveEnd}
-            onToggleBubble={(id) =>
-              setOpenBubbleId((prev) => (prev === id ? null : id))
-            }
-            onEditText={(id) => {
-              const target = annotations.find((a) => a.id === id);
-              if (!target) return;
-              const next = promptText(
-                "Edit comment",
-                target.text_content ?? "",
-              );
-              if (next == null) return;
-              onEditText(id, next);
-            }}
-          />
-        </div>
+        <MemoAnnotationItem
+          key={annotation.id}
+          annotation={annotation}
+          selected={selectedId === annotation.id}
+          tool={tool}
+          stamps={stamps}
+          canvasRef={rootRef}
+          onSelect={onSelect}
+          onCommit={onCommitGeometry}
+          onToggleCollapse={onToggleCollapse}
+          onEditText={(id) => {
+            const target = annotations.find((a) => a.id === id);
+            if (!target) return;
+            const next = promptText("Edit comment", target.text_content ?? "");
+            if (next == null) return;
+            onEditText(id, next);
+          }}
+          onDelete={(id) => onDeleteSelected(id)}
+        />
       ))}
 
       {draftBox ? (
         <div
-          className="pointer-events-none absolute box-border border border-dashed border-slate-700"
+          className="pointer-events-none absolute box-border"
           style={{
             ...exactAnnotationStyle(draftBox),
-            backgroundColor: colour,
-            opacity: 0.25,
+            backgroundColor:
+              tool === "area_comment" || tool === "text_comment"
+                ? "#ffffff"
+                : colour,
+            opacity: tool === "text_highlight" ? 0.35 : 0.9,
+            border:
+              tool === "area_comment" || tool === "text_comment"
+                ? `2px solid ${colour || "#dc2626"}`
+                : `1px dashed ${colour}`,
+            borderRadius: 6,
           }}
         />
       ) : null}
     </div>
   );
+}
+
+function clampPoint(origin: number, size: number) {
+  return Math.min(1 - size, Math.max(0, origin - size / 2));
 }

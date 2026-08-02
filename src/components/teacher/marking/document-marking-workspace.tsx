@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -13,13 +14,11 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import {
   StructuredWorksheetRenderer,
   buildValuesFromResponses,
 } from "@/components/shared/structured-worksheet-renderer";
-import { FeedbackForm } from "@/components/teacher/feedback-form";
+import { prefetchStampUrls } from "@/components/shared/stamp-image";
 import { AnnotationToolbar } from "@/components/teacher/marking/annotation-toolbar";
 import { AnnotationLayer } from "@/components/teacher/marking/annotation-layer";
 import { FileViewer } from "@/components/teacher/marking/file-viewer";
@@ -43,7 +42,10 @@ import type {
   CommentBankItem,
   FeedbackFieldValue,
 } from "@/lib/feedback/types";
-import { speechBubbleBox } from "@/lib/marking/annotation-geometry";
+import {
+  normalizeStampDimensions,
+  speechBubbleBox,
+} from "@/lib/marking/annotation-geometry";
 import type {
   AnnotationTool,
   MarkingStamp,
@@ -84,18 +86,39 @@ type CentreView =
 type AnnotationGeometryPatch = Pick<
   SubmissionAnnotation,
   "x_norm" | "y_norm" | "w_norm" | "h_norm"
->;
+> & {
+  geometry?: Record<string, unknown>;
+  text_content?: string | null;
+  colour?: string;
+  opacity?: number;
+};
 
 type CommentPayload = { id: string; text: string };
 
 const TOOLBAR_DOCKED_KEY = "marking:toolbar-docked";
 const TOOLBAR_COLLAPSED_KEY = "marking:toolbar-collapsed";
 const TOOLBAR_POS_KEY = "marking:toolbar-pos";
+const RIGHT_WIDTH_KEY = "marking:right-panel-width";
 const DEFAULT_FLOATING_POS = { x: 56, y: 72 };
 const DEFAULT_COMMENT_BOX = { w: 0.24, h: 0.09 };
 const TOOLBAR_MIN_WIDTH = 56;
 const NAV_MIN_WIDTH = 220;
-const RIGHT_MIN_WIDTH = 300;
+const RIGHT_MIN_WIDTH = 280;
+const RIGHT_MAX_WIDTH = 520;
+const RIGHT_DEFAULT_WIDTH = 360;
+
+const MemoWorksheet = memo(StructuredWorksheetRenderer);
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function readStoredRightWidth() {
+  if (typeof window === "undefined") return RIGHT_DEFAULT_WIDTH;
+  const raw = Number(window.localStorage.getItem(RIGHT_WIDTH_KEY));
+  if (!Number.isFinite(raw)) return RIGHT_DEFAULT_WIDTH;
+  return clamp(raw, RIGHT_MIN_WIDTH, RIGHT_MAX_WIDTH);
+}
 
 function readStoredBoolean(key: string, fallback: boolean) {
   if (typeof window === "undefined") return fallback;
@@ -117,10 +140,6 @@ function readStoredFloatingPos() {
     // Fall through to the default position.
   }
   return DEFAULT_FLOATING_POS;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }
 
 /** Clamp floating toolbar to the marking workspace bounds (not the viewport). */
@@ -157,22 +176,34 @@ function appendFeedback(existing: string | null | undefined, text: string) {
   return [existing?.trim(), text.trim()].filter(Boolean).join("\n\n");
 }
 
-function formatJsonValue(value: unknown) {
-  if (value == null) return null;
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 function askCommentAnnotationKind(
   fallback: "area_comment" | "text_comment" = "area_comment",
 ) {
-  const raw = window.prompt("Type box or bubble", fallback === "text_comment" ? "bubble" : "box");
+  const raw = window.prompt(
+    "Create as box or bubble comment?",
+    fallback === "text_comment" ? "bubble" : "box",
+  );
   if (raw == null) return null;
   return raw.trim().toLowerCase() === "bubble" ? "text_comment" : "area_comment";
+}
+
+function normalizeLoadedAnnotations(
+  rows: SubmissionAnnotation[],
+): { annotations: SubmissionAnnotation[]; changed: SubmissionAnnotation[] } {
+  const changed: SubmissionAnnotation[] = [];
+  const annotations = rows.map((row) => {
+    const next = normalizeStampDimensions(row);
+    if (!next) return row;
+    const updated = {
+      ...row,
+      w_norm: next.w_norm,
+      h_norm: next.h_norm,
+      geometry: next.geometry,
+    };
+    changed.push(updated);
+    return updated;
+  });
+  return { annotations, changed };
 }
 
 export function DocumentMarkingWorkspace({
@@ -257,6 +288,10 @@ export function DocumentMarkingWorkspace({
   legacyStoragePath?: string | null;
 }) {
   void annotationDefaultVisibility;
+  void feedback;
+  void feedbackFields;
+  void feedbackFieldValues;
+  void commentBanks;
 
   const assessable = useMemo(
     () => flattenStudentBlocks(sections).filter(isAssessableStudentBlock),
@@ -287,20 +322,25 @@ export function DocumentMarkingWorkspace({
     "questions",
   );
   const [leftWidth, setLeftWidth] = useState(260);
-  const [rightWidth, setRightWidth] = useState(360);
+  const [rightWidth, setRightWidth] = useState(readStoredRightWidth);
   const [centreView, setCentreView] = useState<CentreView>({ kind: "worksheet" });
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState<"none" | "width" | "page">("width");
   const [tool, setTool] = useState<AnnotationTool>("select");
-  const [colour, setColour] = useState("#ef4444");
+  const [colour, setColour] = useState("#dc2626");
   const [selectedStampId, setSelectedStampId] = useState<string | null>(
     stamps[0]?.id ?? null,
   );
-  const [annotations, setAnnotations] =
-    useState<SubmissionAnnotation[]>(initialAnnotations);
+  const [annotations, setAnnotations] = useState<SubmissionAnnotation[]>(() => {
+    const { annotations: normalised } =
+      normalizeLoadedAnnotations(initialAnnotations);
+    return normalised;
+  });
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(
     null,
   );
+  const [stampsReady, setStampsReady] = useState(false);
+  const stampNormalizeSaved = useRef(false);
   const [questionMarks, setQuestionMarks] = useState<QuestionMarkRecord[]>(
     initialQuestionMarks,
   );
@@ -323,7 +363,7 @@ export function DocumentMarkingWorkspace({
   const pendingSaves = useRef(0);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
-  const annotationsRef = useRef(initialAnnotations);
+  const annotationsRef = useRef(annotations);
 
   const updateAnnotations = useCallback(
     (updater: (prev: SubmissionAnnotation[]) => SubmissionAnnotation[]) => {
@@ -399,9 +439,6 @@ export function DocumentMarkingWorkspace({
   const selectedMark = selectedQuestionId
     ? marksByQuestion.get(selectedQuestionId)
     : undefined;
-  const selectedResponse = selectedQuestionId
-    ? responseMap.get(selectedQuestionId)
-    : undefined;
   const selectedQuestionIndex = selectedQuestionId
     ? questionIds.indexOf(selectedQuestionId)
     : -1;
@@ -439,6 +476,10 @@ export function DocumentMarkingWorkspace({
   }, [floatingPos]);
 
   useEffect(() => {
+    window.localStorage.setItem(RIGHT_WIDTH_KEY, String(rightWidth));
+  }, [rightWidth]);
+
+  useEffect(() => {
     function clampToWorkspace() {
       setFloatingPos((prev) => clampToolbarPos(prev, workspaceRef.current));
     }
@@ -446,6 +487,55 @@ export function DocumentMarkingWorkspace({
     window.addEventListener("resize", clampToWorkspace);
     return () => window.removeEventListener("resize", clampToWorkspace);
   }, [fullscreen, toolbarDocked]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const paths = stamps.map((s) => s.storage_path);
+    void prefetchStampUrls(paths).finally(() => {
+      if (!cancelled) setStampsReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [stamps]);
+
+  useEffect(() => {
+    if (!selectedAnnotationId) return;
+    const current = annotationsRef.current.find(
+      (a) => a.id === selectedAnnotationId,
+    );
+    if (!current || current.annotation_type !== "text_highlight") return;
+    if (current.colour === colour) return;
+    handleCommitGeometry(current.id, {
+      x_norm: current.x_norm,
+      y_norm: current.y_norm,
+      w_norm: current.w_norm,
+      h_norm: current.h_norm,
+      colour,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apply toolbar colour to selected highlight only
+  }, [colour]);
+
+  useEffect(() => {
+    if (stampNormalizeSaved.current) return;
+    const { changed } = normalizeLoadedAnnotations(initialAnnotations);
+    if (!changed.length) {
+      stampNormalizeSaved.current = true;
+      return;
+    }
+    stampNormalizeSaved.current = true;
+    for (const row of changed) {
+      void persistAnnotation(
+        {
+          ...row,
+          client_version: row.client_version + 1,
+          updated_at: new Date().toISOString(),
+        },
+        null,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time migrate of legacy stamp boxes
+  }, [initialAnnotations]);
 
   const flushPending = useCallback(async () => {
     window.dispatchEvent(new Event("marking:save-before-nav"));
@@ -482,12 +572,20 @@ export function DocumentMarkingWorkspace({
         if (previous) replaceAnnotations(previous);
         return;
       }
-      updateAnnotations((prev) => {
-        const without = prev.filter(
-          (a) => a.id !== next.id && a.id !== result.annotation!.id,
-        );
-        return [...without, result.annotation!];
-      });
+      // Keep local geometry to avoid a post-save jump; only sync server identity.
+      updateAnnotations((prev) =>
+        prev.map((a) => {
+          if (a.id !== next.id && a.id !== result.annotation!.id) return a;
+          return {
+            ...a,
+            id: result.annotation!.id,
+            client_version: result.annotation!.client_version,
+            created_by: result.annotation!.created_by || a.created_by,
+            created_at: result.annotation!.created_at || a.created_at,
+            updated_at: result.annotation!.updated_at || a.updated_at,
+          };
+        }),
+      );
       setSaveStatus("saved");
     } finally {
       pendingSaves.current = Math.max(0, pendingSaves.current - 1);
@@ -648,6 +746,12 @@ export function DocumentMarkingWorkspace({
         h_norm: bubble.h,
         text_content: comment.text,
         source_comment_item_id: comment.id,
+        geometry: {
+          collapsed: false,
+          tail_edge: "bottom",
+          tail_offset: 0.5,
+          tail_length: 0.35,
+        },
       });
       return;
     }
@@ -661,10 +765,15 @@ export function DocumentMarkingWorkspace({
       h_norm: box.h,
       text_content: comment.text,
       source_comment_item_id: comment.id,
+      geometry: { collapsed: false },
     });
   }
 
   function handleCommentDrop(point: { x: number; y: number }, comment: CommentPayload) {
+    if (tool === "area_comment" || tool === "text_comment") {
+      createCommentAnnotation(point, comment, tool);
+      return;
+    }
     const kind = askCommentAnnotationKind("area_comment");
     if (!kind) return;
     createCommentAnnotation(point, comment, kind);
@@ -681,10 +790,7 @@ export function DocumentMarkingWorkspace({
     createCommentAnnotation(point, comment, kind);
   }
 
-  function handleAnnotationSelect(id: string | null) {
-    setSelectedAnnotationId(id);
-    if (tool !== "delete" || !id) return;
-
+  function deleteAnnotationById(id: string) {
     const target = annotationsRef.current.find((a) => a.id === id);
     if (!target) return;
     const previous = annotationsRef.current;
@@ -720,31 +826,70 @@ export function DocumentMarkingWorkspace({
     });
   }
 
-  function handleMoveLive(id: string, geometry: AnnotationGeometryPatch) {
-    updateAnnotations((prev) =>
-      prev.map((annotation) =>
-        annotation.id === id ? { ...annotation, ...geometry } : annotation,
-      ),
-    );
+  function handleAnnotationSelect(id: string | null) {
+    setSelectedAnnotationId(id);
+    if (tool !== "delete" || !id) return;
+    deleteAnnotationById(id);
   }
 
-  function handleMoveEnd(id: string) {
+  function handleCommitGeometry(id: string, patch: AnnotationGeometryPatch) {
     const current = annotationsRef.current.find((a) => a.id === id);
     if (!current) return;
-    const next = {
+    const previous = annotationsRef.current;
+    const next: SubmissionAnnotation = {
       ...current,
+      x_norm: patch.x_norm,
+      y_norm: patch.y_norm,
+      w_norm: patch.w_norm,
+      h_norm: patch.h_norm,
+      geometry: patch.geometry ?? current.geometry,
+      text_content:
+        patch.text_content !== undefined
+          ? patch.text_content
+          : current.text_content,
+      colour: patch.colour ?? current.colour,
+      opacity: patch.opacity ?? current.opacity,
       client_version: current.client_version + 1,
       updated_at: new Date().toISOString(),
     };
-    updateAnnotations((prev) => prev.map((a) => (a.id === id ? next : a)));
+    const unchanged =
+      current.x_norm === next.x_norm &&
+      current.y_norm === next.y_norm &&
+      current.w_norm === next.w_norm &&
+      current.h_norm === next.h_norm &&
+      JSON.stringify(current.geometry) === JSON.stringify(next.geometry);
+    if (unchanged) return;
+
+    const redoState = previous.map((a) => (a.id === id ? next : a));
+    updateAnnotations(() => redoState);
+    undoRef.current.push({
+      label: "move",
+      undo: () => previous,
+      redo: () => redoState,
+    });
+    syncUndoButtons();
     startTransition(() => {
-      void persistAnnotation(next, null);
+      void persistAnnotation(next, previous);
+    });
+  }
+
+  function handleToggleCollapse(id: string) {
+    const current = annotationsRef.current.find((a) => a.id === id);
+    if (!current) return;
+    const collapsed = current.geometry?.collapsed === true;
+    handleCommitGeometry(id, {
+      x_norm: current.x_norm,
+      y_norm: current.y_norm,
+      w_norm: current.w_norm,
+      h_norm: current.h_norm,
+      geometry: { ...current.geometry, collapsed: !collapsed },
     });
   }
 
   function handleEditText(id: string, text: string) {
     const current = annotationsRef.current.find((a) => a.id === id);
     if (!current || current.text_content === text) return;
+    const previous = annotationsRef.current;
     const next = {
       ...current,
       text_content: text,
@@ -753,8 +898,28 @@ export function DocumentMarkingWorkspace({
     };
     updateAnnotations((prev) => prev.map((a) => (a.id === id ? next : a)));
     startTransition(() => {
-      void persistAnnotation(next, null);
+      void persistAnnotation(next, previous);
     });
+  }
+
+  function beginRightResize(e: ReactPointerEvent) {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = rightWidth;
+
+    function onMove(ev: PointerEvent) {
+      const delta = startX - ev.clientX;
+      setRightWidth(clamp(startWidth + delta, RIGHT_MIN_WIDTH, RIGHT_MAX_WIDTH));
+    }
+    function onUp(ev: PointerEvent) {
+      target.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
   const handleFloatDragStart = useCallback(
@@ -836,6 +1001,10 @@ export function DocumentMarkingWorkspace({
     fullscreen,
   ]);
 
+  const onSelectQuestion = useCallback((qid: string) => {
+    setSelectedQuestionId(qid);
+  }, []);
+
   const worksheetAnnotations = annotations.filter(
     (a) => a.target_kind === "worksheet" && !a.is_deleted,
   );
@@ -844,7 +1013,7 @@ export function DocumentMarkingWorkspace({
   }`;
   const saveLabel =
     saveStatus === "saving"
-      ? "Saving..."
+      ? "Saving"
       : saveStatus === "error"
         ? saveError ?? "Save failed"
         : saveStatus === "saved"
@@ -1248,13 +1417,13 @@ export function DocumentMarkingWorkspace({
                   transformOrigin: "top center",
                 }}
               >
-                <StructuredWorksheetRenderer
+                <MemoWorksheet
                   sections={sections}
                   values={worksheetValues}
                   mode="teacher_marking"
                   showTeacherGuidance
                   selectedQuestionId={selectedQuestionId}
-                  onSelectQuestion={(qid) => setSelectedQuestionId(qid)}
+                  onSelectQuestion={onSelectQuestion}
                 />
                 <AnnotationLayer
                   annotations={worksheetAnnotations}
@@ -1268,33 +1437,59 @@ export function DocumentMarkingWorkspace({
                   }
                   onSelect={handleAnnotationSelect}
                   onCreate={createAnnotation}
-                  onMoveLive={handleMoveLive}
-                  onMoveEnd={handleMoveEnd}
+                  onCommitGeometry={handleCommitGeometry}
                   onEditText={handleEditText}
+                  onToggleCollapse={handleToggleCollapse}
+                  onDeleteSelected={(id) => {
+                    const targetId = id ?? selectedAnnotationId;
+                    if (targetId) deleteAnnotationById(targetId);
+                  }}
                   onCommentDrop={handleCommentDrop}
                 />
+                {!stampsReady ? (
+                  <div className="pointer-events-none absolute right-3 top-3 rounded-md bg-slate-900/70 px-2 py-1 text-[11px] text-white">
+                    Loading stamps…
+                  </div>
+                ) : null}
               </div>
             </div>
           )}
         </main>
 
         {rightOpen ? (
-          <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-slate-200 bg-white">
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2">
+          <aside className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-slate-200 bg-white">
+            <button
+              type="button"
+              aria-label="Resize marking panel"
+              title="Drag to resize panel"
+              className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize bg-transparent hover:bg-slate-300/70"
+              onPointerDown={beginRightResize}
+              onDoubleClick={() => setRightWidth(RIGHT_DEFAULT_WIDTH)}
+            />
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2 pl-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Marking
               </p>
-              <button
-                type="button"
-                className="text-xs text-slate-500 hover:text-slate-800"
-                onClick={() => setRightOpen(false)}
-              >
-                Collapse
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="text-[11px] text-slate-400 hover:text-slate-700"
+                  title="Reset panel width"
+                  onClick={() => setRightWidth(RIGHT_DEFAULT_WIDTH)}
+                >
+                  Reset width
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-slate-500 hover:text-slate-800"
+                  onClick={() => setRightOpen(false)}
+                >
+                  Collapse
+                </button>
+              </div>
             </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-              <Card className="space-y-3 p-3 shadow-none">
-                <CardTitle className="text-sm">Question</CardTitle>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 pl-4">
+              <section className="space-y-3">
                 {selectedBlock ? (
                   <QuestionMarkControls
                     questionLabel={
@@ -1318,25 +1513,12 @@ export function DocumentMarkingWorkspace({
                 ) : (
                   <p className="text-sm text-slate-500">No assessable questions.</p>
                 )}
-              </Card>
+              </section>
 
-              <Card className="space-y-2 p-3 shadow-none">
-                <CardTitle className="text-sm">Student answer</CardTitle>
-                <StudentAnswerSummary
-                  response={selectedResponse}
-                  onOpenFile={(fileName, storagePath) =>
-                    setCentreView({
-                      kind: "file",
-                      fileName,
-                      path: storagePath,
-                      bucket: "student-submissions",
-                    })
-                  }
-                />
-              </Card>
-
-              <Card className="space-y-3 p-3 shadow-none">
-                <CardTitle className="text-sm">Linked comments</CardTitle>
+              <section className="space-y-2 border-t border-slate-100 pt-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Linked comments
+                </p>
                 <LinkedCommentsPanel
                   selectedQuestionId={selectedQuestionId}
                   assignmentComments={assignmentComments}
@@ -1344,44 +1526,24 @@ export function DocumentMarkingWorkspace({
                   onInsertIntoFeedback={appendCommentToFeedback}
                   onClickInsertAnnotation={handleClickInsertAnnotation}
                 />
-                {commentBanks.length ? (
-                  <p className="text-[11px] text-slate-400">
-                    Linked banks: {commentBanks.map((b) => b.name).join(", ")}
-                  </p>
-                ) : null}
-              </Card>
+              </section>
 
-              {selectedBlock?.mark_scheme_note || selectedBlock?.teacher_note ? (
-                <Card className="space-y-2 p-3 shadow-none">
-                  <CardTitle className="text-sm">Teacher guidance</CardTitle>
-                  {selectedBlock.mark_scheme_note ? (
-                    <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-2 text-xs text-amber-950">
-                      <p className="mb-1 font-semibold">Mark-scheme note</p>
+              {(selectedBlock?.mark_scheme_note || markSchemes.length > 0) && (
+                <details className="border-t border-slate-100 pt-3 text-xs text-slate-600">
+                  <summary className="cursor-pointer font-medium text-slate-700">
+                    Mark scheme
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {selectedBlock?.mark_scheme_note ? (
                       <p className="whitespace-pre-wrap">
                         {selectedBlock.mark_scheme_note}
                       </p>
-                    </div>
-                  ) : null}
-                  {selectedBlock.teacher_note ? (
-                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
-                      <p className="mb-1 font-semibold">Teacher note</p>
-                      <p className="whitespace-pre-wrap">
-                        {selectedBlock.teacher_note}
-                      </p>
-                    </div>
-                  ) : null}
-                </Card>
-              ) : null}
-
-              {markSchemes.length ? (
-                <Card className="space-y-2 p-3 shadow-none">
-                  <CardTitle className="text-sm">Mark schemes</CardTitle>
-                  <div className="space-y-1">
+                    ) : null}
                     {markSchemes.map((file) => (
                       <button
                         key={file.id}
                         type="button"
-                        className="w-full rounded-xl border border-slate-100 px-2 py-2 text-left text-xs hover:bg-slate-50"
+                        className="block w-full text-left text-slate-700 underline-offset-2 hover:underline"
                         onClick={() =>
                           setCentreView({
                             kind: "file",
@@ -1391,66 +1553,18 @@ export function DocumentMarkingWorkspace({
                           })
                         }
                       >
-                        <span className="block font-medium text-slate-800">
-                          {file.title || file.file_name}
-                        </span>
-                        {file.title ? (
-                          <span className="block text-slate-500">{file.file_name}</span>
-                        ) : null}
+                        {file.title || file.file_name}
                       </button>
                     ))}
                   </div>
-                </Card>
-              ) : null}
-
-              {feedbackFields.length > 0 ? (
-                <details className="rounded-2xl border border-slate-100 bg-white p-3">
-                  <summary className="cursor-pointer text-sm font-semibold text-slate-900">
-                    Additional assignment feedback
-                  </summary>
-                  <div className="mt-3">
-                    <FeedbackForm
-                      submissionId={submissionId}
-                      maximumMark={maximumMark}
-                      feedback={feedback}
-                      fields={feedbackFields}
-                      fieldValues={feedbackFieldValues}
-                      commentItems={commentBankItems}
-                      studentName={studentName}
-                      assignmentTitle={assignmentTitle}
-                    />
-                  </div>
                 </details>
-              ) : null}
-
-              <p className="text-xs text-slate-500">
-                Progress: {completion.answeredAssessableCount}/
-                {completion.assessableCount} answered ·{" "}
-                {markTotals.markedCount}/{questionIds.length} marked ·{" "}
-                {formatMarkLabel(markTotals.awarded)} awarded
-              </p>
-
-              <Card className="space-y-2 p-3 shadow-none">
-                <CardTitle className="text-sm">Teacher-only note</CardTitle>
-                <Textarea
-                  value={selectedMark?.teacher_only_note ?? ""}
-                  onChange={(e) => updateMark({ teacher_only_note: e.target.value })}
-                  placeholder="Private note for teachers"
-                  className="min-h-24"
-                />
-              </Card>
+              )}
             </div>
-            <div className="shrink-0 border-t border-slate-100 p-2 text-[11px] text-slate-500">
-              Marking panel width · {rightWidth}px
-              <input
-                type="range"
-                min={300}
-                max={520}
-                value={rightWidth}
-                onChange={(e) => setRightWidth(Number(e.target.value))}
-                className="mt-1 w-full"
-                aria-label="Resize right pane"
-              />
+            <div className="shrink-0 border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+              {markTotals.markedCount}/{questionIds.length} marked ·{" "}
+              {formatMarkLabel(markTotals.awarded)}/{maximumMark} ·{" "}
+              {completion.answeredAssessableCount}/{completion.assessableCount}{" "}
+              answered
             </div>
           </aside>
         ) : (
@@ -1503,77 +1617,3 @@ export function DocumentMarkingWorkspace({
   );
 }
 
-function StudentAnswerSummary({
-  response,
-  onOpenFile,
-}: {
-  response?: MarkingResponse;
-  onOpenFile: (fileName: string, storagePath: string) => void;
-}) {
-  const json = formatJsonValue(response?.json_value);
-  const hasText = Boolean(response?.text_value?.trim());
-  const hasNumeric = response?.numeric_value != null;
-  const hasBoolean = response?.boolean_value != null;
-  const hasJson = Boolean(json);
-  const hasFile = Boolean(response?.file_name && response.storage_path);
-  const filledCells =
-    response?.cells?.filter(
-      (cell) =>
-        Boolean(cell.text_value?.trim()) ||
-        cell.numeric_value != null ||
-        cell.boolean_value != null,
-    ).length ?? 0;
-
-  if (!response || (!hasText && !hasNumeric && !hasBoolean && !hasJson && !hasFile && !filledCells)) {
-    return <p className="text-xs text-slate-500">No response recorded.</p>;
-  }
-
-  return (
-    <div className="space-y-2 text-xs text-slate-700">
-      {hasText ? (
-        <div>
-          <p className="font-semibold text-slate-500">Text</p>
-          <p className="whitespace-pre-wrap rounded-xl bg-slate-50 p-2">
-            {response.text_value}
-          </p>
-        </div>
-      ) : null}
-      {hasNumeric ? (
-        <p>
-          <span className="font-semibold text-slate-500">Numeric: </span>
-          {response.numeric_value}
-        </p>
-      ) : null}
-      {hasBoolean ? (
-        <p>
-          <span className="font-semibold text-slate-500">Boolean: </span>
-          {String(response.boolean_value)}
-        </p>
-      ) : null}
-      {hasJson ? (
-        <div>
-          <p className="font-semibold text-slate-500">Structured / JSON</p>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-2 font-sans">
-            {json}
-          </pre>
-        </div>
-      ) : null}
-      {filledCells ? (
-        <p>
-          <span className="font-semibold text-slate-500">Table cells: </span>
-          {filledCells} completed
-        </p>
-      ) : null}
-      {hasFile && response.file_name && response.storage_path ? (
-        <button
-          type="button"
-          className="w-full rounded-xl border border-slate-100 px-2 py-2 text-left hover:bg-slate-50"
-          onClick={() => onOpenFile(response.file_name!, response.storage_path!)}
-        >
-          <span className="block font-semibold text-slate-500">File</span>
-          <span className="text-slate-800">{response.file_name}</span>
-        </button>
-      ) : null}
-    </div>
-  );
-}

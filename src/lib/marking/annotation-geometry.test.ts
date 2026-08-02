@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   dragBoxFromPoints,
   exactAnnotationStyle,
+  normalizeStampDimensions,
   pointerToNorm,
   speechBubbleBox,
+  stampNormSize,
+  tailFromPointer,
 } from "./annotation-geometry";
 
 describe("annotation geometry", () => {
@@ -30,7 +33,6 @@ describe("annotation geometry", () => {
   });
 
   it("keeps logical size at 50% zoom (scaled CSS rect)", () => {
-    // Zoom scales the canvas element; getBoundingClientRect already reflects that.
     const zoomed = { left: 200, top: 100, width: 400, height: 300 };
     const start = pointerToNorm(200, 100, zoomed);
     const end = pointerToNorm(400, 250, zoomed);
@@ -65,10 +67,53 @@ describe("annotation geometry", () => {
     expect(style.height).toBe("0.5%");
   });
 
-  it("creates a compact speech-bubble marker", () => {
+  it("creates an expanded speech-bubble box", () => {
     const box = speechBubbleBox({ x: 0.5, y: 0.5 });
-    expect(box.w).toBeLessThan(0.04);
-    expect(box.h).toBeLessThan(0.04);
+    expect(box.w).toBeGreaterThan(0.1);
+    expect(box.h).toBeGreaterThan(0.05);
+    expect(box.x).toBeLessThan(0.5);
+    expect(box.y).toBeLessThan(0.5);
+  });
+
+  it("sizes stamps as visual squares using canvas aspect", () => {
+    const size = stampNormSize(8, 800 / 1200);
+    expect(size.w).toBeCloseTo(0.08, 5);
+    expect(size.h).toBeCloseTo(0.08 * (800 / 1200), 5);
+    expect(size.h).toBeLessThan(size.w);
+  });
+
+  it("normalises legacy equal-norm stamp rectangles", () => {
+    const next = normalizeStampDimensions(
+      {
+        annotation_type: "stamp",
+        w_norm: 0.08,
+        h_norm: 0.08,
+        geometry: {},
+      },
+      0.707,
+    );
+    expect(next).not.toBeNull();
+    expect(next!.w_norm).toBeCloseTo(0.08, 5);
+    expect(next!.h_norm).toBeCloseTo(0.08 * 0.707, 5);
+    expect(next!.geometry.stamp_normalised).toBe(true);
+  });
+
+  it("skips already-normalised stamps", () => {
+    const next = normalizeStampDimensions({
+      annotation_type: "stamp",
+      w_norm: 0.08,
+      h_norm: 0.05,
+      geometry: { stamp_normalised: true },
+    });
+    expect(next).toBeNull();
+  });
+
+  it("maps pointer to speech-bubble tail edges", () => {
+    const rect = { left: 0, top: 0, width: 100, height: 80 };
+    expect(tailFromPointer(50, 78, rect).tail_edge).toBe("bottom");
+    expect(tailFromPointer(50, 2, rect).tail_edge).toBe("top");
+    expect(tailFromPointer(2, 40, rect).tail_edge).toBe("left");
+    expect(tailFromPointer(98, 40, rect).tail_edge).toBe("right");
   });
 
   it("survives browser resize by re-normalising against new rect", () => {

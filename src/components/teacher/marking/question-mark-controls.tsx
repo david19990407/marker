@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -41,6 +42,7 @@ export function QuestionMarkControls({
 }) {
   const circular = useCircularMarkButtons(maximumMark, circularThreshold);
   const awarded = record?.awarded_mark ?? null;
+  const [feedbackExpanded, setFeedbackExpanded] = useState(false);
 
   return (
     <div className="space-y-3">
@@ -156,11 +158,25 @@ export function QuestionMarkControls({
       ) : null}
 
       <label className="block text-sm">
-        <span className="mb-1 block text-slate-500">Question feedback</span>
+        <span className="mb-1 flex items-center justify-between text-slate-500">
+          <span>Question feedback</span>
+          <button
+            type="button"
+            className="text-[11px] text-slate-500 underline-offset-2 hover:underline"
+            onClick={(e) => {
+              e.preventDefault();
+              setFeedbackExpanded((v) => !v);
+            }}
+          >
+            {feedbackExpanded ? "Compact" : "Expand"}
+          </button>
+        </span>
         <Textarea
           value={record?.question_feedback ?? ""}
           onChange={(e) => onFeedback(e.target.value)}
           placeholder="Feedback for this question"
+          rows={feedbackExpanded ? 8 : 3}
+          className={feedbackExpanded ? "min-h-40" : "min-h-[4.5rem]"}
         />
       </label>
 
