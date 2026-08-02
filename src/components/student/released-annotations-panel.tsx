@@ -141,6 +141,8 @@ export function ReleasedAnnotationsPanel({
                             1,
                         )
                       : annotation.annotation_type === "area_comment"
+                      : annotation.annotation_type === "area_comment" ||
+                          annotation.annotation_type === "text_comment"
                         ? 1
                         : Math.min(annotation.opacity, 0.35),
                 }}

@@ -418,6 +418,10 @@ function AnnotationItem({
             : widthFromX;
         const maxW = Math.min(0.9, 1 - drag.ox, (1 - drag.oy) / aspectNorm);
         const nextW = Math.min(maxW, Math.max(0.02, nextWRaw));
+        // Preserve aspect ratio from the corner hit area.
+        const aspect = drag.ow / Math.max(0.0001, drag.oh);
+        const nextW = Math.min(0.9, Math.max(0.04, drag.ow + dx));
+        const nextH = Math.min(0.9, Math.max(0.04, nextW / aspect));
         publishLive(
           clampNormBox({
             x_norm: drag.ox,
@@ -580,15 +584,22 @@ function AnnotationItem({
 
   const outlineColour = annotation.colour || "#dc2626";
   const nearRight = display.x_norm + display.w_norm > 0.92;
+  // Allow pointer events while editing even if the create tool is still active.
+  const pointerEnabled =
+    editing || tool === "select" || tool === "delete";
 
   return (
     <div
       ref={elRef}
       data-annotation-item="true"
+      data-selected={selected ? "true" : "false"}
       role="button"
       tabIndex={0}
       aria-label={`${annotation.annotation_type} annotation`}
       className="group absolute box-border"
+      className={`absolute box-border outline-none ${
+        isStamp ? "group/stamp" : ""
+      }`}
       style={{
         ...annotationStyle(display),
         zIndex: selected || editing ? 30 : 20,
@@ -606,6 +617,16 @@ function AnnotationItem({
             ? "1px dashed rgba(15,23,42,0.35)"
             : "none",
         boxShadow: "none",
+        // Stamps: no permanent box. Selected stamps get a faint dashed guide only.
+        boxShadow:
+          selected && !editing && !isStamp
+            ? "0 0 0 1px rgba(15,23,42,0.28)"
+            : "none",
+        outline:
+          selected && !editing && isStamp
+            ? "1px dashed rgba(15,23,42,0.35)"
+            : "none",
+        outlineOffset: isStamp ? 2 : 0,
         overflow: isBox || isStamp ? "visible" : "hidden",
         padding: isBox
           ? `${BOX_COMMENT_PAD_Y}px ${BOX_COMMENT_PAD_X}px`
@@ -615,6 +636,10 @@ function AnnotationItem({
       }}
       onClick={(e) => {
         e.stopPropagation();
+        if (tool === "delete") {
+          onDelete(annotation.id);
+          return;
+        }
         onSelect(annotation.id);
       }}
       onDoubleClick={(e) => {
@@ -624,12 +649,17 @@ function AnnotationItem({
       onPointerDown={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            "[data-resize-handle],[data-collapse-btn],textarea",
+            "[data-resize-handle],[data-collapse-btn],textarea,[data-box-comment-editor]",
           )
         ) {
           return;
         }
         if (editing) return;
+        if (tool === "delete") {
+          e.stopPropagation();
+          onDelete(annotation.id);
+          return;
+        }
         beginDrag(e, "move");
       }}
       onPointerMove={onPointerMove}
@@ -844,8 +874,21 @@ export function AnnotationLayer({
     w: number;
     h: number;
   } | null>(null);
-  const [dropHint, setDropHint] = useState<{ x: number; y: number } | null>(null);
+  const [dropHint, setDropHint] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const draftRafRef = useRef(createRafScheduler());
+  const linkedDropHandled = useRef(false);
+  const linkedCommentDragRef = useRef(linkedCommentDrag);
+  const onCreateRef = useRef(onCreate);
+
+  useEffect(() => {
+    linkedCommentDragRef.current = linkedCommentDrag;
+  }, [linkedCommentDrag]);
+
+  useEffect(() => {
+    onCreateRef.current = onCreate;
+  }, [onCreate]);
 
   useEffect(() => () => draftRafRef.current.cancel(), []);
   useEffect(() => {
@@ -948,12 +991,88 @@ export function AnnotationLayer({
         return;
       }
       const norm = pointerToNorm(e.clientX, e.clientY, rect);
-      onCreate(buildStampCreateDraft(stamp, norm, rect));
+      onCreateRef.current(buildStampCreateDraft(stamp, norm, rect));
       onPaletteStampDrop?.();
     }
     window.addEventListener("pointerup", onUp);
     return () => window.removeEventListener("pointerup", onUp);
-  }, [onCreate, onPaletteStampDrop, paletteStampDragId, stamps]);
+  }, [onPaletteStampDrop, paletteStampDragId, stamps]);
+
+  // Custom pointer drag from linked-comments panel.
+  // Keep a stable listener so clearing drag state on pointer-up cannot
+  // remove the drop handler before it runs.
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      const drag = linkedCommentDragRef.current;
+      if (!drag) {
+        setDropHint(null);
+        return;
+      }
+      const root = rootRef.current;
+      if (!root) return;
+      const rect = root.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      if (!inside) {
+        setDropHint(null);
+        return;
+      }
+      setDropHint(pointerToNorm(e.clientX, e.clientY, rect));
+    }
+    function onUp(e: PointerEvent) {
+      const drag = linkedCommentDragRef.current;
+      setDropHint(null);
+      if (!drag?.text) {
+        linkedDropHandled.current = false;
+        return;
+      }
+      if (linkedDropHandled.current) return;
+      linkedDropHandled.current = true;
+      const root = rootRef.current;
+      if (!root) return;
+      const rect = root.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      if (!inside) {
+        linkedDropHandled.current = false;
+        return;
+      }
+      const norm = pointerToNorm(e.clientX, e.clientY, rect);
+      const placed = placeBoxCommentAtPoint(
+        norm.x,
+        norm.y,
+        drag.text,
+        rect.width,
+        rect.height,
+      );
+      onCreateRef.current({
+        annotation_type: "area_comment",
+        ...placed,
+        text_content: drag.text,
+        source_comment_item_id: drag.itemId || null,
+        geometry: {
+          preferred_w_norm: placed.w_norm,
+          text_snapshot: drag.text,
+          source_comment_item_id: drag.itemId || null,
+        },
+      });
+      window.setTimeout(() => {
+        linkedDropHandled.current = false;
+      }, 0);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, true);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp, true);
+    };
+  }, []);
 
   return (
     <div
@@ -973,6 +1092,7 @@ export function AnnotationLayer({
         if (
           linkedCommentDrag ||
           e.dataTransfer.types.includes("application/x-comment-bank-item") ||
+          e.dataTransfer.types.includes("text/plain") ||
           e.dataTransfer.types.includes("application/x-marking-stamp")
         ) {
           e.preventDefault();
@@ -982,10 +1102,18 @@ export function AnnotationLayer({
               setDropHint({ x: e.clientX - rect.left, y: e.clientY - rect.top });
             }
           }
+          e.dataTransfer.dropEffect = "copy";
+          if (!rootRef.current) return;
+          const rect = rootRef.current.getBoundingClientRect();
+          setDropHint(pointerToNorm(e.clientX, e.clientY, rect));
         }
+      }}
+      onDragLeave={() => {
+        if (!linkedCommentDrag) setDropHint(null);
       }}
       onDrop={(e) => {
         if (!rootRef.current) return;
+        setDropHint(null);
         const stampRaw = e.dataTransfer.getData("application/x-marking-stamp");
         if (stampRaw) {
           e.preventDefault();
@@ -1009,6 +1137,44 @@ export function AnnotationLayer({
         if (!payload) return;
         e.preventDefault();
         createLinkedCommentAtPoint(payload, e.clientX, e.clientY);
+        let itemId = linkedCommentDrag?.itemId ?? "";
+        let text = linkedCommentDrag?.text ?? "";
+        const raw =
+          e.dataTransfer.getData("application/x-comment-bank-item") ||
+          e.dataTransfer.getData("text/plain");
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as { id?: string; text?: string };
+            itemId = parsed.id ?? itemId;
+            text = parsed.text ?? text;
+          } catch {
+            if (!text && raw.trim()) text = raw.trim();
+          }
+        }
+        if (!text) return;
+        e.preventDefault();
+        if (linkedDropHandled.current) return;
+        linkedDropHandled.current = true;
+        const rect = rootRef.current.getBoundingClientRect();
+        const norm = pointerToNorm(e.clientX, e.clientY, rect);
+        const placed = placeBoxCommentAtPoint(
+          norm.x,
+          norm.y,
+          text,
+          rect.width,
+          rect.height,
+        );
+        onCreate({
+          annotation_type: "area_comment",
+          ...placed,
+          text_content: text,
+          source_comment_item_id: itemId || null,
+          geometry: {
+            preferred_w_norm: placed.w_norm,
+            text_snapshot: text,
+            source_comment_item_id: itemId || null,
+          },
+        });
       }}
       onPointerDown={(e) => {
         if (!rootRef.current) return;
@@ -1127,6 +1293,13 @@ export function AnnotationLayer({
         <div
           className="pointer-events-none absolute z-[40] h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border border-dashed border-rose-500/70 bg-rose-500/10"
           style={{ left: dropHint.x, top: dropHint.y }}
+      {dropHint ? (
+        <div
+          className="pointer-events-none absolute z-40 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-rose-600 bg-white/80 shadow"
+          style={{
+            left: `${dropHint.x * 100}%`,
+            top: `${dropHint.y * 100}%`,
+          }}
           aria-hidden
         />
       ) : null}

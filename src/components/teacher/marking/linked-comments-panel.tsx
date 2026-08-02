@@ -45,6 +45,9 @@ export function LinkedCommentsPanel({
   commentBankItems: CommentBankItem[];
   onInsertIntoFeedback: (text: string) => void;
   onDragCreateBoxComment?: (comment: CommentDragPayload | null) => void;
+  onDragCreateBoxComment?: (
+    comment: { id: string; text: string } | null,
+  ) => void;
 }) {
   const [query, setQuery] = useState("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -129,6 +132,10 @@ export function LinkedCommentsPanel({
     const startX = e.clientX;
     const startY = e.clientY;
     let started = false;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let started = false;
+    dragActiveRef.current = false;
 
     const onMove = (ev: PointerEvent) => {
       if (
@@ -142,6 +149,7 @@ export function LinkedCommentsPanel({
         dragActiveRef.current = true;
         setDraggingId(row.id);
         onDragCreateBoxComment?.(payload);
+        onDragCreateBoxComment?.({ id: row.id, text: row.text });
       }
     };
 
@@ -150,6 +158,8 @@ export function LinkedCommentsPanel({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("keydown", onKey);
       setDraggingId(null);
+      // Click (no drag) inserts into feedback. Clear drag state after a tick
+      // so the worksheet drop handler can still read the payload.
       if (!started) {
         onDragCreateBoxComment?.(null);
         onInsertIntoFeedback(row.text);
@@ -164,6 +174,7 @@ export function LinkedCommentsPanel({
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
       started = true;
+      started = true; // suppress click insert
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("keydown", onKey);
@@ -243,14 +254,52 @@ export function LinkedCommentsPanel({
                 </li>
               );
             })}
+            {comments.map((c) => (
+              <li key={c.id}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  draggable
+                  aria-label={`Insert comment ${c.label}`}
+                  title="Click to insert into feedback. Drag onto worksheet for a box comment."
+                  className={`cursor-grab rounded-lg border px-2 py-1.5 text-left active:cursor-grabbing ${
+                    draggingId === c.id
+                      ? "border-rose-300 bg-rose-50 opacity-70"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                  onPointerDown={(e) => beginPointerDrag(c, e)}
+                  onDragStart={(e) => {
+                    // HTML5 fallback for environments that prefer native DnD.
+                    const payload = JSON.stringify({ id: c.id, text: c.text });
+                    e.dataTransfer.setData(
+                      "application/x-comment-bank-item",
+                      payload,
+                    );
+                    e.dataTransfer.setData("text/plain", payload);
+                    e.dataTransfer.effectAllowed = "copy";
+                    onDragCreateBoxComment?.({ id: c.id, text: c.text });
+                  }}
+                  onDragEnd={() => onDragCreateBoxComment?.(null)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onInsertIntoFeedback(c.text);
+                    }
+                  }}
+                >
+                  <p className="text-xs font-medium text-slate-800">{c.label}</p>
+                  <p className="line-clamp-2 text-[11px] text-slate-500">
+                    {c.text}
+                  </p>
+                </div>
+              </li>
+            ))}
           </ul>
         </div>
       ))}
 
-      {!rows.length ? (
-        <p className="text-xs text-slate-500">
-          No linked comments for this question.
-        </p>
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-500">No linked comments available.</p>
       ) : null}
     </div>
   );

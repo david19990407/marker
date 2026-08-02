@@ -34,6 +34,12 @@ import {
   saveAnnotationAction,
   saveQuestionMarkAction,
 } from "@/lib/actions/marking-annotations";
+import {
+  loadTeacherStampPreferencesAction,
+  resetTeacherStampPreferencesAction,
+  saveTeacherStampPreferencesAction,
+} from "@/lib/actions/teacher-annotation-preferences";
+import type { TeacherStampPreference } from "@/lib/marking/teacher-stamp-order";
 import { releaseSubmissionFeedbackAction } from "@/lib/actions/feedback-release";
 import {
   evaluateStructuredCompletion,
@@ -338,6 +344,14 @@ export function DocumentMarkingWorkspace({
   );
   const [linkedCommentDrag, setLinkedCommentDrag] =
     useState<CommentDragPayload | null>(null);
+  const [linkedCommentDrag, setLinkedCommentDrag] = useState<{
+    itemId: string;
+    text: string;
+  } | null>(null);
+  const unsavedAnnotationIds = useRef(new Set<string>());
+  const [stampPreferences, setStampPreferences] = useState<
+    TeacherStampPreference[]
+  >([]);
   const [readyStampPaths, setReadyStampPaths] = useState<Set<string>>(
     () => new Set(),
   );
@@ -815,6 +829,22 @@ export function DocumentMarkingWorkspace({
       editSnapshots.current.set(tempId, { ...created });
       setTool("select");
       setEditingAnnotationId(tempId);
+      // Switch to select so the editor receives pointer events immediately.
+      setTool("select");
+      // Defer persistence until blur/commit so the editor is not remounted
+      // when the temp id is replaced by the server id mid-typing.
+      unsavedAnnotationIds.current.add(tempId);
+    } else {
+      undoRef.current.push({
+        label: "add",
+        undo: () => previous,
+        redo: () => next,
+      });
+      syncUndoButtons();
+      startTransition(() => {
+        void persistAnnotation(created, previous, { rollbackOnFailure: true });
+      });
+      return;
     }
     undoRef.current.push({
       label: "add",
@@ -1128,6 +1158,7 @@ export function DocumentMarkingWorkspace({
       client_version: current.client_version + 1,
       updated_at: new Date().toISOString(),
     };
+    const wasUnsaved = unsavedAnnotationIds.current.has(id);
     const unchanged =
       current.x_norm === next.x_norm &&
       current.y_norm === next.y_norm &&
@@ -1155,8 +1186,24 @@ export function DocumentMarkingWorkspace({
     syncUndoButtons();
     // Persist after pointer-up only — never during drag.
     if (wasUnsaved) unsavedAnnotationIds.current.delete(id);
+    if (unchanged && !wasUnsaved) return;
+
+    const redoState = previous.map((a) => (a.id === id ? next : a));
+    updateAnnotations(() => redoState);
+    if (!wasUnsaved) {
+      undoRef.current.push({
+        label: "move",
+        undo: () => previous,
+        redo: () => redoState,
+      });
+      syncUndoButtons();
+    }
+    unsavedAnnotationIds.current.delete(id);
+    // Persist after pointer-up / blur only — never during drag.
     startTransition(() => {
-      void persistAnnotation(next, previous, { rollbackOnFailure: false });
+      void persistAnnotation(next, previous, {
+        rollbackOnFailure: wasUnsaved,
+      });
     });
   }
 
@@ -1198,6 +1245,12 @@ export function DocumentMarkingWorkspace({
       }
       const snap = editSnapshots.current.get(id);
       editSnapshots.current.delete(id);
+      if (unsavedAnnotationIds.current.has(id)) {
+        unsavedAnnotationIds.current.delete(id);
+        updateAnnotations((prev) => prev.filter((a) => a.id !== id));
+        setSelectedAnnotationId((cur) => (cur === id ? null : cur));
+        return;
+      }
       if (snap) {
         updateAnnotations((prev) => prev.map((a) => (a.id === id ? snap : a)));
       }
@@ -1284,14 +1337,30 @@ export function DocumentMarkingWorkspace({
   );
 
   useEffect(() => {
+    void loadTeacherStampPreferencesAction().then((result) => {
+      if (result.preferences) setStampPreferences(result.preferences);
+    });
+  }, []);
+
+  useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (
         tag === "input" ||
         tag === "textarea" ||
-        target?.isContentEditable
+        target?.isContentEditable ||
+        target?.closest?.("[data-box-comment-editor]")
       ) {
+        return;
+      }
+      if (
+        (e.key === "Delete" || e.key === "Backspace") &&
+        selectedAnnotationId &&
+        !editingAnnotationId
+      ) {
+        e.preventDefault();
+        deleteAnnotationById(selectedAnnotationId);
         return;
       }
       if (e.key === "ArrowLeft") void goQuestion(-1);
@@ -1476,6 +1545,7 @@ export function DocumentMarkingWorkspace({
             stamps={stamps}
             selectedStampId={selectedStampId}
             readyStampPaths={readyStampPaths}
+            stampPreferences={stampPreferences}
             canUndo={canUndo}
             canRedo={canRedo}
             docked
@@ -1492,6 +1562,19 @@ export function DocumentMarkingWorkspace({
               setSelectedStampId(stampId);
               setTool("stamp");
               setPaletteStampDragId(stampId);
+            }}
+            onStampPreferencesChange={(prefs) => {
+              setStampPreferences(prefs);
+              void saveTeacherStampPreferencesAction(prefs);
+            }}
+            onResetStampPreferences={() => {
+              setStampPreferences([]);
+              void resetTeacherStampPreferencesAction();
+            }}
+            onDeleteSelected={() => {
+              if (selectedAnnotationId) {
+                deleteAnnotationById(selectedAnnotationId);
+              }
             }}
             onUndo={() => {
               const prev = undoRef.current.undo();
@@ -1863,6 +1946,49 @@ export function DocumentMarkingWorkspace({
                           }}
                         />
                       </div>
+            <div className="relative min-h-0 flex-1 overflow-auto">
+              <div className="relative min-h-full">
+                <FileViewer
+                  fileName={centreView.fileName}
+                  storagePath={centreView.path}
+                  bucket={centreView.bucket}
+                  zoom={zoom}
+                  fit={fit}
+                  rotation={centreView.rotation}
+                  downloadPath={centreView.originalPath ?? centreView.path}
+                  onPageCount={(pages) => {
+                    if (centreView.kind !== "file") return;
+                    if (!centreView.pageNumber) {
+                      setCentreView({ ...centreView, pageNumber: 1 });
+                    }
+                    void pages;
+                  }}
+                />
+                {centreView.annotatable ? (
+                  <div className="pointer-events-none absolute inset-0 z-[6]">
+                    <div className="pointer-events-auto absolute inset-x-0 top-12 bottom-0 mx-auto max-w-4xl">
+                      <AnnotationLayer
+                        annotations={fileAnnotations}
+                        tool={tool}
+                        colour={colour}
+                        selectedId={selectedAnnotationId}
+                        editingId={editingAnnotationId}
+                        selectedStampId={selectedStampId}
+                        stamps={stamps}
+                        linkedCommentDrag={linkedCommentDrag}
+                        paletteStampDragId={paletteStampDragId}
+                        onSelect={handleAnnotationSelect}
+                        onCreate={createAnnotation}
+                        onCommitGeometry={handleCommitGeometry}
+                        onToggleCollapse={handleToggleCollapse}
+                        onBeginInlineEdit={handleBeginInlineEdit}
+                        onEndInlineEdit={handleEndInlineEdit}
+                        onPaletteStampDrop={() => setPaletteStampDragId(null)}
+                        onDeleteSelected={(id) => {
+                          const targetId = id ?? selectedAnnotationId;
+                          if (targetId) deleteAnnotationById(targetId);
+                        }}
+                      />
                     </div>
                   ) : null}
                 </div>
@@ -1888,6 +2014,34 @@ export function DocumentMarkingWorkspace({
                           ? "scale(0.92)"
                           : `scale(${zoom})`,
                     transformOrigin: "top center",
+                <MemoWorksheet
+                  sections={sections}
+                  values={worksheetValues}
+                  mode="teacher_marking"
+                  showTeacherGuidance
+                  selectedQuestionId={selectedQuestionId}
+                  onSelectQuestion={onSelectQuestion}
+                />
+                <AnnotationLayer
+                  annotations={worksheetAnnotations}
+                  tool={tool}
+                  colour={colour}
+                  selectedId={selectedAnnotationId}
+                  editingId={editingAnnotationId}
+                  selectedStampId={selectedStampId}
+                  stamps={stamps}
+                  linkedCommentDrag={linkedCommentDrag}
+                  paletteStampDragId={paletteStampDragId}
+                  onSelect={handleAnnotationSelect}
+                  onCreate={createAnnotation}
+                  onCommitGeometry={handleCommitGeometry}
+                  onToggleCollapse={handleToggleCollapse}
+                  onBeginInlineEdit={handleBeginInlineEdit}
+                  onEndInlineEdit={handleEndInlineEdit}
+                  onPaletteStampDrop={() => setPaletteStampDragId(null)}
+                  onDeleteSelected={(id) => {
+                    const targetId = id ?? selectedAnnotationId;
+                    if (targetId) deleteAnnotationById(targetId);
                   }}
                 >
                   <MemoWorksheet
@@ -2011,6 +2165,16 @@ export function DocumentMarkingWorkspace({
                     commentBankItems={commentBankItems}
                     onInsertIntoFeedback={appendCommentToFeedback}
                     onDragCreateBoxComment={setLinkedCommentDrag}
+                    onDragCreateBoxComment={(comment) => {
+                      if (!comment) {
+                        setLinkedCommentDrag(null);
+                        return;
+                      }
+                      setLinkedCommentDrag({
+                        itemId: comment.id,
+                        text: comment.text,
+                      });
+                    }}
                   />
                 </section>
 
@@ -2116,6 +2280,7 @@ export function DocumentMarkingWorkspace({
           stamps={stamps}
           selectedStampId={selectedStampId}
           readyStampPaths={readyStampPaths}
+          stampPreferences={stampPreferences}
           canUndo={canUndo}
           canRedo={canRedo}
           docked={false}
@@ -2132,6 +2297,19 @@ export function DocumentMarkingWorkspace({
             setSelectedStampId(stampId);
             setTool("stamp");
             setPaletteStampDragId(stampId);
+          }}
+          onStampPreferencesChange={(prefs) => {
+            setStampPreferences(prefs);
+            void saveTeacherStampPreferencesAction(prefs);
+          }}
+          onResetStampPreferences={() => {
+            setStampPreferences([]);
+            void resetTeacherStampPreferencesAction();
+          }}
+          onDeleteSelected={() => {
+            if (selectedAnnotationId) {
+              deleteAnnotationById(selectedAnnotationId);
+            }
           }}
           onUndo={() => {
             const prev = undoRef.current.undo();
