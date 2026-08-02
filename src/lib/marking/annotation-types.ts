@@ -58,12 +58,19 @@ export interface MarkingStamp {
   storage_path: string | null;
   mime_type: string | null;
   default_size_pct: number;
+  default_width_px: number;
+  default_height_px: number;
   subject_restriction: string | null;
   teacher_restriction_ids: string[];
   assignment_restriction_ids: string[];
   is_active: boolean;
+  is_palette_visible: boolean;
+  is_internal: boolean;
   sort_order: number;
   archived_at: string | null;
+  asset_version: number;
+  current_asset_id: string | null;
+  usage_count?: number;
 }
 
 export interface AssignmentStampSelection {

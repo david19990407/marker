@@ -1,120 +1,167 @@
-/** Automatic sizing for box comments from text content. */
+import { clampNormRect } from "@/lib/marking/annotation-geometry";
 
-import { clamp01, type BoxNorm, type PointNorm } from "./annotation-geometry";
+/** Compact worksheet annotation typography — Arial ~10pt. */
+export const BOX_COMMENT_FONT =
+  'normal 10pt Arial, Helvetica, "Helvetica Neue", sans-serif';
+export const BOX_COMMENT_LINE_HEIGHT = 1.25;
+export const BOX_COMMENT_PAD_X = 6;
+export const BOX_COMMENT_PAD_Y = 4;
+export const BOX_COMMENT_MIN_WIDTH_PX = 128;
+export const BOX_COMMENT_MAX_WIDTH_FRACTION = 0.45;
 
-const MIN_WIDTH_PX = 140;
-const MAX_WIDTH_FRACTION = 0.48;
-const MIN_HEIGHT_PX = 36;
-const PADDING_X = 16;
-const PADDING_Y = 14;
-const LINE_HEIGHT = 16;
-const FONT = "12px system-ui, sans-serif";
-
-function measureTextBlock(
+export function measureBoxCommentText(
   text: string,
   maxWidthPx: number,
-): { width: number; height: number } {
+  minWidthPx = BOX_COMMENT_MIN_WIDTH_PX,
+): { widthPx: number; heightPx: number } {
   if (typeof document === "undefined") {
-    const chars = Math.max(text.length, 1);
-    const estimatedWidth = Math.min(
+    const widthPx = Math.min(
       maxWidthPx,
-      Math.max(MIN_WIDTH_PX, chars * 7 + PADDING_X),
+      Math.max(minWidthPx, Math.min(maxWidthPx, 8 + text.length * 6)),
     );
-    const lines = Math.ceil((chars * 7) / Math.max(1, estimatedWidth - PADDING_X));
+    const charsPerLine = Math.max(12, Math.floor((widthPx - BOX_COMMENT_PAD_X * 2) / 6));
+    const softLines = text.split("\n").reduce((sum, line) => {
+      return sum + Math.max(1, Math.ceil(Math.max(1, line.length) / charsPerLine));
+    }, 0);
     return {
-      width: estimatedWidth,
-      height: Math.max(MIN_HEIGHT_PX, lines * LINE_HEIGHT + PADDING_Y),
+      widthPx,
+      heightPx: Math.max(22, softLines * 14 + BOX_COMMENT_PAD_Y * 2),
     };
   }
 
-  const el = document.createElement("div");
-  el.style.cssText = [
+  const probe = document.createElement("div");
+  probe.style.cssText = [
     "position:absolute",
     "visibility:hidden",
     "pointer-events:none",
-    `left:-9999px`,
-    `top:0`,
-    `max-width:${maxWidthPx}px`,
-    `min-width:${MIN_WIDTH_PX}px`,
-    `padding:6px 8px`,
-    `box-sizing:border-box`,
-    `font:${FONT}`,
-    `line-height:${LINE_HEIGHT}px`,
-    `white-space:pre-wrap`,
-    `word-break:break-word`,
+    "white-space:pre-wrap",
+    "word-break:break-word",
+    "overflow-wrap:anywhere",
+    `font:${BOX_COMMENT_FONT}`,
+    `line-height:${BOX_COMMENT_LINE_HEIGHT}`,
+    `padding:${BOX_COMMENT_PAD_Y}px ${BOX_COMMENT_PAD_X}px`,
+    "box-sizing:border-box",
+    `max-width:${Math.max(minWidthPx, maxWidthPx)}px`,
+    `min-width:${minWidthPx}px`,
+    "width:max-content",
   ].join(";");
-  el.textContent = text || " ";
-  document.body.appendChild(el);
-  const width = Math.ceil(
-    Math.min(maxWidthPx, Math.max(MIN_WIDTH_PX, el.offsetWidth)),
+  probe.textContent = text.length > 0 ? text : " ";
+  document.body.appendChild(probe);
+  const rawWidth = Math.ceil(probe.scrollWidth);
+  const widthPx = Math.min(
+    Math.max(minWidthPx, maxWidthPx),
+    Math.max(minWidthPx, rawWidth + 1),
   );
-  // Remeasure at fixed width for wrapped height.
-  el.style.width = `${width}px`;
-  const height = Math.ceil(Math.max(MIN_HEIGHT_PX, el.offsetHeight));
-  document.body.removeChild(el);
-  return { width, height };
+  probe.style.width = `${widthPx}px`;
+  probe.style.maxWidth = `${widthPx}px`;
+  const heightPx = Math.max(22, Math.ceil(probe.scrollHeight));
+  document.body.removeChild(probe);
+  return { widthPx, heightPx };
 }
 
-/** Compute normalised box size for comment text on a canvas. */
 export function sizeBoxCommentFromText(
   text: string,
   canvasWidthPx: number,
   canvasHeightPx: number,
-): { w: number; h: number } {
-  const canvasW = Math.max(1, canvasWidthPx);
-  const canvasH = Math.max(1, canvasHeightPx);
-  const maxWidthPx = Math.max(MIN_WIDTH_PX, canvasW * MAX_WIDTH_FRACTION);
-  const measured = measureTextBlock(text.trim() || " ", maxWidthPx);
+): { w_norm: number; h_norm: number } {
+  const maxWidthPx = Math.max(
+    BOX_COMMENT_MIN_WIDTH_PX,
+    canvasWidthPx * BOX_COMMENT_MAX_WIDTH_FRACTION,
+  );
+  const { widthPx, heightPx } = measureBoxCommentText(text, maxWidthPx);
   return {
-    w: clamp01(measured.width / canvasW),
-    h: clamp01(measured.height / canvasH),
+    w_norm: Math.min(0.95, Math.max(0.08, widthPx / Math.max(1, canvasWidthPx))),
+    h_norm: Math.min(0.9, Math.max(0.03, heightPx / Math.max(1, canvasHeightPx))),
   };
 }
 
-/** Place a sized box at a drop point, keeping it inside the worksheet. */
 export function placeBoxCommentAtPoint(
-  point: PointNorm,
+  xNorm: number,
+  yNorm: number,
   text: string,
   canvasWidthPx: number,
   canvasHeightPx: number,
-): BoxNorm {
+): { x_norm: number; y_norm: number; w_norm: number; h_norm: number } {
   const size = sizeBoxCommentFromText(text, canvasWidthPx, canvasHeightPx);
-  let x = point.x;
-  let y = point.y;
-  if (x + size.w > 1) x = Math.max(0, 1 - size.w);
-  if (y + size.h > 1) y = Math.max(0, 1 - size.h);
-  x = clamp01(x);
-  y = clamp01(y);
-  return { x, y, w: size.w, h: size.h };
+  return clampNormRect({
+    x: Math.min(1 - size.w_norm, Math.max(0, xNorm)),
+    y: Math.min(1 - size.h_norm, Math.max(0, yNorm)),
+    w: size.w_norm,
+    h: size.h_norm,
+  });
 }
 
-/** Recompute height (and width up to max) after text edits; keep top-left. */
-export function resizeBoxCommentForText(
-  current: BoxNorm,
+/** Width-driven resize: keep left or right edge, recalculate height from text. */
+export function resizeBoxCommentWidth(
   text: string,
+  xNorm: number,
+  yNorm: number,
+  wNorm: number,
   canvasWidthPx: number,
   canvasHeightPx: number,
-): BoxNorm {
+  anchor: "left" | "right" = "left",
+): { x_norm: number; y_norm: number; w_norm: number; h_norm: number } {
+  const maxWidthPx = Math.max(
+    BOX_COMMENT_MIN_WIDTH_PX,
+    canvasWidthPx * BOX_COMMENT_MAX_WIDTH_FRACTION,
+  );
+  const widthPx = Math.min(
+    maxWidthPx,
+    Math.max(BOX_COMMENT_MIN_WIDTH_PX, wNorm * canvasWidthPx),
+  );
+  const { heightPx } = measureBoxCommentText(text, widthPx, widthPx);
+  const w_norm = widthPx / Math.max(1, canvasWidthPx);
+  const h_norm = Math.min(0.9, Math.max(0.03, heightPx / Math.max(1, canvasHeightPx)));
+  const x_norm =
+    anchor === "right"
+      ? Math.min(1 - w_norm, Math.max(0, xNorm + (wNorm - w_norm)))
+      : Math.min(1 - w_norm, Math.max(0, xNorm));
+  return clampNormRect({
+    x: x_norm,
+    y: Math.min(1 - h_norm, Math.max(0, yNorm)),
+    w: w_norm,
+    h: h_norm,
+  });
+}
+
+export function resizeBoxCommentForText(
+  text: string,
+  xNorm: number,
+  yNorm: number,
+  preferredWNorm: number | null,
+  canvasWidthPx: number,
+  canvasHeightPx: number,
+): { x_norm: number; y_norm: number; w_norm: number; h_norm: number } {
+  const maxW = BOX_COMMENT_MAX_WIDTH_FRACTION;
+  const minW = BOX_COMMENT_MIN_WIDTH_PX / Math.max(1, canvasWidthPx);
+  if (preferredWNorm != null && preferredWNorm > 0) {
+    return resizeBoxCommentWidth(
+      text,
+      xNorm,
+      yNorm,
+      Math.min(maxW, Math.max(minW, preferredWNorm)),
+      canvasWidthPx,
+      canvasHeightPx,
+      "left",
+    );
+  }
   const size = sizeBoxCommentFromText(text, canvasWidthPx, canvasHeightPx);
-  const w = Math.min(size.w, Math.max(current.w, size.w));
-  const h = size.h;
-  return {
-    x: clamp01(Math.min(current.x, 1 - w)),
-    y: clamp01(Math.min(current.y, 1 - h)),
-    w: clamp01(w),
-    h: clamp01(h),
-  };
+  return clampNormRect({
+    x: Math.min(1 - size.w_norm, Math.max(0, xNorm)),
+    y: Math.min(1 - size.h_norm, Math.max(0, yNorm)),
+    w: size.w_norm,
+    h: size.h_norm,
+  });
 }
 
 export function appendFeedbackAvoidingDuplicate(
   existing: string | null | undefined,
-  text: string,
+  addition: string,
 ): string {
-  const next = text.trim();
-  if (!next) return existing?.trim() ?? "";
-  const prev = existing?.trim() ?? "";
-  if (!prev) return next;
-  if (prev.split(/\n+/).some((line) => line.trim() === next)) return prev;
-  if (prev.includes(next)) return prev;
-  return `${prev}\n${next}`;
+  const next = addition.trim();
+  if (!next) return existing ?? "";
+  const current = (existing ?? "").trim();
+  if (!current) return next;
+  if (current.includes(next)) return existing ?? next;
+  return `${current}\n${next}`;
 }
